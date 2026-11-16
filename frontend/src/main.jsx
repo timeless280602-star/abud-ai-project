@@ -473,6 +473,10 @@ function MemoryMatrix({ user, guilds }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [review, setReview] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const reviewKey = JSON.stringify([scope, selectedGuild, draft, category, editingId]);
+  const currentReview = review?.key === reviewKey ? review.data : null;
 
   const activeGuild = accessibleGuilds.find(
     g => String(g.guild_id) === String(selectedGuild)
@@ -569,6 +573,35 @@ function MemoryMatrix({ user, guilds }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function checkSimilar(useAI) {
+    const key = reviewKey;
+    setReviewBusy(true);
+    setError('');
+    try {
+      const data = await api('/dashboard/memory/similar', {
+        method: 'POST',
+        body: JSON.stringify({
+          scope, guild_id: scope === 'guild' ? selectedGuild : null,
+          content: draft.trim(), category,
+          exclude_memory_id: editingId, use_ai: useAI
+        })
+      });
+      setReview({ key, data });
+    } catch (e) {
+      setReview({ key, data: { items: [], error: e.message || 'Review unavailable.' } });
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  function useCandidate(item, combine) {
+    setEditingId(item.id);
+    setDraft(combine ? `${item.content}\n${draft}` : draft);
+    setCategory(item.category || 'general');
+    setNotice('Review the draft, then save to update this record. No record has been changed or deleted.');
+    setReview(null);
   }
 
   function startEdit(item) {
@@ -705,12 +738,43 @@ function MemoryMatrix({ user, guilds }) {
             <small>{draft.length}/1000 CHARACTERS</small>
           </label>
           <div className="memory-editor-actions">
+            <button type="button" className="outline-button" onClick={() => checkSimilar(false)} disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000}>
+              CHECK SIMILAR WORDING
+            </button>
+            <button type="button" className="outline-button" onClick={() => checkSimilar(true)} disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000}>
+              {reviewBusy ? 'REVIEWING...' : 'REVIEW MEANING WITH AI'}
+            </button>
+          </div>
+          <small className="memory-review-disclosure">AI review sends this draft and up to five memories from this scope to your configured AI service. Suggestions never change records.</small>
+          {draft.length > 1000 && <p className="memory-error">Shorten the combined draft to 1000 characters before saving.</p>}
+          {currentReview && (
+            <section className="memory-review" aria-label="Similar memory suggestions" aria-live="polite">
+              <h3>REVIEW SIMILAR MEMORIES</h3>
+              {currentReview.error && <p>{currentReview.error}</p>}
+              {['not_configured', 'unavailable'].includes(currentReview.ai_status) && <p>AI review unavailable. Wording matches are shown below.</p>}
+              {!currentReview.error && !currentReview.items.length && <p>No candidates found by this review. Other memories may still describe the same fact.</p>}
+              {currentReview.items.map(item => (
+                <article className="memory-review-candidate" key={item.id}>
+                  <strong>RECORD #{item.id}</strong>
+                  <p>{item.content}</p>
+                  <small>{item.reason}</small>
+                  {item.ai_relation && <p>AI suggestion: {item.ai_relation} — {item.ai_reason}</p>}
+                  <div className="memory-editor-actions">
+                    <button type="button" className="outline-button" onClick={() => useCandidate(item, false)} disabled={busy}>UPDATE THIS RECORD</button>
+                    <button type="button" className="outline-button" onClick={() => useCandidate(item, true)} disabled={busy}>COMBINE INTO DRAFT</button>
+                  </div>
+                </article>
+              ))}
+              <button type="button" className="outline-button" disabled={busy} onClick={() => {setEditingId(null);setReview(null);setNotice('Kept as a separate draft. Save when ready; identical text still uses existing deduplication.');}}>KEEP AS SEPARATE DRAFT</button>
+            </section>
+          )}
+          <div className="memory-editor-actions">
             {editingId && (
               <button type="button" className="outline-button" onClick={() => {setEditingId(null);setDraft('');}}>
                 <X size={14}/> CANCEL
               </button>
             )}
-            <button type="submit" className="memory-primary-button" disabled={busy || !draft.trim() || (scope === 'guild' && !selectedGuild)}>
+            <button type="submit" className="memory-primary-button" disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000 || (scope === 'guild' && !selectedGuild)}>
               <Save size={14}/> {busy ? 'PROCESSING...' : editingId ? 'UPDATE MEMORY' : 'SAVE MEMORY'}
             </button>
           </div>

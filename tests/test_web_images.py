@@ -288,6 +288,41 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(self.send(cid, message='Generate image of a cat').status_code,401)
         self.assertEqual(self.usage()[:2],(0,0))
 
+    def test_regenerate_replays_original_artifacts_without_mutation(self):
+        cid, original = self.generate(count=2)
+        before = self.client.get('/web/chat/conversations/' + cid).json()['messages'][-1]
+        self.assertEqual(len(before['images']), 2)
+        before_quota = self.usage()[:2]
+        provider = AsyncMock(side_effect=AssertionError('Regenerate must not call provider'))
+        with patch.object(images, 'provider_generate', provider):
+            replay = self.send(cid, regenerate=True)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertIn('"type": "images"', replay.text)
+        self.assertIn('Generated 2 of 2', replay.text)
+        provider.assert_not_called()
+        after = self.client.get('/web/chat/conversations/' + cid).json()['messages'][-1]
+        self.assertEqual(after['id'], before['id'])
+        self.assertEqual(after['images'], before['images'])
+        self.assertEqual(self.usage()[:2], before_quota)
+        for artifact in before['images']:
+            self.assertEqual(self.client.get(artifact['url']).status_code, 200)
+            self.assertEqual(self.client.get(artifact['url'] + '?download=true').status_code, 200)
+        self.web.init_schema()
+        self.assertEqual(self.client.get('/web/chat/conversations/' + cid).json()['messages'][-1]['images'], before['images'])
+
+    def test_partial_success_regenerate_replays_only_saved_images(self):
+        cid = self.create()
+        with patch.object(images, 'provider_generate', AsyncMock(return_value=[png(), {'b64_json': 'invalid'}])):
+            response = self.send(cid, message='Generate 2 images of a cat')
+        self.assertIn('Generated 1 of 2', response.text)
+        before = self.client.get('/web/chat/conversations/' + cid).json()['messages'][-1]
+        with patch.object(images, 'provider_generate', AsyncMock(side_effect=AssertionError('duplicate generation'))) as provider:
+            replay = self.send(cid, regenerate=True)
+        provider.assert_not_called()
+        self.assertIn('"type": "images"', replay.text)
+        self.assertEqual(self.client.get('/web/chat/conversations/' + cid).json()['messages'][-1], before)
+        self.assertEqual(self.usage()[:2], (1, 0))
+
     def test_additive_migration_preserves_existing_history_and_project(self):
         cid = self.project_chat()
         async def text(messages):

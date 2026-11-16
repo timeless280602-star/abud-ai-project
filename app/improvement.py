@@ -13,6 +13,10 @@ from app.web_chat import WEB_SYSTEM_PROMPT
 
 router = APIRouter(prefix="/dashboard/improvement")
 evaluation_lock = Lock()
+EVALUATION_PROMPT = WEB_SYSTEM_PROMPT + (
+    "\n\nAnswer the test question directly. Skip greetings and introductions. "
+    "Mention your identity, creator, or profile links only if the question asks about them."
+)
 
 
 class Evaluation(BaseModel):
@@ -54,7 +58,7 @@ def completion(client, base_url, model, question, system_prompt):
     result = client.post(
         f"{base_url}/chat/completions",
         json={
-            "model": model, "stream": False, "temperature": 0, "max_tokens": 800,
+            "model": model, "stream": False, "temperature": 0, "max_tokens": 1600,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
@@ -83,10 +87,10 @@ def evaluate(payload: Evaluation, request: Request, response: Response):
         raise HTTPException(409, "An evaluation is already running.")
     try:
         with httpx.Client(headers={"Authorization": f"Bearer {key}"}, timeout=20) as client:
-            baseline, baseline_truncated = completion(client, base_url, model, payload.question, WEB_SYSTEM_PROMPT)
+            baseline, baseline_truncated = completion(client, base_url, model, payload.question, EVALUATION_PROMPT)
             candidate, candidate_truncated = completion(
                 client, base_url, model, payload.question,
-                WEB_SYSTEM_PROMPT + "\n\nEvaluation-only instruction:\n" + payload.candidate_instruction,
+                EVALUATION_PROMPT + "\n\nEvaluation-only instruction:\n" + payload.candidate_instruction,
             )
     except httpx.TimeoutException:
         raise HTTPException(504, "Evaluation timed out.") from None
@@ -96,14 +100,16 @@ def evaluate(payload: Evaluation, request: Request, response: Response):
         evaluation_lock.release()
 
     expected = " ".join(payload.expected_text.casefold().split())
-    baseline_match = expected in " ".join(baseline.casefold().split())
-    candidate_match = expected in " ".join(candidate.casefold().split())
+    baseline_match = None if baseline_truncated else expected in " ".join(baseline.casefold().split())
+    candidate_match = None if candidate_truncated else expected in " ".join(candidate.casefold().split())
+    recommendation = "needs_more_evidence"
+    if baseline_truncated or candidate_truncated:
+        recommendation = "incomplete"
+    elif candidate_match and not baseline_match:
+        recommendation = "review_candidate"
     return {
         "model": model,
         "baseline": {"answer": baseline, "matched": baseline_match, "truncated": baseline_truncated},
         "candidate": {"answer": candidate, "matched": candidate_match, "truncated": candidate_truncated},
-        "recommendation": (
-            "review_candidate" if candidate_match and not baseline_match
-            and not baseline_truncated and not candidate_truncated else "needs_more_evidence"
-        ),
+        "recommendation": recommendation,
     }

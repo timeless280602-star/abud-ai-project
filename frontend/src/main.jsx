@@ -1271,11 +1271,13 @@ function ImprovementPanel() {
       {result && <div aria-live="polite">
         <p>{result.model} · {result.recommendation === 'review_candidate'
           ? 'Candidate met the phrase check. Review both answers before applying any change.'
-          : 'This comparison needs more evidence.'}</p>
+          : result.recommendation === 'incomplete'
+            ? 'Comparison incomplete. A truncated answer was not scored. Run the comparison again.'
+            : 'This comparison needs more evidence.'}</p>
         <p>The phrase check measures text matching only.</p>
         {[['Baseline', result.baseline], ['Candidate', result.candidate]].map(([label, entry]) => (
           <div key={label}>
-            <h3>{label} · {entry.matched ? 'Phrase found' : 'Phrase missing'}{entry.truncated ? ' · Truncated' : ''}</h3>
+            <h3>{label} · {entry.truncated ? 'Truncated · Not scored' : entry.matched ? 'Phrase found' : 'Phrase missing'}</h3>
             <p style={{ whiteSpace: 'pre-wrap' }}>{entry.answer}</p>
           </div>
         ))}

@@ -230,6 +230,23 @@ const fs = require("node:fs");
     await page.evaluate(() => window.activeUtterance.onerror());
     await page.getByRole("alert").filter({ hasText: "Could not read" }).waitFor();
     await page.getByRole("button", { name: "Read aloud", exact: true }).waitFor();
+    // Interactive choices use the same authenticated SSE/persistence endpoints.
+    await page.getByLabel("Message Abud", { exact: true }).fill("[test-choices]");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const choices = page.getByRole("region", { name: "Pilihan respons" });
+    await choices.waitFor();
+    await choices.getByRole("button", { name: "B. Wait", exact: true }).click();
+    await choices.getByRole("button", { name: "A. Open the door", exact: true }).click();
+    await choices.getByRole("button", { name: "Lanjutkan dengan pilihan" }).click();
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(b => b.textContent === "Regenerate response").disabled);
+    const choiceChat = (await (await context.request.get(url + "/web/chat/conversations")).json())[0];
+    const choiceHistory = await (await context.request.get(url + "/web/chat/conversations/" + choiceChat.id)).json();
+    assert.equal(choiceHistory.messages.at(-2).content, "Saya memilih opsi B: Wait; lalu opsi A: Open the door. Lanjutkan berdasarkan gabungan kedua pilihan ini secara masuk akal.");
+    assert.equal(choiceHistory.messages.filter(m => m.role === "user" && m.content.startsWith("Saya memilih")).length, 1);
+    await page.reload();
+    await page.getByRole("button", { name: choiceChat.title, exact: true }).click();
+    await page.getByText("world", { exact: true }).waitFor();
+    assert.equal(await choices.count(), 0);
     console.log(
       "PASS: HTTPS FastAPI + built React + real sessions/SQLite; Enter/Shift+Enter/IME, local timestamps, speech controls (mock speech engine), good/bad feedback persistence, streaming, reload, regenerate, isolation, CSRF, errors, mobile and deletion. Only AI/OAuth and speech engine are simulated.",
     );

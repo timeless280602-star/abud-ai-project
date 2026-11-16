@@ -70,6 +70,11 @@ def main():
 
         async def fixture_stream(messages):
             nonlocal error_attempts
+            if messages[-1]["content"] == "[test-choices]":
+                for text in ("Choose your action:\nA) Open the door\n", "B) Wait\nC) Call for help"):
+                    yield text
+                    await asyncio.sleep(0.1)
+                return
             if messages[-1]["content"] == "[test-id]":
                 yield "Halo, saya bisa membantu Anda dengan pertanyaan ini."
                 return

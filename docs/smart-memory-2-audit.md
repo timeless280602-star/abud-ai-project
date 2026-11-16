@@ -63,10 +63,17 @@ database TemporaryDirectory sendiri dan membersihkannya. Dashboard memakai
 konfigurasi OAuth dummy, TestClient tanpa lifespan, serta mock identitas/gateway;
 tidak ada server, bot, atau koneksi OAuth/Discord/AI yang dijalankan.
 
-Hasil lokal: 13 test lulus di Python 3.12; termasuk 5 test baseline. Peringatan
+Hasil lokal: 13 test lulus di Python 3.12 dan Python 3.11.18; termasuk 5 test baseline. Peringatan
 deprecation Authlib/httpx dan FastAPI startup berasal dari dependency/pola yang
-sudah ada. Image production memakai Python 3.11; belum menjalankan image tersebut.
+sudah ada. Image production memakai Python 3.11; kompatibilitas interpreter 3.11 sudah diuji
+di virtualenv terpisah, tetapi image Docker belum dijalankan.
+Build frontend `npm run build` lulus pada Node 24.22.1 (Vite 6.4.6).
 `git diff --check` juga lulus. Tidak ada pengujian browser atau deployment.
+
+Review lanjutan terhadap diff tidak menemukan perubahan yang melewati kontrol izin:
+search tetap dipanggil setelah guard route, tabel dipilih dari whitelist scope,
+owner ID diikat sebagai parameter SQL, serta LIMIT diterapkan setelah ranking.
+Tidak ada perubahan kode tambahan yang diperlukan dari review ini.
 
 ## Tahap lanjutan
 

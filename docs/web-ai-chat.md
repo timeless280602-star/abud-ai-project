@@ -161,7 +161,7 @@ at startup, even though web users never need Discord accounts. Keep those existi
 server settings. Ensure the reverse proxy streams SSE without buffering and allows
 requests longer than 120 seconds. Use Python 3.11+ (existing Docker target: 3.11).
 Verify real Google sign-in, profile completion and 9router token streaming in
-staging; no live OAuth, live AI, image build or production deployment was tested.
+staging; no live OAuth, live AI or production deployment was tested. A later local image build and offline startup check passed; see `staging/README.md` for the session CA requirements.
 
 The MVP does not implement automatic memory extraction, web memory editing/listing/
 deletion UI, or Discord/web identity linking. Deleting a conversation does not
@@ -172,3 +172,7 @@ instances with separate databases require a shared store. Account/IP-wide abuse
 controls and retention policies need operational configuration before public scale.
 Automated tests do not establish live proxy latency, visual completeness on every
 device, or OAuth-provider availability.
+
+An isolated API-only staging Compose file, placeholder environment, HTTPS proxy
+snippet and acceptance/rollback guide are prepared in `staging/README.md`.
+They have not been deployed.

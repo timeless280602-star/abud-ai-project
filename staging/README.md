@@ -92,9 +92,15 @@ stack. Merge and production release remain separate approval steps.
 - Effective Compose configuration was checked: only `api`, loopback port 18000,
   one project-scoped named volume and no host bind mounts.
 - `.env.staging` is excluded by Git; the placeholder example is tracked.
-- A local image build was attempted but **did not complete**: the Docker build
-  environment rejected the package-index TLS chain with
-  `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain`.
-  No TLS verification bypass was applied. The target build host must trust its
-  configured package proxy/CA, then rerun the build. This is not a passing image
-  build result; image startup and live staging remain unverified.
+- The unmodified local build initially failed because the session proxy CA was
+  absent inside build steps (`CERTIFICATE_VERIFY_FAILED`). A retry succeeded with
+  a **temporary Dockerfile outside the repository**, mounting the executor's CA
+  bundle as a BuildKit secret into npm/pip installation steps. TLS verification
+  stayed enabled; no session CA or secrets were added to committed files/layers.
+- The resulting image passed an offline disposable-container check on Python
+  3.11.18: UID 10001, writable `/app/data`, API startup/additive schema creation,
+  and built frontend present. No network, persistent volume, server or bot was
+  started by that check. The container was removed afterward.
+- Live staging deployment, OAuth and 9router remain unverified. On a server behind
+  a corporate proxy, provide the trusted CA using that server's approved build
+  mechanism; do not disable TLS verification or commit local proxy certificates.

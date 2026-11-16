@@ -9,8 +9,10 @@ import {
   Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
 } from 'lucide-react';
 import './style.css';
+const WebChat = React.lazy(() => import('./WebChat'));
 
 const modules = [
+  { id: 'chat', label: 'AI Chat', group: 'MAIN', icon: Bot },
   { id: 'overview', label: 'Command Center', group: 'MAIN', icon: LayoutDashboard },
   { id: 'neural', label: 'Neural Engine', group: 'INTELLIGENCE', icon: BrainCircuit },
   { id: 'memory', label: 'Memory Matrix', group: 'INTELLIGENCE', icon: Database },
@@ -61,6 +63,8 @@ function hasAnyPermission(user, permission) {
 }
 
 function canOpenModule(user, moduleId) {
+  if (moduleId === 'chat') return true;
+  if (!user?.dashboard_access) return false;
   if (moduleId === 'overview') return true;
   if (user?.is_creator) return true;
 
@@ -2151,7 +2155,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [guilds, setGuilds] = useState([]);
   const [health, setHealth] = useState(null);
-  const [active, setActive] = useState('overview');
+  const [active, setActive] = useState('chat');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -2188,7 +2192,7 @@ function App() {
 
   useEffect(() => {
     if (user && visibleModules.length && !visibleModules.some(m => m.id === active)) {
-      setActive('overview');
+      setActive('chat');
     }
   }, [user, active, visibleModules.map(m => m.id).join('|')]);
 
@@ -2203,9 +2207,6 @@ function App() {
   if (loading) return <div className="boot-screen"><CoreReactor status="INITIALIZING"/><span>ESTABLISHING SECURE CONNECTION</span></div>;
   if (!user) return <Login error={error}/>;
   if (!user.profile_completed) return <ProfileSetup/>;
-  if (!user.dashboard_access) return (
-    <main className="denied-screen"><Brand/><Shield size={42}/><div className="eyebrow">ACCESS CONTROL / 403</div><h1>ACCESS <span>RESTRICTED.</span></h1><p>This identity is authenticated, but no dashboard permission has been assigned.</p><button className="outline-button" onClick={logout}><LogOut size={15}/> SIGN OUT</button></main>
-  );
 
   const current = visibleModules.find(m => m.id === active) || visibleModules[0];
   const groups = [...new Set(visibleModules.map(m => m.group))];
@@ -2238,7 +2239,7 @@ function App() {
           <div className="topbar-right"><span className="top-status"><i/> API {health?.status === 'healthy' ? 'CONNECTED' : 'UNKNOWN'}</span><span className="top-clock">UTC+7 / ID</span><div className="top-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div></div>
         </header>
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}
-        {active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
+        {active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat/></React.Suspense> : active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
           active === 'memory' ? <MemoryMatrix user={user} guilds={guilds}/> :
           active === 'security' ? <SecurityProtocol user={user}/> :
           active === 'neural' ? <NeuralEngine/> :

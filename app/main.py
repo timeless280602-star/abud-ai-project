@@ -17,6 +17,7 @@ from app import auth as dashboard_auth
 from app import tools as abud_tools
 from app.memory_review import review_meaning
 from app.auth import router as auth_router
+from app import web_chat
 from app.skills.engine import get_relevant_skills
 
 
@@ -38,6 +39,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(web_chat.router)
 
 @app.exception_handler(database.ArchivedMemoryError)
 async def archived_memory_conflict(request, error):
@@ -72,7 +74,8 @@ async def require_internal_api_key(request: Request, call_next):
     }
 
     if (
-        request.url.path.startswith("/profile-avatars/")
+        request.url.path.startswith("/web/chat/")
+        or request.url.path.startswith("/profile-avatars/")
         or request.url.path in ("/", "/health", "/favicon.svg")
         or request.url.path.startswith("/assets/")
         or request.url.path in public_auth_paths
@@ -441,6 +444,7 @@ def internal_guild_sync(payload: InternalGuildSyncRequest):
 @app.on_event("startup")
 async def startup():
     database.init_database()
+    web_chat.init_schema()
     print("Abud Multi-Scope Memory Database initialized.")
 
 

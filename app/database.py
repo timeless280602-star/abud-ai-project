@@ -214,6 +214,9 @@ def init_database():
                     DEFAULT 0 CHECK(revision >= 0)
                 """)
 
+            if "archived_at" not in columns:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN archived_at TEXT")
+
         # ==========================================
         # DASHBOARD AUTHENTICATION
         # ==========================================
@@ -689,7 +692,13 @@ def get_recent_messages(
 # RANKED MEMORY SEARCH
 # ==============================================
 
-def _memory_search_scope(scope, user_id, guild_id):
+class ArchivedMemoryError(ValueError):
+    """A write would bypass an explicit archive/restore decision."""
+
+
+def _memory_search_scope(scope, user_id, guild_id, archived=False):
+    if type(archived) is not bool:
+        raise ValueError("Status arsip tidak valid.")
     if scope == "personal":
         if not user_id:
             return None
@@ -706,10 +715,11 @@ def _memory_search_scope(scope, user_id, guild_id):
     else:
         raise ValueError("Scope Memory tidak valid.")
 
-    return table, where, params, columns
+    where += " AND archived_at IS NOT NULL" if archived else " AND archived_at IS NULL"
+    return table, where, params, columns + ", archived_at"
 
 
-def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
+def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5, archived=False):
     """Search one scope; callers must authorize the supplied identity first.
 
     Rank contiguous token phrases above word overlap, then newest ID.
@@ -721,7 +731,7 @@ def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
         raise ValueError("Limit pencarian harus berupa bilangan bulat.")
     limit = max(1, min(limit, 100))
 
-    selection = _memory_search_scope(scope, user_id, guild_id)
+    selection = _memory_search_scope(scope, user_id, guild_id, archived=archived)
     if selection is None:
         return []
     table, where, params, columns = selection
@@ -826,6 +836,7 @@ def save_memory(user_id, content, *, source="unknown"):
     user_id = str(user_id)
 
     with get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("""
             INSERT OR IGNORE INTO users (
                 user_id, username, created_at, updated_at
@@ -834,16 +845,18 @@ def save_memory(user_id, content, *, source="unknown"):
         """, (user_id, now, now))
 
         existing = db.execute("""
-            SELECT id FROM memories
+            SELECT id, archived_at FROM memories
             WHERE user_id = ? AND content = ?
-            LIMIT 1
+            ORDER BY archived_at IS NOT NULL, id DESC LIMIT 1
         """, (user_id, content)).fetchone()
 
         if existing:
+            if existing["archived_at"] is not None:
+                raise ArchivedMemoryError("Memory ini diarsipkan. Pulihkan melalui dashboard sebelum menyimpan ulang.")
             db.execute("""
                 UPDATE memories
                 SET updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (now, existing["id"]))
             return existing["id"]
 
@@ -863,9 +876,9 @@ def get_memories(user_id, limit=50):
 
     with get_connection() as db:
         rows = db.execute("""
-            SELECT id, content, created_at, updated_at, source, revision
+            SELECT id, content, created_at, updated_at, source, revision, archived_at
             FROM memories
-            WHERE user_id = ?
+            WHERE user_id = ? AND archived_at IS NULL
             ORDER BY id DESC
             LIMIT ?
         """, (str(user_id), limit)).fetchall()
@@ -880,7 +893,7 @@ def delete_memory(user_id, memory_id):
     with get_connection() as db:
         cursor = db.execute("""
             DELETE FROM memories
-            WHERE id = ? AND user_id = ?
+            WHERE id = ? AND user_id = ? AND archived_at IS NULL
         """, (int(memory_id), str(user_id)))
 
     return cursor.rowcount > 0
@@ -900,7 +913,7 @@ def update_memory(user_id, memory_id, content):
         cursor = db.execute("""
             UPDATE memories
             SET content = ?, updated_at = ?, revision = revision + 1
-            WHERE id = ? AND user_id = ?
+            WHERE id = ? AND user_id = ? AND archived_at IS NULL
         """, (content, now, int(memory_id), str(user_id)))
 
     return cursor.rowcount > 0
@@ -923,6 +936,7 @@ def save_guild_memory(guild_id, content, created_by_user_id=None, *, source="unk
     now = utc_now()
 
     with get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("""
             INSERT OR IGNORE INTO guilds (
                 guild_id, guild_name, owner_id,
@@ -932,16 +946,18 @@ def save_guild_memory(guild_id, content, created_by_user_id=None, *, source="unk
         """, (guild_id, now, now))
 
         existing = db.execute("""
-            SELECT id FROM guild_memories
+            SELECT id, archived_at FROM guild_memories
             WHERE guild_id = ? AND content = ?
-            LIMIT 1
+            ORDER BY archived_at IS NOT NULL, id DESC LIMIT 1
         """, (guild_id, content)).fetchone()
 
         if existing:
+            if existing["archived_at"] is not None:
+                raise ArchivedMemoryError("Memory ini diarsipkan. Pulihkan melalui dashboard sebelum menyimpan ulang.")
             db.execute("""
                 UPDATE guild_memories
                 SET updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (now, existing["id"]))
             return existing["id"]
 
@@ -970,9 +986,9 @@ def get_guild_memories(guild_id, limit=50):
     with get_connection() as db:
         rows = db.execute("""
             SELECT id, guild_id, content, created_by_user_id,
-                   created_at, updated_at, source, revision
+                   created_at, updated_at, source, revision, archived_at
             FROM guild_memories
-            WHERE guild_id = ?
+            WHERE guild_id = ? AND archived_at IS NULL
             ORDER BY id DESC
             LIMIT ?
         """, (str(guild_id), limit)).fetchall()
@@ -995,7 +1011,7 @@ def update_guild_memory(guild_id, memory_id, content):
         cursor = db.execute("""
             UPDATE guild_memories
             SET content = ?, updated_at = ?, revision = revision + 1
-            WHERE id = ? AND guild_id = ?
+            WHERE id = ? AND guild_id = ? AND archived_at IS NULL
         """, (
             content,
             now,
@@ -1013,7 +1029,7 @@ def delete_guild_memory(guild_id, memory_id):
     with get_connection() as db:
         cursor = db.execute("""
             DELETE FROM guild_memories
-            WHERE id = ? AND guild_id = ?
+            WHERE id = ? AND guild_id = ? AND archived_at IS NULL
         """, (int(memory_id), str(guild_id)))
 
     return cursor.rowcount > 0
@@ -1039,17 +1055,20 @@ def save_global_memory(
     now = utc_now()
 
     with get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         existing = db.execute("""
-            SELECT id FROM global_memories
+            SELECT id, archived_at FROM global_memories
             WHERE category = ? AND content = ?
-            LIMIT 1
+            ORDER BY archived_at IS NOT NULL, id DESC LIMIT 1
         """, (category, content)).fetchone()
 
         if existing:
+            if existing["archived_at"] is not None:
+                raise ArchivedMemoryError("Memory ini diarsipkan. Pulihkan melalui dashboard sebelum menyimpan ulang.")
             db.execute("""
                 UPDATE global_memories
                 SET updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (now, existing["id"]))
             return existing["id"]
 
@@ -1076,17 +1095,18 @@ def get_global_memories(category=None, limit=100):
         if category:
             rows = db.execute("""
                 SELECT id, category, content, created_by_user_id,
-                       created_at, updated_at, source, revision
+                       created_at, updated_at, source, revision, archived_at
                 FROM global_memories
-                WHERE category = ?
+                WHERE category = ? AND archived_at IS NULL
                 ORDER BY id DESC
                 LIMIT ?
             """, (category, limit)).fetchall()
         else:
             rows = db.execute("""
                 SELECT id, category, content, created_by_user_id,
-                       created_at, updated_at, source, revision
+                       created_at, updated_at, source, revision, archived_at
                 FROM global_memories
+                WHERE archived_at IS NULL
                 ORDER BY id DESC
                 LIMIT ?
             """, (limit,)).fetchall()
@@ -1097,7 +1117,7 @@ def get_global_memories(category=None, limit=100):
 def delete_global_memory(memory_id):
     with get_connection() as db:
         cursor = db.execute("""
-            DELETE FROM global_memories WHERE id = ?
+            DELETE FROM global_memories WHERE id = ? AND archived_at IS NULL
         """, (int(memory_id),))
 
     return cursor.rowcount > 0
@@ -1117,16 +1137,44 @@ def update_global_memory(memory_id, content, category=None):
             cursor = db.execute("""
                 UPDATE global_memories
                 SET content = ?, updated_at = ?, revision = revision + 1
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (content, now, int(memory_id)))
         else:
             cursor = db.execute("""
                 UPDATE global_memories
                 SET content = ?, category = ?, updated_at = ?, revision = revision + 1
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (content, str(category).strip() or "general",
                   now, int(memory_id)))
 
+    return cursor.rowcount > 0
+
+
+def set_memory_archived(scope, memory_id, archived, *, user_id=None, guild_id=None):
+    """Transition exactly one authorized record without changing its content metadata."""
+    if type(memory_id) is not int or memory_id < 1 or type(archived) is not bool:
+        raise ValueError("Memory ID atau status arsip tidak valid.")
+    selection = _memory_search_scope(scope, user_id, guild_id, archived=not archived)
+    if selection is None:
+        return False
+    table, where, params, columns = selection
+    with get_connection() as db:
+        # Serialize conflict check and restore with other SQLite writers.
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(f"SELECT {columns} FROM {table} WHERE {where} AND id = ?", (*params, memory_id)).fetchone()
+        if row is None:
+            return False
+        if not archived:
+            _, active_where, active_params, _ = _memory_search_scope(scope, user_id, guild_id)
+            active_where += " AND content = ?"
+            active_params += (row['content'],)
+            if scope == 'global':
+                active_where += " AND category = ?"
+                active_params += (row['category'],)
+            if db.execute(f"SELECT id FROM {table} WHERE {active_where} LIMIT 1", active_params).fetchone():
+                raise ArchivedMemoryError("Sudah ada Memory aktif dengan isi yang sama. Arsip tetap disimpan.")
+        cursor = db.execute(f"UPDATE {table} SET archived_at = ? WHERE {where} AND id = ?",
+                            (utc_now() if archived else None, *params, memory_id))
     return cursor.rowcount > 0
 
 

@@ -147,6 +147,9 @@ def init_schema():
         }.items():
             if name not in columns:
                 db.execute(f'ALTER TABLE web_conversations ADD COLUMN {name} {definition}')
+        feedback_columns = {r['name'] for r in db.execute('PRAGMA table_info(web_response_feedback)')}
+        if 'improvement_category' not in feedback_columns:
+            db.execute('ALTER TABLE web_response_feedback ADD COLUMN improvement_category TEXT')
         message_columns = {r['name'] for r in db.execute('PRAGMA table_info(web_messages)')}
         if 'request_id' not in message_columns:
             db.execute('ALTER TABLE web_messages ADD COLUMN request_id TEXT')
@@ -196,6 +199,7 @@ class Feedback(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     rating: Literal["good", "bad"]
     reason: str = Field(default="", max_length=500)
+    improvement_category: Literal["accuracy", "missing_context", "instructions", "clarity"] | None = None
 
 
 @router.get("/conversations")
@@ -238,7 +242,8 @@ def retrieve(cid: str, request: Request):
         messages = [
             dict(r)
             for r in db.execute(
-                """SELECT m.id,m.role,m.content,m.created_at,f.rating,f.reason AS feedback_reason
+                """SELECT m.id,m.role,m.content,m.created_at,f.rating,f.reason AS feedback_reason,
+                          f.improvement_category AS feedback_category
                    FROM web_messages m LEFT JOIN web_response_feedback f ON f.message_id=m.id
                    WHERE m.conversation_id=? ORDER BY m.id""",
                 (cid,),
@@ -281,6 +286,8 @@ def feedback(cid: str, message_id: int, request: Request, payload: Feedback):
     owner = identity(request)
     if payload.rating == "bad" and not payload.reason:
         raise HTTPException(422, "Please explain what should be improved.")
+    if payload.rating == "good" and payload.improvement_category:
+        raise HTTPException(422, "Only negative feedback can share an improvement category.")
     if payload.rating == "good" and payload.reason:
         raise HTTPException(422, "A good rating does not need a reason.")
     now = database.utc_now()
@@ -288,6 +295,8 @@ def feedback(cid: str, message_id: int, request: Request, payload: Feedback):
         db.execute("BEGIN IMMEDIATE")
         conversation = owned(db, cid, owner)
         settings = web_projects.project(db, conversation['project_id'], owner)
+        if payload.improvement_category and settings and settings["memory_mode"] == "project_only":
+            raise HTTPException(422, "Project-Only feedback stays in the project.")
         memory_owner = web_projects.memory_scope(owner, settings)
         if conversation["lease_until"] > time.time():
             raise HTTPException(409, "Wait until the response finishes.")
@@ -305,6 +314,9 @@ def feedback(cid: str, message_id: int, request: Request, payload: Feedback):
         if previous and previous["archived_at"] is not None:
             raise HTTPException(409, "This feedback memory is archived. Restore it before changing the rating.")
         if previous and previous["rating"] == payload.rating and previous["reason"] == payload.reason:
+            if previous["improvement_category"] != payload.improvement_category:
+                db.execute("UPDATE web_response_feedback SET improvement_category=?,updated_at=? WHERE id=?",
+                           (payload.improvement_category, now, previous["id"]))
             return {"rating": payload.rating, "reason": payload.reason}
         prompt = db.execute(
             "SELECT content FROM web_messages WHERE conversation_id=? AND id<? AND role='user' ORDER BY id DESC LIMIT 1",
@@ -329,8 +341,8 @@ def feedback(cid: str, message_id: int, request: Request, payload: Feedback):
             if not updated.rowcount:
                 raise HTTPException(409, "This feedback memory is archived. Restore it before changing the rating.")
             db.execute(
-                "UPDATE web_response_feedback SET rating=?,reason=?,updated_at=? WHERE id=?",
-                (payload.rating, payload.reason, now, previous["id"]),
+                "UPDATE web_response_feedback SET rating=?,reason=?,improvement_category=?,updated_at=? WHERE id=?",
+                (payload.rating, payload.reason, payload.improvement_category, now, previous["id"]),
             )
         else:
             db.execute(
@@ -342,8 +354,8 @@ def feedback(cid: str, message_id: int, request: Request, payload: Feedback):
                 (memory_owner, content, now, now),
             )
             db.execute(
-                "INSERT INTO web_response_feedback(message_id,identity_id,memory_id,rating,reason,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-                (message_id, owner, memory.lastrowid, payload.rating, payload.reason, now, now),
+                "INSERT INTO web_response_feedback(message_id,identity_id,memory_id,rating,reason,improvement_category,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (message_id, owner, memory.lastrowid, payload.rating, payload.reason, payload.improvement_category, now, now),
             )
     return {"rating": payload.rating, "reason": payload.reason}
 

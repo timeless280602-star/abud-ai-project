@@ -1190,7 +1190,101 @@ function SecurityProtocol({ user }) {
 }
 
 
-function NeuralEngine() {
+const improvementHints = {
+  accuracy: ['Accuracy', 'Distinguish supported facts from assumptions. Say what is uncertain.'],
+  missing_context: ['Missing context', 'State the relevant assumptions and address each constraint in the request.'],
+  instructions: ['Did not follow instructions', 'Check that the answer follows the user’s requested format and constraints.'],
+  clarity: ['Clarity', 'Lead with the answer and use short, concrete explanations.'],
+};
+
+function ImprovementPanel() {
+  const [categories, setCategories] = useState([]);
+  const [question, setQuestion] = useState('');
+  const [candidate, setCandidate] = useState('');
+  const [expected, setExpected] = useState('');
+  const [result, setResult] = useState(null);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [error, setError] = useState('');
+  const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api('/dashboard/improvement')
+      .then((data) => { if (active) setCategories(data.categories); })
+      .catch((e) => { if (active) setFeedbackError(e.message); });
+    return () => { active = false; };
+  }, []);
+
+  async function evaluate(event) {
+    event.preventDefault();
+    if (running) return;
+    setRunning(true);
+    setError('');
+    setResult(null);
+    try {
+      setResult(await api('/dashboard/improvement', {
+        method: 'POST',
+        body: JSON.stringify({
+          question, candidate_instruction: candidate, expected_text: expected,
+        }),
+      }));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <section className="data-panel security-panel" aria-label="ABUD Improvement">
+      <h2>ABUD Improvement</h2>
+      <p>Voluntary issue counts and a side-by-side test of a proposed Web Chat instruction.</p>
+      {feedbackError && <p role="alert">{feedbackError}</p>}
+      {categories.length > 0 && <ul>
+        {categories.map(({ category, count }) => (
+          <li key={category}>
+            {improvementHints[category]?.[0] || category}: {count}
+            {improvementHints[category] && <button type="button" className="outline-button"
+              disabled={running} onClick={() => setCandidate(improvementHints[category][1])}>
+              Use suggested instruction
+            </button>}
+          </li>
+        ))}
+      </ul>}
+      <form onSubmit={evaluate}>
+        <fieldset disabled={running}>
+          <legend>Compare baseline and candidate</legend>
+          <p>Use a synthetic question. Each run sends two requests to the active 9Router model.</p>
+          <label>Test question <textarea required maxLength={1500} value={question}
+            onChange={(event) => setQuestion(event.target.value)} /></label>
+          <label>Candidate instruction <textarea required maxLength={1200} value={candidate}
+            onChange={(event) => setCandidate(event.target.value)} /></label>
+          <label>Expected phrase <input required maxLength={240} value={expected}
+            onChange={(event) => setExpected(event.target.value)} /></label>
+          <button type="submit" className="outline-button"
+            disabled={!question.trim() || !candidate.trim() || !expected.trim()}>
+            {running ? 'Running comparison…' : 'Run comparison'}
+          </button>
+        </fieldset>
+      </form>
+      {error && <p role="alert">{error}</p>}
+      {result && <div aria-live="polite">
+        <p>{result.model} · {result.recommendation === 'review_candidate'
+          ? 'Candidate met the phrase check. Review both answers before applying any change.'
+          : 'This comparison needs more evidence.'}</p>
+        <p>The phrase check measures text matching only.</p>
+        {[['Baseline', result.baseline], ['Candidate', result.candidate]].map(([label, entry]) => (
+          <div key={label}>
+            <h3>{label} · {entry.matched ? 'Phrase found' : 'Phrase missing'}{entry.truncated ? ' · Truncated' : ''}</h3>
+            <p style={{ whiteSpace: 'pre-wrap' }}>{entry.answer}</p>
+          </div>
+        ))}
+      </div>}
+    </section>
+  );
+}
+
+function NeuralEngine({ user }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1310,6 +1404,8 @@ function NeuralEngine() {
           <span>{error}</span>
         </div>
       )}
+
+      {user.is_creator && <ImprovementPanel/>}
 
       <div className="neural-status-banner">
         <div className="neural-status-main">
@@ -2242,7 +2338,7 @@ function App() {
         {active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat/></React.Suspense> : active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
           active === 'memory' ? <MemoryMatrix user={user} guilds={guilds}/> :
           active === 'security' ? <SecurityProtocol user={user}/> :
-          active === 'neural' ? <NeuralEngine/> :
+          active === 'neural' ? <NeuralEngine user={user}/> :
           active === 'logs' ? <ActivityLogs/> :
           active === 'network' ? <NetworkCommand/> :
           <ModulePlaceholder module={current}/>}

@@ -44,8 +44,10 @@ export default function WebChat() {
   const [ratingId, setRatingId] = useState(null),
     [badRating, setBadRating] = useState(false),
     [reason, setReason] = useState(""),
+    [feedbackCategory, setFeedbackCategory] = useState(""),
     [ratingBusy, setRatingBusy] = useState(false),
     [speakingId, setSpeakingId] = useState(null);
+  const shareCategory = !projectId || projects.some((project) => project.id === projectId && project.memory_mode === "default");
   const sending = useRef(false);
   const [imageLoading, setImageLoading] = useState(false);
   const invalidatedChoices = useRef(new Set());
@@ -246,12 +248,13 @@ export default function WebChat() {
     setError("");
     const currentVersion = version.current;
     try {
+      const category = rating === "bad" && shareCategory ? feedbackCategory || null : null;
       const result = await (await api(`/${id}/messages/${message.id}/feedback`, "POST", {
-        rating, reason: rating === "bad" ? reason.trim() : "",
+        rating, reason: rating === "bad" ? reason.trim() : "", improvement_category: category,
       })).json();
       if (currentVersion !== version.current) return;
       setMessages((items) => items.map((item) => item.id === message.id
-        ? { ...item, rating: result.rating, feedback_reason: result.reason } : item));
+        ? { ...item, rating: result.rating, feedback_reason: result.reason, feedback_category: category } : item));
       setRatingId(null);
       setReason("");
       setNotice("Feedback saved to personal memory for future responses.");
@@ -346,6 +349,7 @@ export default function WebChat() {
                       setRatingId(ratingId === m.id ? null : m.id);
                       setBadRating(false);
                       setReason(m.feedback_reason || "");
+                      setFeedbackCategory(m.feedback_category || "");
                     }}>Rate response{m.rating ? ` · ${m.rating === "good" ? "Good" : "Bad"}` : ""}</button>
                   <button type="button" aria-pressed={speakingId === m.id}
                     onClick={(e) => readAloud(m, e.currentTarget)}>
@@ -364,6 +368,17 @@ export default function WebChat() {
                   <label htmlFor={`feedback-${m.id}`}>What was wrong or should be improved?</label>
                   <textarea id={`feedback-${m.id}`} value={reason} required maxLength={500}
                     disabled={ratingBusy} onChange={(e) => setReason(e.target.value)} />
+                  {shareCategory && <label>
+                    Share an issue category with the creator (optional)
+                    <select value={feedbackCategory} disabled={ratingBusy} onChange={(e) => setFeedbackCategory(e.target.value)}>
+                      <option value="">Keep feedback private</option>
+                      <option value="accuracy">Accuracy</option>
+                      <option value="missing_context">Missing context</option>
+                      <option value="instructions">Did not follow instructions</option>
+                      <option value="clarity">Clarity</option>
+                    </select>
+                    <small>Only the category is included in aggregate counts.</small>
+                  </label>}
                   <button disabled={ratingBusy || busy || !reason.trim()}>Submit feedback</button>
                 </form>}
                 <small>Saved as your personal response preference, used to guide future replies.</small>

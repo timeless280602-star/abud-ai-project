@@ -1,5 +1,7 @@
 
 import os
+import re
+import unicodedata
 import sqlite3
 from pathlib import Path
 from contextlib import contextmanager
@@ -665,6 +667,76 @@ def get_recent_messages(
         {"role": row["role"], "content": row["content"]}
         for row in reversed(rows)
     ]
+
+
+# ==============================================
+# RANKED MEMORY SEARCH
+# ==============================================
+
+def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
+    """Search one scope; callers must authorize the supplied identity first.
+
+    Rank contiguous token phrases above word overlap, then newest ID.
+    Empty queries list newest records (dashboard); punctuation alone matches none.
+    """
+    if not isinstance(query, str) or len(query.strip()) > 200:
+        raise ValueError("Query pencarian harus berupa teks maksimal 200 karakter.")
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError("Limit pencarian harus berupa bilangan bulat.")
+    limit = max(1, min(limit, 100))
+
+    if scope == "personal":
+        if not user_id:
+            return []
+        table, where, params = "memories", "user_id = ?", (str(user_id),)
+        columns = "id, content, created_at, updated_at"
+    elif scope == "guild":
+        if not guild_id:
+            return []
+        table, where, params = "guild_memories", "guild_id = ?", (str(guild_id),)
+        columns = "id, guild_id, content, created_by_user_id, created_at, updated_at"
+    elif scope == "global":
+        table, where, params = "global_memories", "1 = 1", ()
+        columns = "id, category, content, created_by_user_id, created_at, updated_at"
+    else:
+        raise ValueError("Scope Memory tidak valid.")
+
+    def tokens(text):
+        return re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
+
+    query = query.strip()
+    words = tokens(query)
+    terms = set(words)
+    phrase = " " + " ".join(words) + " "
+    if query and not words:
+        return []
+
+    def score(text):
+        content_words = tokens(text)
+        hits = len(terms.intersection(content_words))
+        if not hits:
+            return 0
+        # Query length bounds overlap below 1000, so phrase matches always lead.
+        return 1000 * (phrase in " " + " ".join(content_words) + " ") + hits
+
+    with get_connection() as db:
+        # ponytail: scan the authorized scope; add an FTS index when measured latency warrants it.
+        db.create_function("memory_score", 1, score, deterministic=True)
+        ranking = "memory_score(content)"
+        if scope == "global":
+            ranking = "MAX(memory_score(content), memory_score(category))"
+        if query:
+            rows = db.execute(f"""
+                SELECT {columns} FROM {table}
+                WHERE {where} AND {ranking} > 0
+                ORDER BY {ranking} DESC, id DESC LIMIT ?
+            """, (*params, limit)).fetchall()
+        else:
+            rows = db.execute(f"""
+                SELECT {columns} FROM {table}
+                WHERE {where} ORDER BY id DESC LIMIT ?
+            """, (*params, limit)).fetchall()
+    return [dict(row) for row in rows]
 
 
 # ==============================================

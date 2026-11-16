@@ -6,7 +6,7 @@ import {
   Cpu, Database, Fingerprint, Gauge, Globe, HardDrive, Hexagon,
   LayoutDashboard, LockKeyhole, LogOut, Menu, Network, Radio,
   RefreshCw, Server, Settings, Shield, ShieldCheck, Terminal,
-  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2
+  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
 } from 'lucide-react';
 import './style.css';
 
@@ -466,6 +466,7 @@ function MemoryMatrix({ user, guilds }) {
   );
   const [items, setItems] = useState([]);
   const [query, setQuery] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
   const [draft, setDraft] = useState('');
   const [category, setCategory] = useState('general');
   const [editingId, setEditingId] = useState(null);
@@ -475,7 +476,7 @@ function MemoryMatrix({ user, guilds }) {
   const [notice, setNotice] = useState('');
   const [review, setReview] = useState(null);
   const [reviewBusy, setReviewBusy] = useState(false);
-  const reviewKey = JSON.stringify([scope, selectedGuild, draft, category, editingId]);
+  const reviewKey = JSON.stringify([scope, selectedGuild, draft, category, editingId, showArchived]);
   const currentReview = review?.key === reviewKey ? review.data : null;
 
   const activeGuild = accessibleGuilds.find(
@@ -513,7 +514,7 @@ function MemoryMatrix({ user, guilds }) {
     }
 
     let alive = true;
-    const params = new URLSearchParams({ scope, q: query });
+    const params = new URLSearchParams({ scope, q: query, archived: String(showArchived) });
     if (scope === 'guild') params.set('guild_id', selectedGuild);
 
     setBusy(true);
@@ -534,10 +535,12 @@ function MemoryMatrix({ user, guilds }) {
       });
 
     return () => { alive = false; };
-  }, [scope, selectedGuild, query, reload, canView]);
+  }, [scope, selectedGuild, query, reload, canView, showArchived]);
 
   function changeScope(next) {
     setScope(next);
+    setItems([]);
+    setReview(null);
     setDraft('');
     setEditingId(null);
     setNotice('');
@@ -611,6 +614,31 @@ function MemoryMatrix({ user, guilds }) {
     setNotice('');
     setError('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function changeArchive(item) {
+    const archive = !showArchived;
+    if (archive && !window.confirm('Archive this memory? It will leave active memory and can be restored from the archive.')) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await api('/dashboard/memory/archive', {
+        method: 'POST',
+        body: JSON.stringify({ scope, guild_id: scope === 'guild' ? selectedGuild : null,
+          memory_id: item.id, archived: archive })
+      });
+      setItems([]);
+      setDraft('');
+      setEditingId(null);
+      setReview(null);
+      setNotice(archive ? 'Memory archived. Restore it from the archive when needed.' : 'Memory restored to active memory.');
+      setReload(v => v + 1);
+    } catch (e) {
+      setError(e.message || 'Unable to change archive status.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function deleteMemory(item) {
@@ -688,7 +716,7 @@ function MemoryMatrix({ user, guilds }) {
           {scope === 'guild' && (
             <label className="memory-field guild-select-field">
               <span>DISCORD SERVER</span>
-              <select value={selectedGuild} onChange={e => { setSelectedGuild(e.target.value); setEditingId(null); setDraft(''); }}>
+              <select value={selectedGuild} onChange={e => { setSelectedGuild(e.target.value); setItems([]); setEditingId(null); setDraft(''); setReview(null); }}>
                 {!accessibleGuilds.length && <option value="">No authorized servers</option>}
                 {accessibleGuilds.map(g => (
                   <option key={g.guild_id} value={g.guild_id}>{g.guild_name || g.guild_id}</option>
@@ -696,6 +724,12 @@ function MemoryMatrix({ user, guilds }) {
               </select>
             </label>
           )}
+          <label className="memory-archive-toggle">
+            <input type="checkbox" checked={showArchived} disabled={busy} onChange={e => {
+              setShowArchived(e.target.checked);setItems([]);setDraft('');setEditingId(null);setReview(null);setNotice('');
+            }}/>
+            Show archived memories
+          </label>
           <label className="memory-search">
             <Search size={15}/>
             <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search stored memories..."/>
@@ -720,7 +754,7 @@ function MemoryMatrix({ user, guilds }) {
         </div>
       )}
 
-      {canManage && (
+      {canManage && !showArchived && (
         <form className="memory-editor data-panel" onSubmit={submitMemory}>
           <div className="panel-title">
             <span><Plus size={15}/>{editingId ? 'EDIT MEMORY RECORD' : 'CREATE MEMORY RECORD'}</span>
@@ -806,12 +840,19 @@ function MemoryMatrix({ user, guilds }) {
                     {item.revision > 0 && <span>REVISION {item.revision}</span>}
                   </div>
                   <p>{item.content}</p>
-                  <small>UPDATED {item.updated_at || item.created_at || 'UNKNOWN'}</small>
+                  <small>{showArchived ? `ARCHIVED ${item.archived_at}` : `UPDATED ${item.updated_at || item.created_at || 'UNKNOWN'}`}</small>
                 </div>
                 {canManage && (
                   <div className="memory-record-actions">
-                    <button title="Edit memory" onClick={() => startEdit(item)} disabled={busy}><Pencil size={14}/></button>
-                    <button title="Delete memory" onClick={() => deleteMemory(item)} disabled={busy}><Trash2 size={14}/></button>
+                    {showArchived ? (
+                      <button title="Restore memory" onClick={() => changeArchive(item)} disabled={busy}><ArchiveRestore size={14}/></button>
+                    ) : (
+                      <>
+                        <button title="Edit memory" onClick={() => startEdit(item)} disabled={busy}><Pencil size={14}/></button>
+                        <button title="Archive memory" onClick={() => changeArchive(item)} disabled={busy}><Archive size={14}/></button>
+                        <button title="Delete memory" onClick={() => deleteMemory(item)} disabled={busy}><Trash2 size={14}/></button>
+                      </>
+                    )}
                   </div>
                 )}
               </article>

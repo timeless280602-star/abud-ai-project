@@ -636,3 +636,7 @@ body{background:#070708}
 .memory-record-meta{flex-wrap:wrap}
 
 .memory-review-disclosure{display:block;margin:0 15px 14px;font-size:10px;line-height:1.7;color:#a99da5}
+
+.memory-archive-toggle{display:flex;align-items:center;gap:8px;font-size:11px;color:#b9aeb4;white-space:nowrap}
+.memory-archive-toggle input{accent-color:#e03441}
+.memory-toolbar-body{flex-wrap:wrap}

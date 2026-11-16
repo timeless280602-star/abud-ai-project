@@ -198,6 +198,20 @@ def init_database():
         """)
 
 
+        # Additive migration: legacy provenance and revision history are unknown.
+        for table in ("memories", "guild_memories", "global_memories"):
+            columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            if "source" not in columns:
+                db.execute(f"""
+                    ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL
+                    DEFAULT 'unknown' CHECK(source IN ('unknown', 'direct', 'tool', 'auto', 'dashboard'))
+                """)
+            if "revision" not in columns:
+                db.execute(f"""
+                    ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL
+                    DEFAULT 0 CHECK(revision >= 0)
+                """)
+
         # ==========================================
         # DASHBOARD AUTHENTICATION
         # ==========================================
@@ -689,15 +703,15 @@ def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
         if not user_id:
             return []
         table, where, params = "memories", "user_id = ?", (str(user_id),)
-        columns = "id, content, created_at, updated_at"
+        columns = "id, content, created_at, updated_at, source, revision"
     elif scope == "guild":
         if not guild_id:
             return []
         table, where, params = "guild_memories", "guild_id = ?", (str(guild_id),)
-        columns = "id, guild_id, content, created_by_user_id, created_at, updated_at"
+        columns = "id, guild_id, content, created_by_user_id, created_at, updated_at, source, revision"
     elif scope == "global":
         table, where, params = "global_memories", "1 = 1", ()
-        columns = "id, category, content, created_by_user_id, created_at, updated_at"
+        columns = "id, category, content, created_by_user_id, created_at, updated_at, source, revision"
     else:
         raise ValueError("Scope Memory tidak valid.")
 
@@ -743,7 +757,12 @@ def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
 # PERSONAL MEMORY
 # ==============================================
 
-def save_memory(user_id, content):
+def _validate_memory_source(source):
+    if source not in ("unknown", "direct", "tool", "auto", "dashboard"):
+        raise ValueError("Sumber Memory tidak valid.")
+
+
+def save_memory(user_id, content, *, source="unknown"):
     if not user_id:
         raise ValueError("User ID wajib tersedia.")
 
@@ -751,6 +770,7 @@ def save_memory(user_id, content):
     if not content:
         raise ValueError("Isi memori tidak boleh kosong.")
 
+    _validate_memory_source(source)
     now = utc_now()
     user_id = str(user_id)
 
@@ -778,10 +798,10 @@ def save_memory(user_id, content):
 
         cursor = db.execute("""
             INSERT INTO memories (
-                user_id, content, created_at, updated_at
+                user_id, content, created_at, updated_at, source, revision
             )
-            VALUES (?, ?, ?, ?)
-        """, (user_id, content, now, now))
+            VALUES (?, ?, ?, ?, ?, 1)
+        """, (user_id, content, now, now, source))
 
         return cursor.lastrowid
 
@@ -792,7 +812,7 @@ def get_memories(user_id, limit=50):
 
     with get_connection() as db:
         rows = db.execute("""
-            SELECT id, content, created_at, updated_at
+            SELECT id, content, created_at, updated_at, source, revision
             FROM memories
             WHERE user_id = ?
             ORDER BY id DESC
@@ -828,7 +848,7 @@ def update_memory(user_id, memory_id, content):
     with get_connection() as db:
         cursor = db.execute("""
             UPDATE memories
-            SET content = ?, updated_at = ?
+            SET content = ?, updated_at = ?, revision = revision + 1
             WHERE id = ? AND user_id = ?
         """, (content, now, int(memory_id), str(user_id)))
 
@@ -839,7 +859,7 @@ def update_memory(user_id, memory_id, content):
 # GUILD MEMORY
 # ==============================================
 
-def save_guild_memory(guild_id, content, created_by_user_id=None):
+def save_guild_memory(guild_id, content, created_by_user_id=None, *, source="unknown"):
     if not guild_id:
         raise ValueError("Guild ID wajib tersedia.")
 
@@ -848,6 +868,7 @@ def save_guild_memory(guild_id, content, created_by_user_id=None):
         raise ValueError("Isi guild memory tidak boleh kosong.")
 
     guild_id = str(guild_id)
+    _validate_memory_source(source)
     now = utc_now()
 
     with get_connection() as db:
@@ -876,15 +897,16 @@ def save_guild_memory(guild_id, content, created_by_user_id=None):
         cursor = db.execute("""
             INSERT INTO guild_memories (
                 guild_id, content, created_by_user_id,
-                created_at, updated_at
+                created_at, updated_at, source, revision
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (
             guild_id,
             content,
             str(created_by_user_id) if created_by_user_id else None,
             now,
-            now
+            now,
+            source
         ))
 
         return cursor.lastrowid
@@ -897,7 +919,7 @@ def get_guild_memories(guild_id, limit=50):
     with get_connection() as db:
         rows = db.execute("""
             SELECT id, guild_id, content, created_by_user_id,
-                   created_at, updated_at
+                   created_at, updated_at, source, revision
             FROM guild_memories
             WHERE guild_id = ?
             ORDER BY id DESC
@@ -921,7 +943,7 @@ def update_guild_memory(guild_id, memory_id, content):
     with get_connection() as db:
         cursor = db.execute("""
             UPDATE guild_memories
-            SET content = ?, updated_at = ?
+            SET content = ?, updated_at = ?, revision = revision + 1
             WHERE id = ? AND guild_id = ?
         """, (
             content,
@@ -953,7 +975,8 @@ def delete_guild_memory(guild_id, memory_id):
 def save_global_memory(
     content,
     category="general",
-    created_by_user_id=None
+    created_by_user_id=None,
+    *, source="unknown"
 ):
     content = str(content).strip()
     category = str(category).strip() or "general"
@@ -961,6 +984,7 @@ def save_global_memory(
     if not content:
         raise ValueError("Isi global memory tidak boleh kosong.")
 
+    _validate_memory_source(source)
     now = utc_now()
 
     with get_connection() as db:
@@ -981,15 +1005,16 @@ def save_global_memory(
         cursor = db.execute("""
             INSERT INTO global_memories (
                 category, content, created_by_user_id,
-                created_at, updated_at
+                created_at, updated_at, source, revision
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (
             category,
             content,
             str(created_by_user_id) if created_by_user_id else None,
             now,
-            now
+            now,
+            source
         ))
 
         return cursor.lastrowid
@@ -1000,7 +1025,7 @@ def get_global_memories(category=None, limit=100):
         if category:
             rows = db.execute("""
                 SELECT id, category, content, created_by_user_id,
-                       created_at, updated_at
+                       created_at, updated_at, source, revision
                 FROM global_memories
                 WHERE category = ?
                 ORDER BY id DESC
@@ -1009,7 +1034,7 @@ def get_global_memories(category=None, limit=100):
         else:
             rows = db.execute("""
                 SELECT id, category, content, created_by_user_id,
-                       created_at, updated_at
+                       created_at, updated_at, source, revision
                 FROM global_memories
                 ORDER BY id DESC
                 LIMIT ?
@@ -1040,13 +1065,13 @@ def update_global_memory(memory_id, content, category=None):
         if category is None:
             cursor = db.execute("""
                 UPDATE global_memories
-                SET content = ?, updated_at = ?
+                SET content = ?, updated_at = ?, revision = revision + 1
                 WHERE id = ?
             """, (content, now, int(memory_id)))
         else:
             cursor = db.execute("""
                 UPDATE global_memories
-                SET content = ?, category = ?, updated_at = ?
+                SET content = ?, category = ?, updated_at = ?, revision = revision + 1
                 WHERE id = ?
             """, (content, str(category).strip() or "general",
                   now, int(memory_id)))

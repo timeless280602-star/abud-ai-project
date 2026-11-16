@@ -377,7 +377,7 @@ def validate_memory_scope(scope, context, write=False):
     raise ValueError("Scope Memory tidak valid.")
 
 
-def save_memory_tool(scope, content, context, category="general"):
+def save_memory_tool(scope, content, context, category="general", *, source="tool"):
     validate_memory_scope(scope, context, write=True)
 
     if not isinstance(content, str):
@@ -392,13 +392,14 @@ def save_memory_tool(scope, content, context, category="general"):
     guild_id = context.get("guild_id")
 
     if scope == "personal":
-        memory_id = database.save_memory(user_id, content)
+        memory_id = database.save_memory(user_id, content, source=source)
 
     elif scope == "guild":
         memory_id = database.save_guild_memory(
             guild_id,
             content,
-            created_by_user_id=user_id
+            created_by_user_id=user_id,
+            source=source
         )
 
     else:
@@ -406,7 +407,8 @@ def save_memory_tool(scope, content, context, category="general"):
         memory_id = database.save_global_memory(
             content,
             category=category,
-            created_by_user_id=user_id
+            created_by_user_id=user_id,
+            source=source
         )
 
     return {

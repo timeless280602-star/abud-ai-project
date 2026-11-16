@@ -22,6 +22,14 @@ const modules = [
   { id: 'settings', label: 'Core Settings', group: 'SYSTEM', icon: Settings }
 ];
 
+const MEMORY_SOURCE_LABELS = {
+  unknown: 'Unknown origin',
+  direct: 'Direct request',
+  tool: 'Assistant tool',
+  auto: 'Auto-saved',
+  dashboard: 'Dashboard'
+};
+
 const MANAGE_IMPLIES_VIEW = {
   'memory.personal.manage': 'memory.personal.view',
   'memory.guild.manage': 'memory.guild.view',
@@ -730,6 +738,8 @@ function MemoryMatrix({ user, guilds }) {
                   <div className="memory-record-meta">
                     <span>RECORD #{item.id}</span>
                     {item.category && <span className="memory-category">{item.category}</span>}
+                    <span>{MEMORY_SOURCE_LABELS[item.source] || 'Unknown origin'}</span>
+                    {item.revision > 0 && <span>REVISION {item.revision}</span>}
                   </div>
                   <p>{item.content}</p>
                   <small>UPDATED {item.updated_at || item.created_at || 'UNKNOWN'}</small>

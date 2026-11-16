@@ -67,6 +67,9 @@ def main():
             tokens.append(auth.create_session(owner))
 
         async def fixture_stream(messages):
+            if messages[-1]["content"] == "[test-id]":
+                yield "Halo, saya bisa membantu Anda dengan pertanyaan ini."
+                return
             if messages[-1]["content"] == "[test-error]":
                 yield "partial"
                 raise TimeoutError("private fixture error")

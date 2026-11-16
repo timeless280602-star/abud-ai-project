@@ -641,3 +641,4 @@ body{background:#070708}
 .memory-archive-toggle{display:flex;align-items:center;gap:8px;font-size:11px;color:#b9aeb4;white-space:nowrap}
 .memory-archive-toggle input{accent-color:#e03441}
 .memory-toolbar-body{flex-wrap:wrap}
+.chat-time{display:block;color:#a4adbc;font-size:11px;margin:3px 0 10px}.chat-message-actions{display:flex;flex-wrap:wrap;gap:8px}.chat-feedback{margin-top:12px;padding:12px;border:1px solid #364255;border-radius:8px}.chat-feedback label,.chat-feedback small{display:block;margin-top:10px}.chat-feedback small{color:#a4adbc;font-size:12px}.chat-feedback textarea{display:block;width:100%;min-height:80px;margin-top:8px;background:#101923;color:#fff;border:1px solid #364255;border-radius:6px;padding:10px;font:inherit}.chat-feedback textarea:focus-visible{outline:2px solid #80d4c0;outline-offset:2px}

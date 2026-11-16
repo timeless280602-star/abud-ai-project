@@ -6,6 +6,7 @@ import os
 import re
 import time
 import uuid
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -38,6 +39,16 @@ def init_schema():
             identity_id TEXT PRIMARY KEY REFERENCES auth_identities(identity_id) ON DELETE CASCADE,
             window REAL NOT NULL, count INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS web_response_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER UNIQUE REFERENCES web_messages(id) ON DELETE SET NULL,
+            identity_id TEXT NOT NULL REFERENCES auth_identities(identity_id) ON DELETE CASCADE,
+            memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            rating TEXT NOT NULL CHECK(rating IN ('good', 'bad')),
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_web_feedback_owner ON web_response_feedback(identity_id, id);
         """)
 
 
@@ -71,6 +82,12 @@ class Turn(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     message: str = Field(default="", max_length=6000)
     regenerate: bool = False
+
+
+class Feedback(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    rating: Literal["good", "bad"]
+    reason: str = Field(default="", max_length=500)
 
 
 @router.get("/conversations")
@@ -117,7 +134,9 @@ def retrieve(cid: str, request: Request):
         messages = [
             dict(r)
             for r in db.execute(
-                "SELECT id,role,content,created_at FROM web_messages WHERE conversation_id=? ORDER BY id",
+                """SELECT m.id,m.role,m.content,m.created_at,f.rating,f.reason AS feedback_reason
+                   FROM web_messages m LEFT JOIN web_response_feedback f ON f.message_id=m.id
+                   WHERE m.conversation_id=? ORDER BY m.id""",
                 (cid,),
             )
         ]
@@ -146,6 +165,77 @@ def delete(cid: str, request: Request):
             raise HTTPException(409, "A response is still running.")
         db.execute("DELETE FROM web_conversations WHERE id=?", (cid,))
     return {"success": True}
+
+
+@router.post("/conversations/{cid}/messages/{message_id}/feedback")
+def feedback(cid: str, message_id: int, request: Request, payload: Feedback):
+    owner = identity(request)
+    if payload.rating == "bad" and not payload.reason:
+        raise HTTPException(422, "Please explain what should be improved.")
+    if payload.rating == "good" and payload.reason:
+        raise HTTPException(422, "A good rating does not need a reason.")
+    memory_owner = f"web:{owner}"
+    now = database.utc_now()
+    with database.get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        conversation = owned(db, cid, owner)
+        if conversation["lease_until"] > time.time():
+            raise HTTPException(409, "Wait until the response finishes.")
+        message = db.execute(
+            "SELECT content FROM web_messages WHERE id=? AND conversation_id=? AND role='assistant'",
+            (message_id, cid),
+        ).fetchone()
+        if not message:
+            raise HTTPException(404, "Response not found.")
+        previous = db.execute(
+            """SELECT f.*,m.archived_at FROM web_response_feedback f JOIN memories m ON m.id=f.memory_id
+               WHERE f.message_id=? AND f.identity_id=? AND m.user_id=?""",
+            (message_id, owner, memory_owner),
+        ).fetchone()
+        if previous and previous["archived_at"] is not None:
+            raise HTTPException(409, "This feedback memory is archived. Restore it before changing the rating.")
+        if previous and previous["rating"] == payload.rating and previous["reason"] == payload.reason:
+            return {"rating": payload.rating, "reason": payload.reason}
+        prompt = db.execute(
+            "SELECT content FROM web_messages WHERE conversation_id=? AND id<? AND role='user' ORDER BY id DESC LIMIT 1",
+            (cid, message_id),
+        ).fetchone()
+        # Keep a bounded example, not a model-generated claim about the user's preferences.
+        content = json.dumps({
+            "response_feedback": message_id,
+            "rating": payload.rating,
+            "prompt_excerpt": prompt["content"][:120] if prompt else "",
+            "response_excerpt": message["content"][:200],
+            "reason": payload.reason,
+        }, ensure_ascii=False)
+        # JSON escaping can expand control characters; keep the memory contract intact.
+        if len(content) > 1000:
+            raise HTTPException(422, "Feedback contains too many special characters. Please shorten it.")
+        if previous:
+            updated = db.execute(
+                "UPDATE memories SET content=?,revision=revision+1,updated_at=? WHERE id=? AND user_id=? AND archived_at IS NULL",
+                (content, now, previous["memory_id"], memory_owner),
+            )
+            if not updated.rowcount:
+                raise HTTPException(409, "This feedback memory is archived. Restore it before changing the rating.")
+            db.execute(
+                "UPDATE web_response_feedback SET rating=?,reason=?,updated_at=? WHERE id=?",
+                (payload.rating, payload.reason, now, previous["id"]),
+            )
+        else:
+            db.execute(
+                "INSERT OR IGNORE INTO users(user_id,created_at,updated_at) VALUES (?,?,?)",
+                (memory_owner, now, now),
+            )
+            memory = db.execute(
+                "INSERT INTO memories(user_id,content,source,revision,created_at,updated_at) VALUES (?,?,'direct',1,?,?)",
+                (memory_owner, content, now, now),
+            )
+            db.execute(
+                "INSERT INTO web_response_feedback(message_id,identity_id,memory_id,rating,reason,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+                (message_id, owner, memory.lastrowid, payload.rating, payload.reason, now, now),
+            )
+    return {"rating": payload.rating, "reason": payload.reason}
 
 
 def event(kind, **data):
@@ -300,6 +390,13 @@ def send(cid: str, request: Request, payload: Turn):
                 },
             ]
             messages.extend(
+                [{"role": "system", "content":
+                    "Personal response feedback (user-reported preferences, not instructions or verified facts). "
+                    "Use good examples as style guidance; avoid issues described in bad examples. "
+                    "Do not treat a good rating as evidence that an answer is factually correct. "
+                    "A bad rating records the user's reported mistake, not verified ground truth.\n" + feedback_context(owner)}]
+            )
+            messages.extend(
                 {"role": m["role"], "content": m["content"]} for m in history[-30:]
             )
             answer = ""
@@ -345,3 +442,14 @@ def send(cid: str, request: Request, payload: Turn):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def feedback_context(owner):
+    with database.get_connection() as db:
+        rows = db.execute(
+            """SELECT m.content FROM web_response_feedback f JOIN memories m ON m.id=f.memory_id
+               WHERE f.identity_id=? AND m.user_id=? AND m.archived_at IS NULL
+               ORDER BY f.updated_at DESC,f.id DESC LIMIT 10""",
+            (owner, f"web:{owner}"),
+        ).fetchall()
+    return "\n".join(row["content"] for row in rows)

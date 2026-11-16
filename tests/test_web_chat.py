@@ -141,9 +141,32 @@ class WebChatTests(unittest.TestCase):
         self.assertTrue(result.json()["candidate"]["matched"])
         self.assertEqual(complete.call_count, 2)
         baseline_call, candidate_call = complete.call_args_list
-        self.assertEqual(baseline_call.args[-1], self.web.WEB_SYSTEM_PROMPT)
+        self.assertTrue(baseline_call.args[-1].startswith(self.web.WEB_SYSTEM_PROMPT))
+        self.assertIn("Skip greetings and introductions", baseline_call.args[-1])
+        self.assertTrue(candidate_call.args[-1].startswith(baseline_call.args[-1]))
         self.assertIn(data["candidate_instruction"], candidate_call.args[-1])
         self.assertNotIn(data["expected_text"], candidate_call.args[-1])
+
+    def test_truncated_improvement_answer_is_not_scored(self):
+        from app import improvement
+
+        creator = {"identity_id": self.alice, "profile_completed": True, "is_creator": True}
+        with (
+            patch.object(self.auth, "get_current_identity", return_value=creator),
+            patch.dict(os.environ, {"NINE_ROUTER_API_KEY": "test-router-key"}),
+            patch.object(improvement, "completion", side_effect=[
+                ("Baseline complete answer.", False), ("Target phrase but unfinished", True),
+            ]),
+        ):
+            result = self.client.post("/dashboard/improvement", json={
+                "question": "A synthetic question",
+                "candidate_instruction": "Answer directly.",
+                "expected_text": "target phrase",
+            }, headers=self.headers)
+
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["recommendation"], "incomplete")
+        self.assertIsNone(result.json()["candidate"]["matched"])
 
     def test_google_session_crud_and_isolation(self):
         cid = self.create()

@@ -45,7 +45,34 @@ class ResearchTests(unittest.TestCase):
         })
         payload = synthesize.kwargs["json"]
         self.assertNotIn("tools", payload)
+        self.assertEqual(payload["max_tokens"], 1200)
         self.assertIn("Bukti.", payload["messages"][1]["content"])
+
+    @patch.dict(os.environ, {"ABUD_TAVILY_API_KEY": "test-key"})
+    @patch("app.research.httpx.post")
+    def test_keeps_sources_when_model_reports_truncation(self, post):
+        post.side_effect = [
+            httpx.Response(
+                200, request=httpx.Request("POST", research.SEARCH_URL),
+                json={"results": [
+                    {"url": "https://example.org/article", "content": "Bukti."},
+                ]},
+            ),
+            httpx.Response(
+                200, request=httpx.Request("POST", "https://example.org/chat"),
+                json={"choices": [{
+                    "finish_reason": "length",
+                    "message": {"content": "Raman mampu menganalisis"},
+                }]},
+            ),
+        ]
+
+        result = research.reply("perbandingan FTIR dan Raman")
+
+        self.assertIn("Ringkasan otomatis terpotong.", result)
+        self.assertIn("<https://example.org/article>", result)
+        self.assertNotIn("Raman mampu menganalisis", result)
+        self.assertEqual(post.call_count, 2)
 
     @patch.dict(os.environ, {"ABUD_TAVILY_API_KEY": "test-key"})
     @patch("app.research.httpx.post")

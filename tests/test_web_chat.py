@@ -168,6 +168,47 @@ class WebChatTests(unittest.TestCase):
         self.assertEqual(result.json()["recommendation"], "incomplete")
         self.assertIsNone(result.json()["candidate"]["matched"])
 
+    def test_branch_copies_only_text_through_owned_assistant_message(self):
+        project = self.client.post("/web/chat/projects", headers=self.headers, json={
+            "name": "Private project", "memory_mode": "project_only",
+        })
+        self.assertEqual(project.status_code, 201, project.text)
+        project_id = project.json()["id"]
+        conversation = self.client.post("/web/chat/conversations", headers=self.headers, json={
+            "title": "Source", "project_id": project_id,
+        })
+        self.assertEqual(conversation.status_code, 201, conversation.text)
+        cid = conversation.json()["id"]
+        with self.db.get_connection() as db:
+            ids = [
+                db.execute(
+                    "INSERT INTO web_messages(conversation_id,role,content,created_at) VALUES (?,?,?,?)",
+                    (cid, role, content, self.db.utc_now()),
+                ).lastrowid
+                for role, content in [
+                    ("user", "Question"), ("assistant", "Answer"), ("user", "Later question"),
+                ]
+            ]
+
+        def path(message_id):
+            return f"/web/chat/conversations/{cid}/messages/{message_id}/branch"
+
+        self.assertEqual(self.client.post(path(ids[0]), headers=self.headers).status_code, 404)
+        self.client.cookies.set(self.auth.SESSION_COOKIE, self.bob_token)
+        self.assertEqual(self.client.post(path(ids[1]), headers=self.headers).status_code, 404)
+        self.client.cookies.set(self.auth.SESSION_COOKIE, self.alice_token)
+
+        response = self.client.post(path(ids[1]), headers=self.headers)
+        self.assertEqual(response.status_code, 201, response.text)
+        branch_id = response.json()["id"]
+        self.assertNotEqual(branch_id, cid)
+        detail = self.client.get(f"/web/chat/conversations/{branch_id}").json()
+        self.assertEqual(detail["project_id"], project_id)
+        self.assertEqual([message["content"] for message in detail["messages"]], ["Question", "Answer"])
+        self.assertTrue(all(message["id"] not in ids for message in detail["messages"]))
+        source = self.client.get(f"/web/chat/conversations/{cid}").json()
+        self.assertEqual(len(source["messages"]), 3)
+
     def test_google_session_crud_and_isolation(self):
         cid = self.create()
         self.assertFalse(self.client.get("/auth/me").json()["discord_linked"])

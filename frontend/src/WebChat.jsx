@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Copy, GitBranch, Share, ThumbsDown, ThumbsUp, Volume2, VolumeX } from "lucide-react";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import ChatOrganization from "./ChatOrganization";
@@ -27,7 +28,7 @@ function speechLanguage(text) {
 async function api(path = "", method = "GET", body) {
   return chatApi("/conversations" + path, method, body);
 }
-export default function WebChat() {
+export default function WebChat({ navigationTarget, onConversationOpen }) {
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState(null),
     [archived, setArchived] = useState(false),
@@ -46,6 +47,7 @@ export default function WebChat() {
     [reason, setReason] = useState(""),
     [feedbackCategory, setFeedbackCategory] = useState(""),
     [ratingBusy, setRatingBusy] = useState(false),
+    [branching, setBranching] = useState(false),
     [speakingId, setSpeakingId] = useState(null);
   const shareCategory = !projectId || projects.some((project) => project.id === projectId && project.memory_mode === "default");
   const sending = useRef(false);
@@ -106,7 +108,12 @@ export default function WebChat() {
     setError("");
     try {
       const d = await (await api("/" + cid)).json();
-      if (v === version.current) { setMessages(d.messages); setChoicesBlocked(false); setArchivedChat(Boolean(d.archived_at)); }
+      if (v === version.current) {
+        setMessages(d.messages);
+        setChoicesBlocked(false);
+        setArchivedChat(Boolean(d.archived_at));
+        onConversationOpen();
+      }
     } catch (e) {
       if (v === version.current) setError(e.message);
     } finally {
@@ -143,7 +150,7 @@ export default function WebChat() {
   async function send(regenerate = false, choiceText, sourceId) {
     const text = (choiceText ?? draft).trim();
     if (sourceId !== undefined && (choicesBlocked || invalidatedChoices.current.has(`${id}:${sourceId}`) || sourceId !== messages.at(-1)?.id)) return;
-    if (renderedVersion !== version.current || sending.current || busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!text || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
+    if (renderedVersion !== version.current || sending.current || busy || loading || ratingBusy || branching || archivedChat || !id || (!regenerate && (!text || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
     sending.current = true;
     setChoicesBlocked(true);
     const currentVersion = version.current;
@@ -242,6 +249,48 @@ export default function WebChat() {
       setImageLoading(false);
     }
   }
+  async function copyMessage(content) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setNotice("Message copied.");
+    } catch {
+      setError("Clipboard unavailable. Select and copy the message.");
+    }
+  }
+  async function shareResponse(message) {
+    setError("");
+    if (navigator.share) {
+      try {
+        await navigator.share({ text: message.content });
+        return;
+      } catch (error) {
+        if (error.name === "AbortError") return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setNotice("Response copied. Paste it where you want to share it.");
+    } catch {
+      setError("Sharing is unavailable. Select and copy the response.");
+    }
+  }
+  async function branchResponse(message) {
+    if (busy || ratingBusy || branching || sending.current) return;
+    const currentVersion = version.current;
+    setBranching(true);
+    setError("");
+    try {
+      const branch = await (await api(`/${id}/messages/${message.id}/branch`, "POST")).json();
+      if (currentVersion !== version.current) return;
+      if (archived) setArchived(false);
+      else await refresh();
+      if (currentVersion === version.current) await open(branch.id);
+    } catch (error) {
+      if (currentVersion === version.current) setError(error.message);
+    } finally {
+      setBranching(false);
+    }
+  }
   async function rate(message, rating) {
     if (ratingBusy || busy) return;
     setRatingBusy(true);
@@ -304,7 +353,7 @@ export default function WebChat() {
   }
   return (
     <section className="web-chat" aria-label="AI Chat">
-      <ChatOrganization list={list} projects={projects} projectId={projectId} archived={archived}
+      <ChatOrganization navigationTarget={navigationTarget} list={list} projects={projects} projectId={projectId} archived={archived}
         busy={busy || ratingBusy} id={id} onOpen={open} onCreate={create} onView={view}
         onRefresh={refresh} onChanged={organizationChanged} />
       <div className="chat-main">
@@ -333,30 +382,36 @@ export default function WebChat() {
                   group={choices}
                   disabled={busy || ratingBusy || choicesBlocked}
                   onSend={(text) => send(false, text, m.id)} />}
-              <div className="chat-message-actions">
-                <button type="button" onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(m.content);
-                    setNotice("Message copied.");
-                  } catch {
-                    setError("Clipboard unavailable. Select and copy the message.");
-                  }
-                }}>Copy</button>
-                {m.role === "assistant" && m.id && <>
-                  <button type="button" disabled={busy || ratingBusy}
-                    aria-expanded={ratingId === m.id} aria-label="Rate response"
-                    onClick={() => {
-                      setRatingId(ratingId === m.id ? null : m.id);
-                      setBadRating(false);
-                      setReason(m.feedback_reason || "");
-                      setFeedbackCategory(m.feedback_category || "");
-                    }}>Rate response{m.rating ? ` · ${m.rating === "good" ? "Good" : "Bad"}` : ""}</button>
-                  <button type="button" aria-pressed={speakingId === m.id}
-                    onClick={(e) => readAloud(m, e.currentTarget)}>
-                    {speakingId === m.id ? "Stop reading" : "Read aloud"}
-                  </button>
-                </>}
-              </div>
+              {m.role === "assistant" && m.id && <div className="chat-response-toolbar" role="group" aria-label="Response actions">
+                <button type="button" aria-label="Copy response" data-tooltip="Copy response"
+                  onClick={() => copyMessage(m.content)}><Copy size={16} aria-hidden="true"/></button>
+                <button type="button" disabled={busy || ratingBusy || branching} aria-label="Rate response"
+                  data-tooltip={m.rating ? `Rate response · ${m.rating === "good" ? "Good" : "Bad"}` : "Rate response"}
+                  data-rating={m.rating || undefined} aria-expanded={ratingId === m.id}
+                  onClick={() => {
+                    setRatingId(ratingId === m.id ? null : m.id);
+                    setBadRating(false);
+                    setReason(m.feedback_reason || "");
+                    setFeedbackCategory(m.feedback_category || "");
+                  }}>
+                  {m.rating === "bad" ? <ThumbsDown size={16} aria-hidden="true"/> : <ThumbsUp size={16} aria-hidden="true"/>}
+                </button>
+                <button type="button" aria-pressed={speakingId === m.id}
+                  aria-label={speakingId === m.id ? "Stop reading" : "Read aloud"}
+                  data-tooltip={speakingId === m.id ? "Stop reading" : "Read aloud"}
+                  onClick={(e) => readAloud(m, e.currentTarget)}>
+                  {speakingId === m.id ? <VolumeX size={16} aria-hidden="true"/> : <Volume2 size={16} aria-hidden="true"/>}
+                </button>
+                <button type="button" aria-label="Share response" data-tooltip="Share response"
+                  onClick={() => shareResponse(m)}><Share size={16} aria-hidden="true"/></button>
+                <button type="button" aria-label="Branch in new chat" data-tooltip="Branch in new chat"
+                  disabled={busy || ratingBusy || branching} onClick={() => branchResponse(m)}>
+                  <GitBranch size={16} aria-hidden="true"/>
+                </button>
+              </div>}
+              {m.role === "user" && <div className="chat-message-actions">
+                <button type="button" onClick={() => copyMessage(m.content)}>Copy</button>
+              </div>}
               {ratingId === m.id && <div className="chat-feedback" aria-label="Response feedback">
                 <div className="chat-message-actions">
                   <button type="button" disabled={ratingBusy || busy} onClick={() => rate(m, "good")}>Good response</button>

@@ -212,6 +212,18 @@ def conversations(request: Request, archived: bool = False, project_id: uuid.UUI
         return web_projects.list_conversations(db, owner, archived, project_id)
 
 
+def check_conversation_limit(db, owner):
+    if (
+        db.execute(
+            "SELECT count(*) FROM web_conversations WHERE identity_id=?", (owner,)
+        ).fetchone()[0]
+        >= 200
+    ):
+        raise HTTPException(
+            409, "Conversation limit reached. Delete an old conversation first."
+        )
+
+
 @router.post("/conversations", status_code=201)
 def create(request: Request, payload: NewConversation):
     owner = identity(request)
@@ -220,21 +232,43 @@ def create(request: Request, payload: NewConversation):
     with database.get_connection() as db:
         db.execute("BEGIN IMMEDIATE")
         web_projects.project(db, payload.project_id, owner)
-        if (
-            db.execute(
-                "SELECT count(*) FROM web_conversations WHERE identity_id=?", (owner,)
-            ).fetchone()[0]
-            >= 200
-        ):
-            raise HTTPException(
-                409, "Conversation limit reached. Delete an old conversation first."
-            )
+        check_conversation_limit(db, owner)
         db.execute(
             "INSERT INTO web_conversations(id,identity_id,title,updated_at,project_id,title_state) VALUES (?,?,?,?,?,?)",
             (cid, owner, payload.title, now, str(payload.project_id) if payload.project_id else None,
              'pending' if 'title' not in payload.model_fields_set else 'manual'),
         )
     return {"id": cid, "title": payload.title, "updated_at": now}
+
+
+@router.post("/conversations/{cid}/messages/{message_id}/branch", status_code=201)
+def branch_conversation(cid: str, message_id: int, request: Request):
+    owner = identity(request)
+    branch_id = str(uuid.uuid4())
+    now = database.utc_now()
+    with database.get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        source = owned(db, cid, owner)
+        message = db.execute(
+            "SELECT 1 FROM web_messages WHERE conversation_id=? AND id=? AND role='assistant'",
+            (cid, message_id),
+        ).fetchone()
+        if message is None:
+            raise HTTPException(404, "Response not found.")
+        check_conversation_limit(db, owner)
+        title = ("Branch: " + source["title"])[:100]
+        db.execute(
+            """INSERT INTO web_conversations(id,identity_id,title,updated_at,project_id,title_state)
+               VALUES (?,?,?,?,?,'manual')""",
+            (branch_id, owner, title, now, source["project_id"]),
+        )
+        db.execute(
+            """INSERT INTO web_messages(conversation_id,role,content,created_at)
+               SELECT ?,role,content,created_at FROM web_messages
+               WHERE conversation_id=? AND id<=? ORDER BY id""",
+            (branch_id, cid, message_id),
+        )
+    return {"id": branch_id, "title": title, "updated_at": now}
 
 
 @router.get("/conversations/{cid}")

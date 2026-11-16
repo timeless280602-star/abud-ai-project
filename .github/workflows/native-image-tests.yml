@@ -34,6 +34,11 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
       ABUD_DATABASE_PATH: /tmp/abud-ci-bootstrap.db
       ABUD_BASE_URL: https://example.test
+      DISCORD_OAUTH_CLIENT_ID: ci-discord-client
+      DISCORD_OAUTH_CLIENT_SECRET: ci-discord-secret
+      GOOGLE_OAUTH_CLIENT_ID: ci-google-client
+      GOOGLE_OAUTH_CLIENT_SECRET: ci-google-secret
+      ABUD_SESSION_SECRET: ci-session-secret-for-tests-only-not-production
     steps:
       - name: Check out PR branch
         uses: actions/checkout@v4

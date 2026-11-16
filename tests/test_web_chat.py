@@ -83,6 +83,68 @@ class WebChatTests(unittest.TestCase):
             headers=self.headers,
         )
 
+    def test_improvement_counts_only_voluntarily_shared_categories(self):
+        cid = self.create()
+        now = self.db.utc_now()
+        with self.db.get_connection() as db:
+            ids = [
+                db.execute(
+                    "INSERT INTO web_messages(conversation_id,role,content,created_at) VALUES (?,'assistant',?,?)",
+                    (cid, f"Private answer {index}", now),
+                ).lastrowid
+                for index in range(2)
+            ]
+        for index, message_id in enumerate(ids):
+            data = {"rating": "bad", "reason": "A private correction"}
+            if index == 1:
+                data["improvement_category"] = "accuracy"
+            result = self.client.post(
+                f"/web/chat/conversations/{cid}/messages/{message_id}/feedback",
+                json=data, headers=self.headers,
+            )
+            self.assertEqual(result.status_code, 200, result.text)
+
+        path = "/dashboard/improvement"
+        self.assertEqual(self.client.get(path).status_code, 403)
+        creator = {"identity_id": self.alice, "profile_completed": True, "is_creator": True}
+        with patch.object(self.auth, "get_current_identity", return_value=creator):
+            result = self.client.get(path)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json(), {"categories": [{"category": "accuracy", "count": 1}]})
+
+    def test_improvement_comparison_is_creator_only_and_requires_same_origin(self):
+        from app import improvement
+
+        path = "/dashboard/improvement"
+        data = {
+            "question": "A synthetic question",
+            "candidate_instruction": "Mention the requested marker.",
+            "expected_text": "target phrase",
+        }
+        self.assertEqual(self.client.post(path, json=data, headers=self.headers).status_code, 403)
+        creator = {"identity_id": self.alice, "profile_completed": True, "is_creator": True}
+        with (
+            patch.object(self.auth, "get_current_identity", return_value=creator),
+            patch.dict(os.environ, {"NINE_ROUTER_API_KEY": "test-router-key"}),
+            patch.object(improvement, "completion", side_effect=[
+                ("Baseline answer", False), ("Answer with TARGET phrase.", False),
+            ]) as complete,
+        ):
+            denied = self.client.post(path, json=data, headers={"Origin": "https://other.example"})
+            self.assertEqual(denied.status_code, 403)
+            complete.assert_not_called()
+            result = self.client.post(path, json=data, headers=self.headers)
+
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["recommendation"], "review_candidate")
+        self.assertFalse(result.json()["baseline"]["matched"])
+        self.assertTrue(result.json()["candidate"]["matched"])
+        self.assertEqual(complete.call_count, 2)
+        baseline_call, candidate_call = complete.call_args_list
+        self.assertEqual(baseline_call.args[-1], self.web.WEB_SYSTEM_PROMPT)
+        self.assertIn(data["candidate_instruction"], candidate_call.args[-1])
+        self.assertNotIn(data["expected_text"], candidate_call.args[-1])
+
     def test_google_session_crud_and_isolation(self):
         cid = self.create()
         self.assertFalse(self.client.get("/auth/me").json()["discord_linked"])

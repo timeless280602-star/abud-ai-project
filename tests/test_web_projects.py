@@ -45,6 +45,9 @@ class ProjectTests(unittest.TestCase):
         pid = self.project('project_only', description='Private work', instructions='Use Indonesian')
         url = '/web/chat/projects/' + pid
         self.assertEqual(self.client.get('/web/chat/projects').json()[0]['conversation_count'], 0)
+        self.assertEqual(self.client.patch(url, json={'name': 'Renamed only'}, headers=self.headers).status_code, 200)
+        preserved = self.client.get(url).json()
+        self.assertEqual((preserved['description'], preserved['instructions']), ('Private work', 'Use Indonesian'))
         self.assertEqual(self.client.patch(url, json={'name': 'Updated', 'instructions': 'Use English'}, headers=self.headers).status_code, 200)
         self.assertEqual(self.client.get(url).json()['memory_mode'], 'project_only')
         self.assertEqual(self.client.patch(url, json={'name': 'Updated', 'memory_mode': 'default'}, headers=self.headers).status_code, 422)

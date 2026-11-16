@@ -130,3 +130,34 @@ Rollback ke versi pra-Projects tidak aman setelah data Project-Only dibuat karen
 kode lama tidak memahami scope tersebut. Batasi akses sebelum rollback dan ikuti
 kebijakan backup/restore pada panduan fitur; jangan menjalankan API lama terhadap
 riwayat project-only yang masih aktif.
+
+## Uji Compose Projects otomatis (lokal dan disposable)
+
+Setelah membangun image Projects, jalankan dari root repository:
+
+```sh
+python tests/check_projects_staging.py --image abud-web-chat-projects:local
+```
+
+Skrip hanya memakai socket Docker lokal `/var/run/docker.sock`, memeriksa port
+loopback 18000 sebelum mulai, dan membuat project Compose bernama acak. Konfigurasi
+efektif harus hanya memuat API, named volume baru, tanpa host bind mount atau
+network eksternal. Image harus sudah tersedia; image tidak dibangun atau di-pull
+secara otomatis. Tidak ada bot yang dijalankan.
+
+Environment uji dibuat sementara dengan izin 0600, secret sesi/internal acak,
+OAuth dummy, serta key AI kosong. Dua identitas dan sesi fixture dibuat hanya di
+database disposable. Token tidak ditampilkan. Uji HTTP lokal ini tidak menggantikan
+verifikasi HTTPS/OAuth/provider asli di server staging.
+
+Pemeriksaan mencakup startup UID 10001, auth/CSRF/ownership, mode immutable,
+rename tanpa kehilangan deskripsi/instruksi, pin, arsip/restore, penolakan move
+lintas Project-Only, penyimpanan memory ketika provider gagal, integritas SQLite,
+lease yang dilepas, persistensi sesi/data setelah restart, dan delete eksplisit.
+Container/network/volume milik project uji itu saja dihapus melalui `finally`.
+Jangan menjalankan perintah penghapusan volume untuk stack production.
+
+Hasil pada lanjutan verifikasi 16 November 2026: uji Compose ini lulus dengan
+image Projects terbaru. Seluruh 66 unittest juga lulus ulang pada Python 3.12
+dan Python 3.11 dalam image non-root dengan network dimatikan. Deployment server,
+Google OAuth asli, 9router asli dan proxy HTTPS staging masih belum dilakukan.

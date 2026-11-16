@@ -133,9 +133,11 @@ def update_project(pid: uuid.UUID, request: Request, payload: ProjectSettings):
     owner = actor(request)
     with database.get_connection() as db:
         db.execute('BEGIN IMMEDIATE')
-        project(db, pid, owner)
+        existing = project(db, pid, owner)
+        description = payload.description if 'description' in payload.model_fields_set else existing['description']
+        instructions = payload.instructions if 'instructions' in payload.model_fields_set else existing['instructions']
         db.execute('UPDATE web_projects SET name=?,description=?,instructions=?,updated_at=? WHERE id=? AND identity_id=?',
-                   (payload.name, payload.description, payload.instructions, database.utc_now(), str(pid), owner))
+                   (payload.name, description, instructions, database.utc_now(), str(pid), owner))
         return project(db, pid, owner)
 
 

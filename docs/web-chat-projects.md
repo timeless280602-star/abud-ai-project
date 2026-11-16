@@ -164,3 +164,17 @@ dan staging, tidak otomatis di-deploy atau di-merge.
 - `git diff --check` lulus. Tidak ada deployment, merge, startup bot, atau akses
   SQLite production dalam pengerjaan ini. Google/9router sungguhan masih menjadi
   acceptance check staging, termasuk kualitas judul semantik dari model asli.
+
+### Lanjutan verifikasi staging lokal
+
+Endpoint rename project sekarang mempertahankan deskripsi dan instruksi existing
+jika field itu tidak dikirim. Nilai kosong yang dikirim eksplisit tetap menghapus
+field yang dipilih. Regression test dan acceptance Compose memastikan perilaku ini.
+
+Uji `python tests/check_projects_staging.py --image abud-web-chat-projects:local`
+lulus terhadap image API asli dengan named volume baru dan sesi disposable,
+termasuk restart API serta provider yang sengaja tidak tersedia. Database lulus
+`integrity_check` dan `foreign_key_check`; memory tersimpan di namespace project
+milik identitas yang benar. Seluruh stack uji dibersihkan setelah selesai.
+66 unittest lulus ulang di Python 3.12 dan image Python 3.11 non-root/offline.
+Lihat staging/README.md untuk mekanisme isolasi dan cara menjalankannya kembali.

@@ -43,7 +43,7 @@ class MemoryMetadataTests(unittest.TestCase):
             database.init_database()
             with database.get_connection() as db:
                 for table, original in before.items():
-                    self.assertEqual(dict(db.execute(f'SELECT * FROM {table}').fetchone()), {**original, 'source': 'unknown', 'revision': 0})
+                    self.assertEqual(dict(db.execute(f'SELECT * FROM {table}').fetchone()), {**original, 'source': 'unknown', 'revision': 0, 'archived_at': None})
                 self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
             self.assertGreater(database.save_memory('alice', 'baru', source='direct'), 42)
             self.assertEqual(database.search_memories('personal', 'kopi', user_id='alice')[0]['revision'], 0)

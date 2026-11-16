@@ -6,7 +6,7 @@ import {
   Cpu, Database, Fingerprint, Gauge, Globe, HardDrive, Hexagon,
   LayoutDashboard, LockKeyhole, LogOut, Menu, Network, Radio,
   RefreshCw, Server, Settings, Shield, ShieldCheck, Terminal,
-  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2
+  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
 } from 'lucide-react';
 import './style.css';
 const WebChat = React.lazy(() => import('./WebChat'));
@@ -470,6 +470,7 @@ function MemoryMatrix({ user, guilds }) {
   );
   const [items, setItems] = useState([]);
   const [query, setQuery] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
   const [draft, setDraft] = useState('');
   const [category, setCategory] = useState('general');
   const [editingId, setEditingId] = useState(null);
@@ -477,6 +478,10 @@ function MemoryMatrix({ user, guilds }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [review, setReview] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const reviewKey = JSON.stringify([scope, selectedGuild, draft, category, editingId, showArchived]);
+  const currentReview = review?.key === reviewKey ? review.data : null;
 
   const activeGuild = accessibleGuilds.find(
     g => String(g.guild_id) === String(selectedGuild)
@@ -513,7 +518,7 @@ function MemoryMatrix({ user, guilds }) {
     }
 
     let alive = true;
-    const params = new URLSearchParams({ scope, q: query });
+    const params = new URLSearchParams({ scope, q: query, archived: String(showArchived) });
     if (scope === 'guild') params.set('guild_id', selectedGuild);
 
     setBusy(true);
@@ -534,10 +539,12 @@ function MemoryMatrix({ user, guilds }) {
       });
 
     return () => { alive = false; };
-  }, [scope, selectedGuild, query, reload, canView]);
+  }, [scope, selectedGuild, query, reload, canView, showArchived]);
 
   function changeScope(next) {
     setScope(next);
+    setItems([]);
+    setReview(null);
     setDraft('');
     setEditingId(null);
     setNotice('');
@@ -575,6 +582,35 @@ function MemoryMatrix({ user, guilds }) {
     }
   }
 
+  async function checkSimilar(useAI) {
+    const key = reviewKey;
+    setReviewBusy(true);
+    setError('');
+    try {
+      const data = await api('/dashboard/memory/similar', {
+        method: 'POST',
+        body: JSON.stringify({
+          scope, guild_id: scope === 'guild' ? selectedGuild : null,
+          content: draft.trim(), category,
+          exclude_memory_id: editingId, use_ai: useAI
+        })
+      });
+      setReview({ key, data });
+    } catch (e) {
+      setReview({ key, data: { items: [], error: e.message || 'Review unavailable.' } });
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  function useCandidate(item, combine) {
+    setEditingId(item.id);
+    setDraft(combine ? `${item.content}\n${draft}` : draft);
+    setCategory(item.category || 'general');
+    setNotice('Review the draft, then save to update this record. No record has been changed or deleted.');
+    setReview(null);
+  }
+
   function startEdit(item) {
     setEditingId(item.id);
     setDraft(item.content || '');
@@ -582,6 +618,31 @@ function MemoryMatrix({ user, guilds }) {
     setNotice('');
     setError('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function changeArchive(item) {
+    const archive = !showArchived;
+    if (archive && !window.confirm('Archive this memory? It will leave active memory and can be restored from the archive.')) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await api('/dashboard/memory/archive', {
+        method: 'POST',
+        body: JSON.stringify({ scope, guild_id: scope === 'guild' ? selectedGuild : null,
+          memory_id: item.id, archived: archive })
+      });
+      setItems([]);
+      setDraft('');
+      setEditingId(null);
+      setReview(null);
+      setNotice(archive ? 'Memory archived. Restore it from the archive when needed.' : 'Memory restored to active memory.');
+      setReload(v => v + 1);
+    } catch (e) {
+      setError(e.message || 'Unable to change archive status.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function deleteMemory(item) {
@@ -659,7 +720,7 @@ function MemoryMatrix({ user, guilds }) {
           {scope === 'guild' && (
             <label className="memory-field guild-select-field">
               <span>DISCORD SERVER</span>
-              <select value={selectedGuild} onChange={e => { setSelectedGuild(e.target.value); setEditingId(null); setDraft(''); }}>
+              <select value={selectedGuild} onChange={e => { setSelectedGuild(e.target.value); setItems([]); setEditingId(null); setDraft(''); setReview(null); }}>
                 {!accessibleGuilds.length && <option value="">No authorized servers</option>}
                 {accessibleGuilds.map(g => (
                   <option key={g.guild_id} value={g.guild_id}>{g.guild_name || g.guild_id}</option>
@@ -667,6 +728,12 @@ function MemoryMatrix({ user, guilds }) {
               </select>
             </label>
           )}
+          <label className="memory-archive-toggle">
+            <input type="checkbox" checked={showArchived} disabled={busy} onChange={e => {
+              setShowArchived(e.target.checked);setItems([]);setDraft('');setEditingId(null);setReview(null);setNotice('');
+            }}/>
+            Show archived memories
+          </label>
           <label className="memory-search">
             <Search size={15}/>
             <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search stored memories..."/>
@@ -691,7 +758,7 @@ function MemoryMatrix({ user, guilds }) {
         </div>
       )}
 
-      {canManage && (
+      {canManage && !showArchived && (
         <form className="memory-editor data-panel" onSubmit={submitMemory}>
           <div className="panel-title">
             <span><Plus size={15}/>{editingId ? 'EDIT MEMORY RECORD' : 'CREATE MEMORY RECORD'}</span>
@@ -709,12 +776,43 @@ function MemoryMatrix({ user, guilds }) {
             <small>{draft.length}/1000 CHARACTERS</small>
           </label>
           <div className="memory-editor-actions">
+            <button type="button" className="outline-button" onClick={() => checkSimilar(false)} disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000}>
+              CHECK SIMILAR WORDING
+            </button>
+            <button type="button" className="outline-button" onClick={() => checkSimilar(true)} disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000}>
+              {reviewBusy ? 'REVIEWING...' : 'REVIEW MEANING WITH AI'}
+            </button>
+          </div>
+          <small className="memory-review-disclosure">AI review sends this draft and up to five memories from this scope to your configured AI service. Suggestions never change records.</small>
+          {draft.length > 1000 && <p className="memory-error">Shorten the combined draft to 1000 characters before saving.</p>}
+          {currentReview && (
+            <section className="memory-review" aria-label="Similar memory suggestions" aria-live="polite">
+              <h3>REVIEW SIMILAR MEMORIES</h3>
+              {currentReview.error && <p>{currentReview.error}</p>}
+              {['not_configured', 'unavailable'].includes(currentReview.ai_status) && <p>AI review unavailable. Wording matches are shown below.</p>}
+              {!currentReview.error && !currentReview.items.length && <p>No candidates found by this review. Other memories may still describe the same fact.</p>}
+              {currentReview.items.map(item => (
+                <article className="memory-review-candidate" key={item.id}>
+                  <strong>RECORD #{item.id}</strong>
+                  <p>{item.content}</p>
+                  <small>{item.reason}</small>
+                  {item.ai_relation && <p>AI suggestion: {item.ai_relation} — {item.ai_reason}</p>}
+                  <div className="memory-editor-actions">
+                    <button type="button" className="outline-button" onClick={() => useCandidate(item, false)} disabled={busy}>UPDATE THIS RECORD</button>
+                    <button type="button" className="outline-button" onClick={() => useCandidate(item, true)} disabled={busy}>COMBINE INTO DRAFT</button>
+                  </div>
+                </article>
+              ))}
+              <button type="button" className="outline-button" disabled={busy} onClick={() => {setEditingId(null);setReview(null);setNotice('Kept as a separate draft. Save when ready; identical text still uses existing deduplication.');}}>KEEP AS SEPARATE DRAFT</button>
+            </section>
+          )}
+          <div className="memory-editor-actions">
             {editingId && (
               <button type="button" className="outline-button" onClick={() => {setEditingId(null);setDraft('');}}>
                 <X size={14}/> CANCEL
               </button>
             )}
-            <button type="submit" className="memory-primary-button" disabled={busy || !draft.trim() || (scope === 'guild' && !selectedGuild)}>
+            <button type="submit" className="memory-primary-button" disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000 || (scope === 'guild' && !selectedGuild)}>
               <Save size={14}/> {busy ? 'PROCESSING...' : editingId ? 'UPDATE MEMORY' : 'SAVE MEMORY'}
             </button>
           </div>
@@ -746,12 +844,19 @@ function MemoryMatrix({ user, guilds }) {
                     {item.revision > 0 && <span>REVISION {item.revision}</span>}
                   </div>
                   <p>{item.content}</p>
-                  <small>UPDATED {item.updated_at || item.created_at || 'UNKNOWN'}</small>
+                  <small>{showArchived ? `ARCHIVED ${item.archived_at}` : `UPDATED ${item.updated_at || item.created_at || 'UNKNOWN'}`}</small>
                 </div>
                 {canManage && (
                   <div className="memory-record-actions">
-                    <button title="Edit memory" onClick={() => startEdit(item)} disabled={busy}><Pencil size={14}/></button>
-                    <button title="Delete memory" onClick={() => deleteMemory(item)} disabled={busy}><Trash2 size={14}/></button>
+                    {showArchived ? (
+                      <button title="Restore memory" onClick={() => changeArchive(item)} disabled={busy}><ArchiveRestore size={14}/></button>
+                    ) : (
+                      <>
+                        <button title="Edit memory" onClick={() => startEdit(item)} disabled={busy}><Pencil size={14}/></button>
+                        <button title="Archive memory" onClick={() => changeArchive(item)} disabled={busy}><Archive size={14}/></button>
+                        <button title="Delete memory" onClick={() => deleteMemory(item)} disabled={busy}><Trash2 size={14}/></button>
+                      </>
+                    )}
                   </div>
                 )}
               </article>

@@ -21,6 +21,7 @@ export default function WebChat() {
     [id, setId] = useState(null),
     [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState(""),
+    [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -39,6 +40,7 @@ export default function WebChat() {
   }, [messages]);
   async function open(cid) {
     const v = ++version.current;
+    setLoading(true);
     setId(cid);
     setMessages([]);
     setError("");
@@ -46,7 +48,9 @@ export default function WebChat() {
       const d = await (await api("/" + cid)).json();
       if (v === version.current) setMessages(d.messages);
     } catch (e) {
-      setError(e.message);
+      if (v === version.current) setError(e.message);
+    } finally {
+      if (v === version.current) setLoading(false);
     }
   }
   async function create() {
@@ -81,7 +85,7 @@ export default function WebChat() {
     }
   }
   async function send(regenerate = false) {
-    if (busy || !id || (!regenerate && !draft.trim())) return;
+    if (busy || loading || !id || (!regenerate && !draft.trim())) return;
     setBusy(true);
     setError("");
     setNotice("");
@@ -125,6 +129,7 @@ export default function WebChat() {
           if (e.type === "error") throw Error(e.message);
           if (e.type === "done") complete = true;
           if (e.type === "memory_saved") setNotice("Personal memory saved.");
+          if (e.type === "memory_not_saved") setNotice(e.message);
           if (e.type === "delta") {
             answer += e.text;
             setMessages([...base, { role: "assistant", content: answer }]);
@@ -241,14 +246,14 @@ export default function WebChat() {
             <div>
               <button
                 disabled={
-                  busy || !draft.trim() || messages.at(-1)?.role === "user"
+                  busy || loading || !draft.trim() || messages.at(-1)?.role === "user"
                 }
               >
                 Send
               </button>
               <button
                 type="button"
-                disabled={busy || !messages.length}
+                disabled={busy || loading || !messages.length}
                 onClick={() => send(true)}
               >
                 Regenerate response

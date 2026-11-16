@@ -140,6 +140,7 @@ def rename(cid: str, request: Request, payload: Title):
 def delete(cid: str, request: Request):
     owner = identity(request)
     with database.get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         row = owned(db, cid, owner)
         if row["lease_until"] > time.time():
             raise HTTPException(409, "A response is still running.")
@@ -196,6 +197,7 @@ def send(cid: str, request: Request, payload: Turn):
     if payload.regenerate and payload.message:
         raise HTTPException(422, "Regeneration cannot include a new message.")
     now = time.time()
+    lease_until = now + 150
     with database.get_connection() as db:
         db.execute("BEGIN IMMEDIATE")
         row = owned(db, cid, owner)
@@ -242,7 +244,7 @@ def send(cid: str, request: Request, payload: Turn):
             history.append({"role": "user", "content": payload.message})
         db.execute(
             "UPDATE web_conversations SET lease_until=?,updated_at=? WHERE id=?",
-            (now + 150, database.utc_now(), cid),
+            (lease_until, database.utc_now(), cid),
         )
 
     async def generate():
@@ -260,11 +262,19 @@ def send(cid: str, request: Request, payload: Turn):
             if english:
                 content = english.group(1).strip()
             saved = False
+            memory_status = "No memory action was performed on this turn. Do not claim it was."
             if content and len(content) <= 1000 and not payload.regenerate:
-                database.register_user(memory_owner)
-                database.save_memory(memory_owner, content, source="direct")
-                saved = True
-                yield event("memory_saved")
+                try:
+                    database.save_memory(memory_owner, content, source="direct")
+                except database.ArchivedMemoryError:
+                    memory_status = "This personal memory is archived. It was not saved or restored."
+                    yield event("memory_not_saved", message=memory_status)
+                else:
+                    saved = True
+                    yield event("memory_saved")
+            elif content and len(content) > 1000 and not payload.regenerate:
+                memory_status = "Personal memory was not saved: the limit is 1000 characters."
+                yield event("memory_not_saved", message=memory_status)
             memories = database.search_memories(
                 "personal", query[:200], user_id=memory_owner, limit=5
             )
@@ -285,7 +295,7 @@ def send(cid: str, request: Request, payload: Turn):
                     + (
                         "\nThe explicit personal memory request was saved successfully."
                         if saved
-                        else "\nNo memory action was performed on this turn. Do not claim it was."
+                        else "\n" + memory_status
                     ),
                 },
             ]
@@ -304,6 +314,10 @@ def send(cid: str, request: Request, payload: Turn):
             if not answer.strip():
                 raise RuntimeError("Empty response")
             with database.get_connection() as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = owned(db, cid, owner)
+                if current["lease_until"] != lease_until or lease_until <= time.time():
+                    raise RuntimeError("Response lease expired")
                 if replace_id:
                     db.execute(
                         "DELETE FROM web_messages WHERE id=? AND conversation_id=?",
@@ -322,8 +336,8 @@ def send(cid: str, request: Request, payload: Turn):
         finally:
             with database.get_connection() as db:
                 db.execute(
-                    "UPDATE web_conversations SET lease_until=0 WHERE id=? AND identity_id=?",
-                    (cid, owner),
+                    "UPDATE web_conversations SET lease_until=0 WHERE id=? AND identity_id=? AND lease_until=?",
+                    (cid, owner, lease_until),
                 )
 
     return StreamingResponse(

@@ -11,6 +11,8 @@ const assert = require("node:assert/strict");
   page.on("pageerror", (e) => errors.push(e.message));
   let conversations = [],
     messages = [];
+  let releaseHistory;
+  const historyReady = new Promise((resolve) => { releaseHistory = resolve; });
   await page.route("**/auth/me", (r) =>
     r.fulfill({
       json: {
@@ -43,7 +45,7 @@ const assert = require("node:assert/strict");
         body:
           "data: " +
           JSON.stringify({ type: "delta", text: messages[1].content }) +
-          '\n\ndata: {"type":"done"}\n\n',
+          '\n\ndata: {"type":"memory_not_saved","message":"This personal memory is archived. It was not saved or restored."}\n\ndata: {"type":"done"}\n\n',
       });
     }
     if (path.endsWith("/conversations")) {
@@ -63,6 +65,7 @@ const assert = require("node:assert/strict");
       messages = [];
       return r.fulfill({ json: { success: true } });
     }
+    await historyReady;
     return r.fulfill({
       json: { id: "abc", title: "New conversation", messages },
     });
@@ -77,8 +80,11 @@ const assert = require("node:assert/strict");
     .getByRole("button", { name: "＋ New conversation", exact: true })
     .click();
   await page.getByLabel("Message Abud", { exact: true }).fill("Hello");
+  assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isDisabled(), true);
+  releaseHistory();
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("world", { exact: true }).waitFor();
+  await page.getByRole("status").filter({ hasText: "not saved or restored" }).waitFor();
   assert.equal(await page.locator("pre code .hljs-keyword").count(), 1);
   await page
     .getByRole("button", { name: "Regenerate response", exact: true })
@@ -89,13 +95,12 @@ const assert = require("node:assert/strict");
     .getByRole("button", { name: "Rename New conversation", exact: true })
     .click();
   await page.getByRole("button", { name: "Renamed", exact: true }).waitFor();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(150);
-  assert.ok(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  );
+  for (const width of [320, 390, 768, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    const composer = await page.getByLabel("Message Abud", { exact: true }).boundingBox();
+    assert.ok(composer.width > 100 && composer.x >= 0 && composer.x + composer.width <= width);
+  }
   page.once("dialog", (d) => d.accept());
   await page
     .getByRole("button", { name: "Delete Renamed", exact: true })
@@ -103,7 +108,7 @@ const assert = require("node:assert/strict");
   await page.getByText("Talk with Abud", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: Google-only UI, create/send, Markdown/highlighting, regenerate, rename/delete, mobile overflow, no JS errors (mock HTTP).",
+    "PASS: Google-only UI, loading guard, create/send, archive notice, Markdown/highlighting, regenerate, rename/delete, 320/390/768/1280px layouts, no JS errors (mock HTTP).",
   );
   await browser.close();
 })().catch((e) => {

@@ -1,5 +1,7 @@
 # Web AI Chat MVP
 
+Latest dev integration, fixes and verification: [current audit](web-chat-audit.md).
+
 ## Repository audit and implementation
 
 Based on `dev` commit `2360e09ac9d5d22595e0f63af2813656b75110b1` (including
@@ -48,7 +50,7 @@ All paths begin with `/web/chat/conversations`:
 | POST /{id}/messages | Send `message` or `{ "regenerate": true }` |
 
 The streaming endpoint returns SSE `data:` JSON events: `delta` with `text`,
-`memory_saved`, `done`, or a generic `error`. Validation and permission failures
+`memory_saved`, `memory_not_saved` with a reason, `done`, or a generic `error`. Validation and permission failures
 before streaming use standard HTTP errors. The frontend consumes POST streams
 with fetch, supports Markdown/highlighted code, message copying, regeneration,
 loading/error states, and responsive conversation navigation. Markdown renders

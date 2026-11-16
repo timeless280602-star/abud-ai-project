@@ -1,11 +1,13 @@
 """HTTP integration checks with real sessions and disposable SQLite only."""
 
 import importlib
+import asyncio
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 
 class WebChatTests(unittest.TestCase):
@@ -202,6 +204,99 @@ class WebChatTests(unittest.TestCase):
                 "UPDATE web_chat_limits SET count=10 WHERE identity_id=?", (self.alice,)
             )
         self.assertEqual(self.send(cid, regenerate=True).status_code, 429)
+
+    def test_archived_memory_save_does_not_abort_inference_or_restore(self):
+        owner = "web:" + self.alice
+        mid = self.db.save_memory(owner, "coffee preference", source="direct")
+        self.db.set_memory_archived("personal", mid, True, user_id=owner)
+        seen = []
+
+        async def stream(messages):
+            seen.extend(messages)
+            yield "No memory was restored."
+
+        with patch.object(self.web, "model_stream", stream):
+            response = self.send(self.create(), message="remember coffee preference")
+        self.assertIn('"type": "done"', response.text)
+        self.assertIn('"type": "memory_not_saved"', response.text)
+        self.assertNotIn('"type": "memory_saved"', response.text)
+        self.assertIn("not saved or restored", str(seen))
+        self.assertEqual(self.db.get_memories(owner), [])
+        archived = self.db.search_memories("personal", "", user_id=owner, archived=True)
+        self.assertEqual([(m["id"], m["revision"], m["source"]) for m in archived], [(mid, 1, "direct")])
+
+    def test_ranked_active_memory_context_and_restore_metadata(self):
+        owner = "web:" + self.alice
+        mid = self.db.save_memory(owner, "coffee preference", source="dashboard")
+        self.db.update_memory(owner, mid, "coffee preference revised")
+        archived = self.db.save_memory(owner, "coffee archived secret")
+        self.db.set_memory_archived("personal", archived, True, user_id=owner)
+        global_id = self.db.save_global_memory("global archived secret")
+        self.db.set_memory_archived("global", global_id, True)
+        self.db.save_global_memory("public knowledge")
+        for i in range(105):
+            self.db.save_memory(owner, f"unrelated {i}")
+        seen = []
+
+        async def stream(messages):
+            seen.extend(messages)
+            yield "Answer"
+
+        with patch.object(self.web, "model_stream", stream):
+            self.assertIn('"type": "done"', self.send(self.create(), message="coffee preference").text)
+        context = seen[1]["content"]
+        self.assertIn("coffee preference revised", context)
+        self.assertIn("public knowledge", context)
+        self.assertNotIn("archived secret", context)
+        self.db.set_memory_archived("personal", mid, True, user_id=owner)
+        self.db.set_memory_archived("personal", mid, False, user_id=owner)
+        self.assertEqual(self.db.save_memory(owner, "coffee preference revised", source="direct"), mid)
+        record = self.db.search_memories("personal", "coffee preference", user_id=owner)[0]
+        self.assertEqual((record["source"], record["revision"]), ("dashboard", 2))
+
+    def test_stale_worker_cannot_replace_answer_or_release_new_lease(self):
+        cid = self.create()
+
+        async def success(messages):
+            yield "Original answer"
+
+        with patch.object(self.web, "model_stream", success):
+            self.send(cid)
+
+        async def stale(messages):
+            with self.db.get_connection() as db:
+                db.execute("UPDATE web_conversations SET lease_until=? WHERE id=?", (10**12, cid))
+            yield "Stale replacement"
+
+        with patch.object(self.web, "model_stream", stale):
+            response = self.send(cid, regenerate=True)
+        self.assertIn('"type": "error"', response.text)
+        history = self.client.get("/web/chat/conversations/" + cid).json()["messages"]
+        self.assertEqual(history[-1]["content"], "Original answer")
+        with self.db.get_connection() as db:
+            self.assertEqual(db.execute("SELECT lease_until FROM web_conversations WHERE id=?", (cid,)).fetchone()[0], 10**12)
+
+    def test_stream_close_releases_lease_and_preserves_retryable_user_turn(self):
+        cid = self.create()
+
+        async def stream(messages):
+            yield "Partial answer"
+            yield "Never consumed"
+
+        async def exercise():
+            request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
+            with patch.object(self.web, "identity", return_value=self.alice), patch.object(self.web, "model_stream", stream):
+                response = self.web.send(cid, request, self.web.Turn(message="Hello"))
+                self.assertIn('"type": "delta"', await anext(response.body_iterator))
+                await response.body_iterator.aclose()
+
+        asyncio.run(exercise())
+        history = self.client.get("/web/chat/conversations/" + cid).json()["messages"]
+        self.assertEqual([m["role"] for m in history], ["user"])
+        with self.db.get_connection() as db:
+            self.assertEqual(db.execute("SELECT lease_until FROM web_conversations WHERE id=?", (cid,)).fetchone()[0], 0)
+        with patch.object(self.web, "model_stream", stream):
+            self.assertIn('"type": "done"', self.send(cid, regenerate=True).text)
 
     def test_expired_disabled_and_incomplete_accounts(self):
         cid = self.create()

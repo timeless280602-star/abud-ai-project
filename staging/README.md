@@ -104,3 +104,15 @@ stack. Merge and production release remain separate approval steps.
 - Live staging deployment, OAuth and 9router remain unverified. On a server behind
   a corporate proxy, provide the trusted CA using that server's approved build
   mechanism; do not disable TLS verification or commit local proxy certificates.
+
+## Latest integrated audit
+
+After integrating dev's duplicate-review and archive features, the image and an
+isolated Compose stack were validated again. The API ran as UID 10001 with a
+fresh project-specific named volume; health, built assets, additive web/archive
+schema and unauthenticated web-chat denial passed. The audit stack, network and
+its disposable volume were removed. All 49 Python checks also passed inside the
+Python 3.11 image with networking disabled. The image now upgrades pip before
+application installation; npm/pip dependency scans reported no known issues.
+See [the current audit](../docs/web-chat-audit.md) for exact scope and limitations.
+Live OAuth/9router/proxy staging acceptance is still pending.

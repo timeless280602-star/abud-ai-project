@@ -1,0 +1,72 @@
+// Real HTTPS sessions, backend, SQLite and image storage via run_web_chat_e2e.py.
+const { chromium } = require('playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+(async () => {
+  const {url, tokens} = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const browser = await chromium.launch({executablePath:process.env.CHROMIUM_PATH || '/usr/bin/chromium', headless:true, args:['--no-sandbox']});
+  try {
+    const context = await browser.newContext({ignoreHTTPSErrors:true, timezoneId:'UTC', acceptDownloads:true});
+    await context.addCookies([{name:'abud_session',value:tokens[0],url,secure:true,httpOnly:true,sameSite:'Lax'}]);
+    await context.route('**/*', route => route.request().url().startsWith(url) ? route.continue() : route.abort());
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await page.goto(url);
+    await page.getByText('Talk with Abud', {exact:true}).waitFor();
+    await page.getByRole('button', {name:'＋ New conversation', exact:true}).click();
+    const input = page.getByLabel('Message Abud', {exact:true});
+    await input.fill('Buat dua gambar pemandangan Jepang');
+    await input.press('Enter');
+    await page.getByRole('status').filter({hasText:'Generating image…'}).waitFor();
+    await page.getByText('Generated 2 of 2 requested images.', {exact:true}).waitFor();
+    await page.waitForFunction(() => ![...document.querySelectorAll('button')].find(b => b.textContent === 'Regenerate response').disabled);
+    assert.equal(await page.locator('.chat-images img').count(), 2);
+    assert.ok(await page.locator('.chat-images img').first().evaluate(img => img.complete && img.naturalWidth === 32));
+    assert.doesNotMatch(await page.getByRole('status').innerText(), /quota|Batas|remaining/);
+    await page.getByRole('button', {name:'Preview generated image 1',exact:true}).click();
+    await page.getByRole('dialog', {name:'Image preview'}).waitFor();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.getByRole('dialog').count(),0);
+    const downloadEvent = page.waitForEvent('download');
+    await page.getByRole('link', {name:'Download image 1',exact:true}).click();
+    const download = await downloadEvent;
+    assert.match(download.suggestedFilename(), /\.png$/);
+    const imageUrl = await page.locator('.chat-images img').first().getAttribute('src');
+    const other = await browser.newContext({ignoreHTTPSErrors:true});
+    await other.addCookies([{name:'abud_session',value:tokens[1],url,secure:true,httpOnly:true,sameSite:'Lax'}]);
+    assert.equal((await other.request.get(url + imageUrl)).status(),404);
+    await other.close();
+    const chatTitle = await page.locator('nav[aria-label="Conversations"] button[aria-current="page"]').innerText();
+    await page.reload();
+    await page.getByRole('button',{name:chatTitle,exact:true}).click();
+    await page.locator('.chat-images img').first().waitFor();
+    await page.getByRole('button',{name:'Regenerate response',exact:true}).click();
+    await page.waitForFunction(() => ![...document.querySelectorAll('button')].find(b => b.textContent === 'Regenerate response').disabled);
+    assert.equal(await page.locator('.chat-images img').count(),2);
+    await input.fill('Generate 8 images of a futuristic city');
+    await input.press('Enter');
+    await page.getByRole('status').filter({hasText:'Batas Image Generation Tercapai'}).waitFor();
+    const notice = await page.getByRole('status').innerText();
+    assert.match(notice,/24 jam bergulir/);
+    assert.match(notice,/Chat biasa tetap bisa digunakan/);
+    assert.match(notice, /WIB|GMT\+7/);
+    assert.equal(await page.locator('.chat-images img').count(),10);
+    await input.fill('Generate an image of a red dragon');
+    await input.press('Enter');
+    await page.getByRole('status').filter({hasText:'Batas Image Generation Tercapai'}).waitFor();
+    assert.equal(await page.locator('.chat-images img').count(),10);
+    await input.fill('Hello');
+    await input.press('Enter');
+    await page.getByText('world',{exact:true}).waitFor();
+    await page.waitForFunction(() => ![...document.querySelectorAll('button')].find(b => b.textContent === 'Regenerate response').disabled);
+    assert.doesNotMatch(await page.getByRole('status').innerText(),/Batas Image/);
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({width,height:850});
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `overflow at ${width}`);
+    }
+    assert.deepEqual(errors, []);
+    console.log('PASS real-session images: loading, rendering, preview, download, history, auth, regeneration, quota, timezone, text, mobile');
+    await context.close();
+  } finally { await browser.close(); }
+})().catch(error => {console.error(error);process.exit(1);});

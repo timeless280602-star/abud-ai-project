@@ -6,11 +6,12 @@ const assert = require("node:assert/strict");
     headless: true,
     args: ["--no-sandbox"],
   });
-  const page = await browser.newPage();
+  const page = await browser.newPage({ ignoreHTTPSErrors: true });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   let conversations = [],
     messages = [];
+  let streamFailure = null, historyFailure = false;
   let releaseHistory;
   const historyReady = new Promise((resolve) => { releaseHistory = resolve; });
   await page.route("**/auth/me", (r) =>
@@ -33,6 +34,13 @@ const assert = require("node:assert/strict");
       path = new URL(q.url()).pathname,
       method = q.method();
     if (path.endsWith("/messages")) {
+      if (streamFailure) {
+        messages = [...messages, { id: 3, role: "user", content: q.postDataJSON().message }];
+        const ending = streamFailure === "malformed" ? "data: invalid-json\n\n"
+          : streamFailure === "server-error" ? 'data: {"type":"error","message":"Please regenerate."}\n\n' : "";
+        return r.fulfill({ contentType: "text/event-stream",
+          body: 'data: {"type":"delta","text":"Unfinished answer"}\n\n' + ending });
+      }
       messages = [
         { id: 1, role: "user", content: "Hello" },
         {
@@ -67,11 +75,13 @@ const assert = require("node:assert/strict");
       return r.fulfill({ json: { success: true } });
     }
     await historyReady;
+    if (historyFailure) return r.fulfill({ status: 503, json: { detail: "History unavailable. Please regenerate." } });
     return r.fulfill({
       json: { id: "abc", title: "New conversation", messages },
     });
   });
-  await page.goto("http://localhost:5173");
+  const input = require("node:fs").readFileSync(0, "utf8").trim();
+  await page.goto(input ? JSON.parse(input).url : "http://localhost:5173");
   await page.getByText("Talk with Abud", { exact: true }).waitFor();
   assert.equal(
     await page.getByText("Memory Matrix", { exact: true }).count(),
@@ -85,6 +95,24 @@ const assert = require("node:assert/strict");
   releaseHistory();
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("world", { exact: true }).waitFor();
+  for (const failure of ["truncated", "malformed", "server-error"]) {
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find((b) => b.textContent === "Regenerate response").disabled);
+    streamFailure = failure;
+    historyFailure = true;
+    await page.getByLabel("Message Abud", { exact: true }).fill("A new question");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByText("Incomplete response · Regenerate to retry.", { exact: true }).waitFor();
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find((b) => b.textContent === "Regenerate response").disabled);
+    assert.equal(await page.getByText("Unfinished answer", { exact: true }).count(), 1);
+    await page.getByLabel("Message Abud", { exact: true }).fill("Do not send a duplicate");
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Rate response", exact: true }).count(), 1);
+    streamFailure = null;
+    historyFailure = false;
+    await page.getByRole("button", { name: "Regenerate response", exact: true }).click();
+    await page.getByRole("status").filter({ hasText: "not saved or restored" }).waitFor();
+    assert.equal(await page.getByText("Incomplete response · Regenerate to retry.", { exact: true }).count(), 0);
+  }
   await page.getByRole("status").filter({ hasText: "not saved or restored" }).waitFor();
   assert.equal(await page.locator("pre code .hljs-keyword").count(), 1);
   await page
@@ -108,7 +136,7 @@ const assert = require("node:assert/strict");
   await page.getByText("Talk with Abud", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: Google-only UI, loading guard, create/send, archive notice, Markdown/highlighting, regenerate, rename/delete, 320/390/768/1280px layouts, no JS errors (mock HTTP).",
+    "PASS: Google-only UI, loading guard, create/send, Markdown/highlighting, truncated/malformed/error streams with unavailable history, incomplete labels, duplicate-send guard, regenerate, rename/delete, 320/390/768/1280px layouts (mock HTTP).",
   );
   await browser.close();
 })().catch((e) => {

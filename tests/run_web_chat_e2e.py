@@ -66,13 +66,18 @@ def main():
                 )
             tokens.append(auth.create_session(owner))
 
+        error_attempts = 0
+
         async def fixture_stream(messages):
+            nonlocal error_attempts
             if messages[-1]["content"] == "[test-id]":
                 yield "Halo, saya bisa membantu Anda dengan pertanyaan ini."
                 return
             if messages[-1]["content"] == "[test-error]":
-                yield "partial"
-                raise TimeoutError("private fixture error")
+                error_attempts += 1
+                if error_attempts == 1:
+                    yield "partial"
+                    raise TimeoutError("private fixture error")
             for text in ("Hello ", "**world**", "\n```js\nconst x = 1;\n```"):
                 yield text
                 await asyncio.sleep(0.1)

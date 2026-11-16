@@ -653,3 +653,93 @@ body{background:#070708}
 .chat-image-preview { max-width:95vw; max-height:95vh; }
 .chat-image-preview img { display:block; max-width:85vw; max-height:75vh; object-fit:contain; }
 .chat-image-preview::backdrop { background:#000b; }
+
+/* Dashboard navigation. The Web Chat conversation sidebar has its own layout. */
+.sidebar-brand { justify-content: space-between; gap: 10px; }
+.sidebar nav { overscroll-behavior: contain; scrollbar-width: thin; }
+.sidebar .nav-label { color: #938a93; }
+.sidebar .nav-item {
+  min-height: 42px;
+  border-radius: 8px;
+  transition: color .18s ease, background .18s ease, border-color .18s ease;
+}
+.sidebar .nav-item > svg { flex-shrink: 0; }
+.sidebar-control {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border: 1px solid #403138;
+  border-radius: 8px;
+  color: #e9dde0;
+  background: #191419;
+}
+.sidebar-control:hover { color: #fff; border-color: #a84d5a; background: #25151b; }
+.sidebar-control:focus-visible,
+.sidebar .nav-item:focus-visible,
+.sidebar-user button:focus-visible {
+  outline: 2px solid #ff8996;
+  outline-offset: 2px;
+}
+.desktop-sidebar-toggle { display: none; }
+
+@media (min-width: 701px) {
+  .app-shell { --dashboard-sidebar-width: 254px; }
+  .app-shell.sidebar-collapsed { --dashboard-sidebar-width: 76px; }
+  .app-shell > .sidebar {
+    width: var(--dashboard-sidebar-width);
+    transition: width .2s ease;
+  }
+  .app-shell > .main-area {
+    margin-left: var(--dashboard-sidebar-width);
+    min-width: 0;
+    transition: margin-left .2s ease;
+  }
+  .desktop-sidebar-toggle { display: grid; }
+  .sidebar-collapsed .sidebar-brand { padding: 0; justify-content: center; }
+  .sidebar-collapsed .sidebar-brand .brand > :last-child,
+  .sidebar-collapsed .system-chip,
+  .sidebar-collapsed .nav-label,
+  .sidebar-collapsed .nav-item > span,
+  .sidebar-collapsed .nav-arrow,
+  .sidebar-collapsed .user-label,
+  .sidebar-collapsed .sidebar-version { display: none; }
+  .sidebar-collapsed .sidebar nav { padding: 9px 10px; }
+  .sidebar-collapsed .nav-group { margin: 6px 0; }
+  .sidebar-collapsed .nav-group + .nav-group {
+    border-top: 1px solid #332831;
+    padding-top: 6px;
+  }
+  .sidebar-collapsed .nav-item { justify-content: center; padding: 0; }
+  .sidebar-collapsed .sidebar-user { flex-direction: column; }
+  .sidebar-collapsed .sidebar-user button { min-width: 34px; min-height: 36px; }
+}
+
+@media (min-width: 701px) and (max-width: 1050px) {
+  .app-shell { --dashboard-sidebar-width: 225px; }
+}
+
+@media (max-width: 700px) {
+  .app-shell > .sidebar {
+    width: min(320px, calc(100vw - 32px));
+    visibility: hidden;
+    transition: transform .24s ease, visibility 0s linear .24s;
+  }
+  .app-shell > .sidebar.sidebar-open {
+    visibility: visible;
+    transition-delay: 0s;
+  }
+  .mobile-close.sidebar-control,
+  .mobile-menu.sidebar-control {
+    background: #191419;
+    border: 1px solid #403138;
+  }
+  .mobile-backdrop { background: #050407c9; }
+  .sidebar .nav-item { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell > .sidebar,
+  .app-shell > .main-area,
+  .sidebar .nav-item { transition: none; }
+}

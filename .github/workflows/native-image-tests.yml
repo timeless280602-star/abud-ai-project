@@ -142,3 +142,13 @@ jobs:
           timeout --signal=TERM --kill-after=15s 8m python tests/run_web_chat_e2e.py web_chat_browser.cjs
           timeout --signal=TERM --kill-after=15s 8m python tests/run_web_chat_e2e.py web_chat_choices.cjs
           timeout --signal=TERM --kill-after=15s 8m python tests/run_web_chat_e2e.py web_chat_images.cjs
+          export ABUD_SIDEBAR_PREVIEW_DIR="$RUNNER_TEMP/abud-sidebar-preview"
+          timeout --signal=TERM --kill-after=15s 8m python tests/run_web_chat_e2e.py dashboard_sidebar.cjs
+
+      - name: Upload dashboard sidebar preview
+        if: github.head_ref == 'feat/toggle-dashboard-sidebar'
+        uses: actions/upload-artifact@v4
+        with:
+          name: abud-sidebar-preview
+          path: ${{ runner.temp }}/abud-sidebar-preview/*.png
+          if-no-files-found: error

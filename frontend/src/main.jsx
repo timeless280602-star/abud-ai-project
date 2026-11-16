@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity, AlertTriangle, ArrowUpRight, AudioWaveform, Bot,
   BrainCircuit, ChevronDown, ChevronRight, CircleDot, Command,
   Cpu, Database, Fingerprint, Gauge, Globe, HardDrive, Hexagon,
-  LayoutDashboard, LockKeyhole, LogOut, Menu, Network, Radio,
+  LayoutDashboard, LockKeyhole, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Radio,
   RefreshCw, Server, Settings, Shield, ShieldCheck, Terminal,
   Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
 } from 'lucide-react';
@@ -2258,6 +2258,55 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('abud:sidebar-collapsed') === 'true'; }
+    catch { return false; }
+  });
+  const mobileMenuRef = useRef(null);
+  const mobileCloseRef = useRef(null);
+  const mainRef = useRef(null);
+
+  useEffect(() => {
+    try { localStorage.setItem('abud:sidebar-collapsed', String(sidebarCollapsed)); }
+    catch { /* The toggle still works when storage is blocked. */ }
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const main = mainRef.current;
+    const menu = mobileMenuRef.current;
+    const desktop = window.matchMedia('(min-width: 701px)');
+    const closeOnDesktop = (event) => {
+      if (event.matches) setMobileOpen(false);
+    };
+    desktop.addEventListener('change', closeOnDesktop);
+    if (main) main.inert = true;
+    mobileCloseRef.current?.focus();
+    return () => {
+      desktop.removeEventListener('change', closeOnDesktop);
+      if (main) main.inert = false;
+      if (!desktop.matches) menu?.focus();
+    };
+  }, [mobileOpen]);
+
+  function handleDrawerKeys(event) {
+    if (!mobileOpen) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setMobileOpen(false);
+    } else if (event.key === 'Tab') {
+      const buttons = event.currentTarget.querySelectorAll('button:not([disabled])');
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    }
+  }
 
   async function loadDashboard(initial = false) {
     if (!initial) setRefreshing(true);
@@ -2310,30 +2359,53 @@ function App() {
   const groups = [...new Set(visibleModules.map(m => m.group))];
 
   return (
-    <div className="app-shell">
-      {mobileOpen && <button className="mobile-backdrop" onClick={() => setMobileOpen(false)} aria-label="Close menu"/>}
-      <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
-        <div className="sidebar-brand"><Brand/><button className="mobile-close" onClick={() => setMobileOpen(false)}><X size={18}/></button></div>
+    <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
+      {mobileOpen && <button type="button" className="mobile-backdrop" tabIndex={-1}
+        onClick={() => setMobileOpen(false)} aria-label="Close menu"/>}
+      <aside id="dashboard-sidebar" className={`sidebar${mobileOpen ? ' sidebar-open' : ''}`}
+        role={mobileOpen ? 'dialog' : undefined} aria-modal={mobileOpen || undefined}
+        aria-label={mobileOpen ? 'Dashboard menu' : undefined} onKeyDown={handleDrawerKeys}>
+        <div className="sidebar-brand">
+          <Brand/>
+          <button type="button" ref={mobileCloseRef} className="mobile-close sidebar-control"
+            onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={18} aria-hidden="true"/></button>
+        </div>
         <div className="system-chip"><span className="pulse-dot"/> SYSTEM OPERATIONAL <span className="chip-version">V1.0</span></div>
-        <nav>
+        <nav aria-label="Dashboard navigation">
           {groups.map(group => <div className="nav-group" key={group}>
             <div className="nav-label">{group}</div>
             {visibleModules.filter(m => m.group === group).map(m => {
               const Icon = m.icon;
-              return <button key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`} onClick={() => {setActive(m.id);setMobileOpen(false);}}>
-                <Icon size={17}/><span>{m.label}</span>{active === m.id && <ChevronRight size={14} className="nav-arrow"/>}
+              return <button type="button" key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`}
+                aria-current={active === m.id ? 'page' : undefined} aria-label={m.label}
+                title={sidebarCollapsed && !mobileOpen ? m.label : undefined}
+                onClick={() => {setActive(m.id);setMobileOpen(false);}}>
+                <Icon size={17} aria-hidden="true"/><span>{m.label}</span>
+                {active === m.id && <ChevronRight size={14} className="nav-arrow" aria-hidden="true"/>}
               </button>;
             })}
           </div>)}
         </nav>
         <div className="sidebar-bottom">
-          <div className="sidebar-user"><div className="user-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{user.display_name || 'Operator'}</strong><small>{user.is_creator ? 'ROOT AUTHORITY' : 'AUTHORIZED USER'}</small></div><button onClick={logout} title="Sign out"><LogOut size={16}/></button></div>
+          <div className="sidebar-user"><div className="user-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{user.display_name || 'Operator'}</strong><small>{user.is_creator ? 'ROOT AUTHORITY' : 'AUTHORIZED USER'}</small></div><button type="button" onClick={logout} title="Sign out" aria-label="Sign out"><LogOut size={16} aria-hidden="true"/></button></div>
           <div className="sidebar-version">ABUD CONTROL CENTER <span>BUILD 001</span></div>
         </div>
       </aside>
-      <main className="main-area">
+      <main ref={mainRef} className="main-area">
         <header className="topbar">
-          <div className="topbar-left"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={19}/></button><span className="breadcrumb">ABUD <b>/</b> {current.label.toUpperCase()}</span></div>
+          <div className="topbar-left">
+            <button type="button" ref={mobileMenuRef} className="mobile-menu sidebar-control"
+              aria-controls="dashboard-sidebar" aria-expanded={mobileOpen} aria-label="Open menu"
+              onClick={() => setMobileOpen(true)}><Menu size={19} aria-hidden="true"/></button>
+            <button type="button" className="desktop-sidebar-toggle sidebar-control"
+              aria-controls="dashboard-sidebar" aria-expanded={!sidebarCollapsed}
+              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>
+              {sidebarCollapsed ? <PanelLeftOpen size={18} aria-hidden="true"/> : <PanelLeftClose size={18} aria-hidden="true"/>}
+            </button>
+            <span className="breadcrumb">ABUD <b>/</b> {current.label.toUpperCase()}</span>
+          </div>
           <div className="topbar-right"><span className="top-status"><i/> API {health?.status === 'healthy' ? 'CONNECTED' : 'UNKNOWN'}</span><span className="top-clock">UTC+7 / ID</span><div className="top-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div></div>
         </header>
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}

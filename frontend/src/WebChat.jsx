@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import ChatOrganization from "./ChatOrganization";
+import ChatChoices from "./ChatChoices";
+import { eligibleChoices } from "./chatChoices";
 import { chatApi } from "./chatApi";
 const root = "/web/chat/conversations";
 const messageTime = new Intl.DateTimeFormat(undefined, {
@@ -42,10 +44,20 @@ export default function WebChat() {
     [reason, setReason] = useState(""),
     [ratingBusy, setRatingBusy] = useState(false),
     [speakingId, setSpeakingId] = useState(null);
+  const sending = useRef(false);
+  const invalidatedChoices = useRef(new Set());
+  const [choicesBlocked, setChoicesBlocked] = useState(false);
   const version = useRef(0),
     abort = useRef(null),
     bottom = useRef(null),
     speech = useRef(null);
+  const renderedVersion = version.current;
+  const choiceKey = `${id}:${messages.at(-1)?.id}`;
+  let choiceInvalidated = invalidatedChoices.current.has(choiceKey);
+  try {
+    choiceInvalidated ||= sessionStorage.getItem(`abud:invalidated-choice:${choiceKey}`) === "1";
+  } catch { /* Storage may be unavailable; in-memory invalidation still applies. */ }
+  const choices = !choiceInvalidated && eligibleChoices(messages.at(-1), messages.at(-1));
   function stopSpeech() {
     if (speech.current) {
       speech.current = null;
@@ -78,6 +90,7 @@ export default function WebChat() {
     bottom.current?.scrollIntoView({ block: "nearest" });
   }, [messages]);
   async function open(cid) {
+    if (sending.current) return;
     const v = ++version.current;
     stopSpeech();
     setRatingId(null);
@@ -88,7 +101,7 @@ export default function WebChat() {
     setError("");
     try {
       const d = await (await api("/" + cid)).json();
-      if (v === version.current) { setMessages(d.messages); setArchivedChat(Boolean(d.archived_at)); }
+      if (v === version.current) { setMessages(d.messages); setChoicesBlocked(false); setArchivedChat(Boolean(d.archived_at)); }
     } catch (e) {
       if (v === version.current) setError(e.message);
     } finally {
@@ -96,6 +109,7 @@ export default function WebChat() {
     }
   }
   async function create() {
+    if (sending.current) return;
     try {
       const d = await (await api("", "POST", { project_id: projectId })).json();
       await refresh();
@@ -105,6 +119,7 @@ export default function WebChat() {
     }
   }
   function view(pid, showArchived) {
+    if (sending.current) return;
     ++version.current;
     ++listVersion.current;
     stopSpeech();
@@ -120,8 +135,20 @@ export default function WebChat() {
       stopSpeech(); setId(null); setMessages([]); setRatingId(null); setArchivedChat(false);
     }
   }
-  async function send(regenerate = false) {
-    if (busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!draft.trim() || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
+  async function send(regenerate = false, choiceText, sourceId) {
+    const text = (choiceText ?? draft).trim();
+    if (sourceId !== undefined && (choicesBlocked || invalidatedChoices.current.has(`${id}:${sourceId}`) || sourceId !== messages.at(-1)?.id)) return;
+    if (renderedVersion !== version.current || sending.current || busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!text || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
+    sending.current = true;
+    setChoicesBlocked(true);
+    const currentVersion = version.current;
+    if (regenerate && messages.at(-1)?.role === "assistant" && messages.at(-1)?.id) {
+      // Invalidate before the request: a failed regenerate can restore this exact ID.
+      invalidatedChoices.current.add(choiceKey);
+      try {
+        sessionStorage.setItem(`abud:invalidated-choice:${choiceKey}`, "1");
+      } catch { /* Keep the in-memory tombstone even if tab storage is unavailable. */ }
+    }
     stopSpeech();
     setRatingId(null);
     setBusy(true);
@@ -136,7 +163,7 @@ export default function WebChat() {
         signal: abort.current.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          regenerate ? { regenerate: true } : { message: draft.trim() },
+          regenerate ? { regenerate: true } : { message: text },
         ),
       });
       if (!r.ok) {
@@ -149,7 +176,7 @@ export default function WebChat() {
         ? messages.at(-1)?.role === "assistant"
           ? messages.slice(0, -1)
           : messages
-        : [...messages, { role: "user", content: draft.trim(), created_at: new Date().toISOString() }];
+        : [...messages, { role: "user", content: text, created_at: new Date().toISOString() }];
       const created_at = new Date().toISOString();
       setDraft("");
       setMessages([...base, { role: "assistant", content: "", created_at }]);
@@ -188,17 +215,19 @@ export default function WebChat() {
         try { await reader.cancel(); } catch { /* The connection may already be closed. */ }
         reader.releaseLock();
       }
-      if (!abort.current?.signal.aborted) {
+      if (!abort.current?.signal.aborted && currentVersion === version.current) {
         try {
           setMessages((await (await api("/" + id)).json()).messages);
+          setChoicesBlocked(false);
           await refresh();
           clearTimeout(titleRefresh.current);
           titleRefresh.current = setTimeout(() => refresh().catch(() => {}), 5500);
         } catch (e) {
           setError(e.message);
         }
-        setBusy(false);
       }
+      sending.current = false;
+      setBusy(false);
     }
   }
   async function rate(message, rating) {
@@ -285,6 +314,11 @@ export default function WebChat() {
                 </ReactMarkdown>
                 {m.incomplete && <small>Incomplete response · Regenerate to retry.</small>}
               </div>
+              {m === messages.at(-1) && choices && !archivedChat && !loading &&
+                <ChatChoices key={`${projectId}:${id}:${m.id}`}
+                  group={choices}
+                  disabled={busy || ratingBusy || choicesBlocked}
+                  onSend={(text) => send(false, text, m.id)} />}
               <div className="chat-message-actions">
                 <button type="button" onClick={async () => {
                   try {

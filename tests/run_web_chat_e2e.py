@@ -67,9 +67,25 @@ def main():
             tokens.append(auth.create_session(owner))
 
         error_attempts = 0
+        choice_attempts = 0
 
         async def fixture_stream(messages):
-            nonlocal error_attempts
+            nonlocal error_attempts, choice_attempts
+            if messages[-1]["content"] == "[test-choices]":
+                choice_attempts += 1
+                if choice_attempts == 2:
+                    yield "Partial replacement"
+                    raise TimeoutError("private regenerate fixture error")
+                for text in (
+                    "A) Kamu membuka pintu kamar Mr. Jenkins\n",
+                    "B) Kamu mencari informasi lebih lanjut tentang suara aneh\n",
+                    "C) Kamu kembali ke luar villa untuk mencari bantuan\n",
+                    "D) Kamu mencari tempat untuk duduk dan menunggu\n\n",
+                    "Pilihlah tindakan yang kamu inginkan.",
+                ):
+                    yield text
+                    await asyncio.sleep(0.1)
+                return
             if messages[-1]["content"] == "[test-id]":
                 yield "Halo, saya bisa membantu Anda dengan pertanyaan ini."
                 return

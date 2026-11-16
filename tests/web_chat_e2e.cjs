@@ -230,8 +230,43 @@ const fs = require("node:fs");
     await page.evaluate(() => window.activeUtterance.onerror());
     await page.getByRole("alert").filter({ hasText: "Could not read" }).waitFor();
     await page.getByRole("button", { name: "Read aloud", exact: true }).waitFor();
+    // Interactive choices use the same authenticated SSE/persistence endpoints.
+    await page.getByLabel("Message Abud", { exact: true }).fill("[test-choices]");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const choices = page.getByRole("region", { name: "Pilihan respons" });
+    await choices.waitFor();
+    assert.equal(await choices.locator('.chat-choice-options button').count(), 4);
+    const choiceChat = (await (await context.request.get(url + "/web/chat/conversations")).json())[0];
+    const readChoiceHistory = async () => (await context.request.get(url + "/web/chat/conversations/" + choiceChat.id)).json();
+    const originalChoiceHistory = await readChoiceHistory();
+    await choices.getByRole("button", { name: "A. Kamu membuka pintu kamar Mr. Jenkins", exact: true }).click();
+    await page.getByRole("button", { name: "Regenerate response", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "Unable to complete" }).waitFor();
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(b => b.textContent === "Regenerate response").disabled);
+    assert.deepEqual((await readChoiceHistory()).messages, originalChoiceHistory.messages);
+    assert.equal(await choices.count(), 0);
+    await page.reload();
+    await page.getByRole("button", { name: choiceChat.title, exact: true }).click();
+    await page.getByText("Pilihlah tindakan yang kamu inginkan.", { exact: true }).waitFor();
+    assert.equal(await choices.count(), 0);
+    await page.getByRole("button", { name: "Regenerate response", exact: true }).click();
+    await choices.waitFor();
+    assert.notEqual((await readChoiceHistory()).messages.at(-1).id, originalChoiceHistory.messages.at(-1).id);
+    assert.equal(await choices.getByRole("button", { name: "Lanjutkan dengan pilihan" }).isDisabled(), true);
+    assert.equal(await choices.locator('[aria-pressed=true]').count(), 0);
+    await choices.getByRole("button", { name: "B. Kamu mencari informasi lebih lanjut tentang suara aneh", exact: true }).click();
+    await choices.getByRole("button", { name: "A. Kamu membuka pintu kamar Mr. Jenkins", exact: true }).click();
+    await choices.getByRole("button", { name: "Lanjutkan dengan pilihan" }).click();
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(b => b.textContent === "Regenerate response").disabled);
+    const choiceHistory = await (await context.request.get(url + "/web/chat/conversations/" + choiceChat.id)).json();
+    assert.equal(choiceHistory.messages.at(-2).content, "Saya memilih opsi B: Kamu mencari informasi lebih lanjut tentang suara aneh; lalu opsi A: Kamu membuka pintu kamar Mr. Jenkins. Lanjutkan berdasarkan gabungan kedua pilihan ini secara masuk akal.");
+    assert.equal(choiceHistory.messages.filter(m => m.role === "user" && m.content.startsWith("Saya memilih")).length, 1);
+    await page.reload();
+    await page.getByRole("button", { name: choiceChat.title, exact: true }).click();
+    await page.getByText("world", { exact: true }).waitFor();
+    assert.equal(await choices.count(), 0);
     console.log(
-      "PASS: HTTPS FastAPI + built React + real sessions/SQLite; Enter/Shift+Enter/IME, local timestamps, speech controls (mock speech engine), good/bad feedback persistence, streaming, reload, regenerate, isolation, CSRF, errors, mobile and deletion. Only AI/OAuth and speech engine are simulated.",
+      "PASS: HTTPS FastAPI + built React + real sessions/SQLite; Enter/Shift+Enter/IME, local timestamps, speech controls (mock speech engine), good/bad feedback persistence, streaming, reload, regenerate, Indonesian choices, failed-regenerate invalidation/reload/retry, isolation, CSRF, errors, mobile and deletion. Only AI/OAuth and speech engine are simulated.",
     );
   } finally {
     await browser.close();

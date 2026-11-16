@@ -121,13 +121,14 @@ export default function WebChat() {
     }
   }
   async function send(regenerate = false) {
-    if (busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!draft.trim() || messages.at(-1)?.role === "user"))) return;
+    if (busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!draft.trim() || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
     stopSpeech();
     setRatingId(null);
     setBusy(true);
     setError("");
     setNotice("");
     abort.current = new AbortController();
+    let reader;
     try {
       const r = await fetch(root + "/" + id + "/messages", {
         method: "POST",
@@ -152,8 +153,8 @@ export default function WebChat() {
       const created_at = new Date().toISOString();
       setDraft("");
       setMessages([...base, { role: "assistant", content: "", created_at }]);
-      const reader = r.body.getReader(),
-        decoder = new TextDecoder();
+      reader = r.body.getReader();
+      const decoder = new TextDecoder();
       let buffer = "",
         answer = "",
         complete = false;
@@ -179,7 +180,14 @@ export default function WebChat() {
       if (!complete) throw Error("Connection interrupted. Please regenerate.");
     } catch (e) {
       if (e.name !== "AbortError") setError(e.message);
+      setMessages((items) => items.map((item) =>
+        item.role === "assistant" && !item.id ? { ...item, incomplete: true } : item));
     } finally {
+      // Release the HTTP stream promptly on parsing errors or server error events.
+      if (reader) {
+        try { await reader.cancel(); } catch { /* The connection may already be closed. */ }
+        reader.releaseLock();
+      }
       if (!abort.current?.signal.aborted) {
         try {
           setMessages((await (await api("/" + id)).json()).messages);
@@ -273,8 +281,9 @@ export default function WebChat() {
                 title={new Date(m.created_at).toLocaleString()}>{messageTime.format(new Date(m.created_at))}</time>}
               <div className="chat-message-body">
                 <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
-                  {m.content || "Thinking…"}
+                  {m.content || (m.incomplete ? "No response received." : "Thinking…")}
                 </ReactMarkdown>
+                {m.incomplete && <small>Incomplete response · Regenerate to retry.</small>}
               </div>
               <div className="chat-message-actions">
                 <button type="button" onClick={async () => {
@@ -351,7 +360,7 @@ export default function WebChat() {
             <div>
               <button
                 disabled={
-                  busy || loading || ratingBusy || !draft.trim() || messages.at(-1)?.role === "user"
+                  busy || loading || ratingBusy || !draft.trim() || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)
                 }
               >
                 Send

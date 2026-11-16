@@ -194,6 +194,14 @@ const fs = require("node:fs");
       3,
     );
     assert.ok(!(await page.content()).includes("private fixture error"));
+    // Failed partial text is replaced by authoritative history, never a completed reply.
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find((b) => b.textContent === "Regenerate response").disabled);
+    assert.equal(await page.getByText("partial", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isDisabled(), true);
+    await page.getByRole("button", { name: "Regenerate response", exact: true }).click();
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find((b) => b.textContent === "Regenerate response").disabled);
+    assert.equal((await (await context.request.get(url + "/web/chat/conversations/" + cid)).json()).messages.length, 4);
+    assert.equal(await page.getByRole("alert").count(), 0);
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(
       await page.evaluate(
@@ -210,7 +218,9 @@ const fs = require("node:fs");
       ).status(),
       404,
     );
+    const opened = page.waitForResponse((r) => r.request().method() === "GET" && /\/web\/chat\/conversations\/[^/]+$/.test(new URL(r.url()).pathname));
     await page.getByRole("button", { name: "＋ New conversation", exact: true }).click();
+    await opened;
     await page.getByLabel("Message Abud", { exact: true }).fill("[test-id]");
     await page.waitForFunction(() => !Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Send").disabled);
     await page.getByLabel("Message Abud", { exact: true }).press("Enter");

@@ -36,6 +36,12 @@ const { chromium } = require('playwright');
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
+    for (const title of ['Shipment tracking', 'Project brainstorm']) {
+      const response = await context.request.post(url + '/web/chat/conversations', {
+        headers: { Origin: url }, data: { title },
+      });
+      assert.equal(response.status(), 201);
+    }
     await page.goto(url);
     await page.getByText('Talk with Abud', { exact: true }).waitFor();
 
@@ -58,6 +64,32 @@ const { chromium } = require('playwright');
     assert.equal(await conversations.isVisible(), false);
     await nav.getByRole('button', { name: 'Show chat navigation' }).click();
     assert.equal(await conversations.isVisible(), true);
+    const projectToggle = nav.getByRole('button', { name: 'Projects', exact: true });
+    const recentToggle = conversations.getByRole('button', { name: 'Recent', exact: true });
+    const chatRows = conversations.locator('.chat-conversation > button:first-child');
+    await projectToggle.click();
+    assert.equal(await projects.isVisible(), false);
+    await projectToggle.click();
+    await projects.waitFor();
+    await recentToggle.click();
+    assert.equal(await chatRows.first().isVisible(), false);
+    await recentToggle.click();
+    await chatRows.first().waitFor();
+
+    const beforeSort = await chatRows.allTextContents();
+    assert.equal(beforeSort.length, 2);
+    await nav.getByRole('button', { name: 'Chat sorting settings' }).click();
+    await capture('sort-menu');
+    await nav.getByRole('button', { name: 'Manual order', exact: true }).click();
+    await conversations.getByRole('button', { name: 'Options for ' + beforeSort[0].trim(), exact: true }).click();
+    await conversations.getByRole('menuitem', { name: 'Move down' }).click();
+    assert.deepEqual(await chatRows.allTextContents(), [...beforeSort].reverse());
+
+    await conversations.getByRole('button', { name: 'Shipment tracking', exact: true }).click();
+    const input = page.getByLabel('Message Abud', { exact: true });
+    await input.fill('Hello, Abud.');
+    await input.press('Enter');
+    await page.getByText('world', { exact: true }).waitFor();
     await capture('desktop-expanded');
 
     await page.getByRole('button', { name: 'Collapse sidebar' }).click();
@@ -80,6 +112,10 @@ const { chromium } = require('playwright');
     assert.equal(await drawer.getAttribute('aria-modal'), 'true');
     assert.equal(await page.locator('main').evaluate((element) => element.inert), true);
     assert.equal(await chat.getByText('AI Chat').isVisible(), true);
+    assert.deepEqual(await chatRows.allTextContents(), [...beforeSort].reverse());
+    const createProject = nav.getByRole('button', { name: 'New project', exact: true });
+    assert.equal(await createProject.isVisible(), true);
+    assert.equal((await createProject.innerText()).trim(), '');
     await capture('mobile-drawer');
 
     await page.keyboard.press('Shift+Tab');

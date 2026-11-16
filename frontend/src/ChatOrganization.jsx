@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ChevronDown, ChevronUp, Folder, Plus, Settings2 } from "lucide-react";
 import { chatApi } from "./chatApi";
 
 function Dialog({ title, children, onClose }) {
@@ -16,10 +17,43 @@ function Dialog({ title, children, onClose }) {
   </dialog>;
 }
 
+function readSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("abud:chat-sort") || "{}");
+    return { mode: saved.mode === "manual" ? "manual" : "updated", order: Array.isArray(saved.order) ? saved.order : [] };
+  } catch {
+    return { mode: "updated", order: [] };
+  }
+}
+
 export default function ChatOrganization({ navigationTarget, list, projects, projectId, archived, busy, id, onOpen, onCreate, onView, onRefresh, onChanged }) {
   const [menu, setMenu] = useState(null), [editor, setEditor] = useState(null),
     [saving, setSaving] = useState(false), [error, setError] = useState("");
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [recentOpen, setRecentOpen] = useState(true);
+  const [sort, setSort] = useState(readSort);
   const menuRef = useRef(null), menuButton = useRef(null);
+  const rank = new Map(sort.order.map((conversationId, index) => [conversationId, index]));
+  const orderedChats = sort.mode === "manual" ? [...list].sort((a, b) =>
+    Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) ||
+    (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+  ) : list;
+  const pinned = orderedChats.filter((chat) => chat.pinned);
+  const recent = orderedChats.filter((chat) => !chat.pinned);
+  useEffect(() => {
+    try { localStorage.setItem("abud:chat-sort", JSON.stringify(sort)); }
+    catch { /* Sorting still works if storage is unavailable. */ }
+  }, [sort]);
+
+  function moveChat(group, index, offset) {
+    const groupIds = group.map((chat) => chat.id);
+    const next = index + offset;
+    if (next < 0 || next >= groupIds.length) return;
+    [groupIds[index], groupIds[next]] = [groupIds[next], groupIds[index]];
+    const moved = new Set(groupIds);
+    setSort(({ mode, order }) => ({ mode, order: [...groupIds, ...order.filter((entry) => !moved.has(entry))] }));
+    closeMenu();
+  }
   const selected = projects.find((p) => p.id === projectId);
   useEffect(() => {
     if (!menu) return;
@@ -45,28 +79,9 @@ export default function ChatOrganization({ navigationTarget, list, projects, pro
       instructions: project?.instructions || "", memory_mode: project?.memory_mode || "default" });
   }
   const update = (field, value) => setEditor((old) => ({ ...old, [field]: value }));
-  return <>
-    {navigationTarget && createPortal(<div className="chat-navigation">
-      <h2 className="chat-section-label">PROJECTS</h2>
-      <button disabled={busy || saving} onClick={() => projectEditor()}>＋ New project</button>
-      <nav aria-label="Projects">
-        {projects.map((p) => <button className="chat-project-link" key={p.id} disabled={busy || saving}
-          aria-current={projectId === p.id && !archived ? "page" : undefined} onClick={() => onView(p.id, false)}>
-          <span>{p.name}</span><small>{p.conversation_count || 0} · {p.memory_mode === "project_only" ? "Project-only" : "Default"}</small>
-        </button>)}
-        {!projects.length && <small className="chat-sidebar-hint">Group related conversations in a project.</small>}
-      </nav>
-      <h2 className="chat-section-label">CHATS</h2>
-      <div className="chat-view-actions">
-        <button disabled={busy || saving} aria-pressed={!projectId && !archived} onClick={() => onView(null, false)}>Recent chats</button>
-        <button disabled={busy || saving} aria-pressed={archived} onClick={() => onView(null, true)}>Archived chats</button>
-      </div>
-      <button disabled={busy || saving || archived} onClick={onCreate}>＋ New conversation</button>
-      <nav aria-label="Conversations">
-        {!list.length && <p className="chat-sidebar-hint">{archived ? "No archived chats." : "No conversations yet."}</p>}
-        {list.map((c, index) => <React.Fragment key={c.id}>
-          {(index === 0 || Boolean(list[index - 1].pinned) !== Boolean(c.pinned)) && <h3 className="chat-section-label">{c.pinned ? "Pinned" : "Recent"}</h3>}
-          <div className="chat-conversation">
+  function conversationRows(group) {
+    return group.map((c, index) => (
+          <div className="chat-conversation" key={c.id}>
             <button disabled={busy || saving} aria-current={id === c.id ? "page" : undefined} onClick={() => onOpen(c.id)}>
               {c.pinned ? "📌 " : ""}{c.title}
               {archived && c.project_name && <small className="chat-project-caption">{c.project_name}</small>}
@@ -87,10 +102,72 @@ export default function ChatOrganization({ navigationTarget, list, projects, pro
               <button role="menuitem" onClick={() => run(() => chatApi(`/conversations/${c.id}/pin`, "PATCH", { enabled: !c.pinned }))}>{c.pinned ? "Unpin" : "Pin"}</button>
               <button role="menuitem" onClick={() => run(() => chatApi(`/conversations/${c.id}/archive`, "PATCH", { enabled: !c.archived_at }), { conversation: c.id, clear: true })}>{c.archived_at ? "Unarchive" : "Archive"}</button>
               <button role="menuitem" onClick={() => show({ type: "move", conversation: c, project_id: c.project_id || "" })}>Move to project</button>
+              {sort.mode === "manual" && index > 0 &&
+                <button role="menuitem" onClick={() => moveChat(group, index, -1)}>Move up</button>}
+              {sort.mode === "manual" && index < group.length - 1 &&
+                <button role="menuitem" onClick={() => moveChat(group, index, 1)}>Move down</button>}
               <button role="menuitem" onClick={() => show({ type: "delete-chat", conversation: c })}>Delete</button>
             </div>}
           </div>
-        </React.Fragment>)}
+    ));
+  }
+  return <>
+    {navigationTarget && createPortal(<div className="chat-navigation">
+      <div className="chat-section-heading">
+        <h2 className="chat-section-label">
+          <button type="button" className="chat-section-toggle" aria-controls="chat-project-list"
+            aria-expanded={projectsOpen} onClick={() => setProjectsOpen((open) => !open)}>
+            Projects {projectsOpen ? <ChevronUp size={14} aria-hidden="true"/> : <ChevronDown size={14} aria-hidden="true"/>}
+          </button>
+        </h2>
+        <button type="button" className="chat-header-icon" aria-label="Chat sorting settings"
+          aria-controls="chat-sort-options" aria-expanded={menu === "sort"}
+          onClick={(event) => { menuButton.current = event.currentTarget; setMenu(menu === "sort" ? null : "sort"); }}>
+          <Settings2 size={15} aria-hidden="true"/>
+        </button>
+        <button type="button" className="chat-header-icon" aria-label="New project" title="New project"
+          disabled={busy || saving} onClick={(event) => { menuButton.current = event.currentTarget; projectEditor(); }}>
+          <Plus size={17} aria-hidden="true"/>
+        </button>
+      </div>
+      {menu === "sort" && <div id="chat-sort-options" className="chat-sort-options" ref={menuRef}
+        onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeMenu(); } }}>
+        <p>Sort chats by</p>
+        {[["updated", "Last updated"], ["manual", "Manual order"]].map(([mode, label]) => (
+          <button type="button" key={mode} aria-pressed={sort.mode === mode}
+            onClick={() => { setSort((current) => ({ ...current, mode })); closeMenu(); }}>{label}</button>
+        ))}
+        {sort.mode === "manual" && <small>Use a chat’s options to move it up or down.</small>}
+      </div>}
+      <nav aria-label="Projects" id="chat-project-list" hidden={!projectsOpen}>
+        {projects.map((p) => <button className="chat-project-link" key={p.id} disabled={busy || saving}
+          aria-current={projectId === p.id && !archived ? "page" : undefined} onClick={() => onView(p.id, false)}>
+          <span className="chat-project-name"><Folder size={15} aria-hidden="true"/>{p.name}</span><small>{p.conversation_count || 0} · {p.memory_mode === "project_only" ? "Project-only" : "Default"}</small>
+        </button>)}
+        {!projects.length && <small className="chat-sidebar-hint">Group related conversations in a project.</small>}
+      </nav>
+      <h2 className="chat-section-label">CHATS</h2>
+      <div className="chat-view-actions">
+        <button disabled={busy || saving} aria-pressed={!projectId && !archived} onClick={() => onView(null, false)}>Recent chats</button>
+        <button disabled={busy || saving} aria-pressed={archived} onClick={() => onView(null, true)}>Archived chats</button>
+        <button disabled={busy || saving || archived} onClick={onCreate}>＋ New conversation</button>
+      </div>
+      <nav aria-label="Conversations">
+        {!list.length && <p className="chat-sidebar-hint">{archived ? "No archived chats." : "No conversations yet."}</p>}
+        {pinned.length > 0 && <>
+          <h3 className="chat-section-label">Pinned</h3>
+          {conversationRows(pinned)}
+        </>}
+        <h3 className="chat-section-label">
+          <button type="button" className="chat-section-toggle" aria-controls="recent-chat-list"
+            aria-expanded={recentOpen} onClick={() => {
+              if (recentOpen && recent.some((chat) => chat.id === menu)) setMenu(null);
+              setRecentOpen((open) => !open);
+            }}>
+            Recent {recentOpen ? <ChevronUp size={14} aria-hidden="true"/> : <ChevronDown size={14} aria-hidden="true"/>}
+          </button>
+        </h3>
+        <div id="recent-chat-list" hidden={!recentOpen}>{conversationRows(recent)}</div>
       </nav>
       {error && !editor && <p role="alert" className="chat-error">{error}</p>}
     </div>, navigationTarget)}

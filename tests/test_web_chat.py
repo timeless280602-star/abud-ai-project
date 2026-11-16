@@ -203,6 +203,103 @@ class WebChatTests(unittest.TestCase):
             )
         self.assertEqual(self.send(cid, regenerate=True).status_code, 429)
 
+    def test_expired_disabled_and_incomplete_accounts(self):
+        cid = self.create()
+        with self.db.get_connection() as db:
+            db.execute(
+                "UPDATE dashboard_sessions SET expires_at='2000-01-01T00:00:00+00:00' WHERE identity_id=?",
+                (self.alice,),
+            )
+        self.assertEqual(self.send(cid).status_code, 401)
+        token = self.auth.create_session(self.alice)
+        self.client.cookies.set(self.auth.SESSION_COOKIE, token)
+        with self.db.get_connection() as db:
+            db.execute(
+                "UPDATE auth_identities SET disabled_at=? WHERE identity_id=?",
+                (self.db.utc_now(), self.alice),
+            )
+        self.assertEqual(self.client.get("/web/chat/conversations").status_code, 401)
+        self.client.cookies.set(self.auth.SESSION_COOKIE, self.bob_token)
+        with self.db.get_connection() as db:
+            db.execute(
+                "DELETE FROM auth_local_credentials WHERE identity_id=?", (self.bob,)
+            )
+        self.assertEqual(
+            self.client.post(
+                "/web/chat/conversations", json={}, headers=self.headers
+            ).status_code,
+            403,
+        )
+
+    def test_failed_regeneration_preserves_answer_and_releases_lease(self):
+        cid = self.create()
+
+        async def success(messages):
+            yield "Original answer"
+
+        async def timeout(messages):
+            yield "Incomplete replacement"
+            raise TimeoutError("private timeout details")
+
+        with patch.object(self.web, "model_stream", success):
+            self.assertIn('"type": "done"', self.send(cid).text)
+        before = self.client.get("/web/chat/conversations/" + cid).json()["messages"]
+        with patch.object(self.web, "model_stream", timeout):
+            response = self.send(cid, regenerate=True)
+        self.assertIn('"type": "error"', response.text)
+        self.assertNotIn("private timeout details", response.text)
+        self.assertEqual(
+            self.client.get("/web/chat/conversations/" + cid).json()["messages"], before
+        )
+        with self.db.get_connection() as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT lease_until FROM web_conversations WHERE id=?", (cid,)
+                ).fetchone()[0],
+                0,
+            )
+        with patch.object(self.web, "model_stream", success):
+            self.assertIn('"type": "done"', self.send(cid, regenerate=True).text)
+        self.assertEqual(
+            len(self.client.get("/web/chat/conversations/" + cid).json()["messages"]), 2
+        )
+
+    def test_schema_reopen_and_thread_delete_preserve_discord_data(self):
+        self.db.register_user("discord-user")
+        self.db.save_message("discord-user", "user", "Discord history")
+        cid = self.create()
+        self.web.init_schema()
+        self.web.init_schema()
+        self.assertEqual(
+            self.client.get("/web/chat/conversations/" + cid).status_code, 200
+        )
+
+        async def success(messages):
+            yield "Web answer"
+
+        with patch.object(self.web, "model_stream", success):
+            self.send(cid)
+        self.assertEqual(
+            self.client.delete(
+                "/web/chat/conversations/" + cid, headers=self.headers
+            ).status_code,
+            200,
+        )
+        with self.db.get_connection() as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM web_messages WHERE conversation_id=?", (cid,)
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT content FROM conversations WHERE user_id=?",
+                    ("discord-user",),
+                ).fetchone()[0],
+                "Discord history",
+            )
+
 
 class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_openai_sse_protocol_and_incomplete_stream(self):

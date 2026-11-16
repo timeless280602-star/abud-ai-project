@@ -98,12 +98,13 @@ npm ci
 npm run build
 ```
 
-Actual results on Python 3.12: **24 tests passed**, including the 19 existing
+Actual results on Python 3.12: **27 tests passed**, including the 19 existing
 memory/tool/metadata tests. New tests exercise real Google-provider identities and
 session cookies against isolated SQLite, thread CRUD, cross-user denial, CSRF,
 revoked sessions, input spoofing, unchanged internal-key protection, persisted SSE
 history, regeneration, memory isolation/source, generic provider failure, pending
 turn retries, busy leases, rate limits and OpenAI SSE parsing/incomplete streams.
+Additional regression checks cover expired sessions, disabled accounts, incomplete profiles, timeout during regeneration preserving the original answer and releasing its lease, idempotent web schema initialization, and web-thread deletion preserving Discord history.
 OAuth and provider network traffic are mocked; TestClient never starts a bot.
 Existing Authlib/Starlette/FastAPI deprecation warnings remain.
 

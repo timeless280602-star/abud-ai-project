@@ -45,14 +45,19 @@ export default function WebChat() {
     [ratingBusy, setRatingBusy] = useState(false),
     [speakingId, setSpeakingId] = useState(null);
   const sending = useRef(false);
-  const [choiceEpoch, setChoiceEpoch] = useState(0);
+  const invalidatedChoices = useRef(new Set());
   const [choicesBlocked, setChoicesBlocked] = useState(false);
   const version = useRef(0),
     abort = useRef(null),
     bottom = useRef(null),
     speech = useRef(null);
   const renderedVersion = version.current;
-  const choices = eligibleChoices(messages.at(-1), messages.at(-1));
+  const choiceKey = `${id}:${messages.at(-1)?.id}`;
+  let choiceInvalidated = invalidatedChoices.current.has(choiceKey);
+  try {
+    choiceInvalidated ||= sessionStorage.getItem(`abud:invalidated-choice:${choiceKey}`) === "1";
+  } catch { /* Storage may be unavailable; in-memory invalidation still applies. */ }
+  const choices = !choiceInvalidated && eligibleChoices(messages.at(-1), messages.at(-1));
   function stopSpeech() {
     if (speech.current) {
       speech.current = null;
@@ -132,12 +137,18 @@ export default function WebChat() {
   }
   async function send(regenerate = false, choiceText, sourceId) {
     const text = (choiceText ?? draft).trim();
-    if (sourceId !== undefined && (choicesBlocked || sourceId !== messages.at(-1)?.id)) return;
+    if (sourceId !== undefined && (choicesBlocked || invalidatedChoices.current.has(`${id}:${sourceId}`) || sourceId !== messages.at(-1)?.id)) return;
     if (renderedVersion !== version.current || sending.current || busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!text || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
     sending.current = true;
     setChoicesBlocked(true);
     const currentVersion = version.current;
-    if (regenerate) setChoiceEpoch((value) => value + 1);
+    if (regenerate && messages.at(-1)?.role === "assistant" && messages.at(-1)?.id) {
+      // Invalidate before the request: a failed regenerate can restore this exact ID.
+      invalidatedChoices.current.add(choiceKey);
+      try {
+        sessionStorage.setItem(`abud:invalidated-choice:${choiceKey}`, "1");
+      } catch { /* Keep the in-memory tombstone even if tab storage is unavailable. */ }
+    }
     stopSpeech();
     setRatingId(null);
     setBusy(true);
@@ -304,7 +315,7 @@ export default function WebChat() {
                 {m.incomplete && <small>Incomplete response · Regenerate to retry.</small>}
               </div>
               {m === messages.at(-1) && choices && !archivedChat && !loading &&
-                <ChatChoices key={`${projectId}:${id}:${m.id}:${choiceEpoch}`}
+                <ChatChoices key={`${projectId}:${id}:${m.id}`}
                   group={choices}
                   disabled={busy || ratingBusy || choicesBlocked}
                   onSend={(text) => send(false, text, m.id)} />}

@@ -1,5 +1,5 @@
 // Deliberately conservative: numeric/bulleted lists need an explicit decision cue.
-const decision = /(?:\b(?:choose|select|pick)\b.{0,55}\b(?:action|option|path|one|two)\b|\b(?:your choice|what (?:do|will) you do)\b|\b(?:pilih|pilihanmu|pilihan kamu|apa yang (?:kamu|akan)|mau pilih)\b)/i;
+const decision = /(?:\b(?:choose|select|pick)\b.{0,55}\b(?:action|option|path|one|two)\b|\b(?:your choice|what (?:do|will|would) you (?:like to |want to )?(?:do|choose|pick|select)|which (?:action|option|path|one) (?:would|will|do) you|which (?:would|will|do) you (?:choose|pick|select))\b|\b(?:pilih(?:lah)?|pilihanmu|pilihan kamu|apa yang (?:kamu|akan)\b.{0,30}\blakukan|mau pilih)\b)/i;
 const technical = /\b(?:tutorial|instructions|installation|install|dependencies|deploy|documentation|configuration|command output|references|citations|konfigurasi|instalasi|panduan|langkah-langkah|referensi)\b/i;
 const action = /^(?:\*\*)?(?:open|investigate|call|wait|hide|run|leave|enter|ask|talk|follow|take|use|keep|choose|try|buy|accept|decline|stay|search|listen|go|membuka|buka|menyelidiki|selidiki|memanggil|panggil|menunggu|tunggu|pergi|masuk|bertanya|ikuti|mengambil|ambil|gunakan|memilih|pilih|mencoba|coba|membeli|beli|terima|tolak|diam|cari|mencari|dengarkan)\b/i;
 const story = /\b(?:story|scene|narrative|cerita|adegan|kisah)\b/i;
@@ -39,7 +39,7 @@ export function parseChoices(text) {
   if (after && (after.length > 140 || after.split("\n").length > 2 || !decision.test(after))) return null;
   const context = before + "\n" + after;
   if (/\b(?:example|contoh)\b/i.test(context)) return null;
-  if (!decision.test(context) && !(style.startsWith("letter") && !before.trim() && !after && options.every((option) => action.test(option.text)))) return null;
+  if (!decision.test(before.slice(-280) + "\n" + after) && !(style.startsWith("letter") && !before.trim() && !after && options.every((option) => action.test(option.text)))) return null;
   return { options, storytelling: story.test(context) };
 }
 

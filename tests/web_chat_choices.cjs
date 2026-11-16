@@ -9,8 +9,9 @@ const assert = require('node:assert/strict');
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     const choiceText = 'Choose your action in this story:\nA) Open the door\nB) Investigate the noise\nC) <img src=x onerror=alert(1)>';
-    const initial = () => [{id:1,role:'user',content:'Tell a story'}, {id:2,role:'assistant',content:choiceText}];
-    let messages = initial(), posts = [], fail = false, partial = false, historyFailure = false, hold;
+    let nextAssistantId = 2;
+    const initial = () => [{id:1,role:'user',content:'Tell a story'}, {id:nextAssistantId++,role:'assistant',content:choiceText}];
+    let messages = initial(), posts = [], fail = false, partial = false, historyFailure = false, regenerateFailure = null, hold;
     await page.route('**/auth/me', r => r.fulfill({json:{identity_id:'test',profile_completed:true,dashboard_access:false,permissions:[]}}));
     await page.route('**/health', r => r.fulfill({json:{status:'healthy'}}));
     await page.route('**/web/chat/projects', r => r.fulfill({json:[{id:'p1',name:'Private project',memory_mode:'project_only'}]}));
@@ -20,11 +21,17 @@ const assert = require('node:assert/strict');
         const body = req.postDataJSON(); posts.push(body);
         if (fail) return r.fulfill({status:503,json:{detail:'Rejected. Please retry.'}});
         if (hold) await hold;
+        if (body.regenerate && regenerateFailure) {
+          if (regenerateFailure === 'rejected') return r.fulfill({status:503,json:{detail:'Regenerate rejected.'}});
+          if (regenerateFailure === 'history-error') historyFailure = true;
+          const ending = regenerateFailure === 'truncated' ? '' : 'data: {"type":"error","message":"Regenerate failed."}\n\n';
+          return r.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({type:'delta',text:choiceText})+'\n\n'+ending});
+        }
         if (partial) {
           messages.push({id:3,role:'user',content:body.message});
           return r.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({type:'delta',text:choiceText})+'\n\n'});
         }
-        if (body.regenerate) messages = initial().map(m => m.role === 'assistant' ? {...m,id:20} : m);
+        if (body.regenerate) messages = initial();
         else messages.push({id:3,role:'user',content:body.message},{id:4,role:'assistant',content:'The door opens.'});
         return r.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({type:'delta',text:messages.at(-1).content})+'\n\ndata: {"type":"done"}\n\n'});
       }
@@ -75,6 +82,47 @@ const assert = require('node:assert/strict');
     await a.click();
     await page.getByRole('button',{name:'Regenerate response',exact:true}).click(); await idle();
     assert.equal(await confirm.isDisabled(),true);
+    assert.equal(await a.getAttribute('aria-pressed'),'false');
+    assert.equal(await b.getAttribute('aria-pressed'),'false');
+    await page.reload(); await open();
+    assert.equal(await confirm.isDisabled(),true); // successful regeneration reloads with no selection
+
+    for (const failure of ['rejected', 'stream-error', 'truncated', 'history-error']) {
+      await b.click(); await a.click();
+      const originalId = messages.at(-1).id, before = posts.length;
+      regenerateFailure = failure;
+      let releaseRegenerate;
+      hold = new Promise(resolve => {releaseRegenerate=resolve;});
+      await page.getByRole('button',{name:'Regenerate response',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelector('.chat-composer textarea').disabled);
+      assert.equal(await region.count(),0); // invalidated as soon as Regenerate starts
+      releaseRegenerate(); hold=null;
+      await idle();
+      assert.equal(messages.at(-1).id,originalId); // backend restores the original response
+      assert.equal(posts.length,before+1);
+      assert.deepEqual(posts.at(-1),{regenerate:true});
+      assert.equal(await region.count(),0); // including failed history reconciliation
+      historyFailure=false;
+      await page.getByRole('button',{name:'Story',exact:true}).click(); await idle();
+      assert.equal(await region.count(),0); // subsequent history reload must not reactivate it
+      await page.getByRole('button',{name:'Other story',exact:true}).click(); await idle();
+      await region.waitFor(); // same message ID in another conversation is independent
+      assert.equal(await confirm.isDisabled(),true);
+      await page.getByRole('button',{name:'Story',exact:true}).click(); await idle();
+      assert.equal(await region.count(),0);
+      await page.reload();
+      await page.getByRole('button',{name:'Story',exact:true}).click(); await idle();
+      assert.equal(await region.count(),0); // tab-scoped invalidation survives page reload
+      regenerateFailure=null;
+      await page.getByRole('button',{name:'Regenerate response',exact:true}).click(); await idle();
+      await region.waitFor();
+      assert.notEqual(messages.at(-1).id,originalId);
+      assert.equal(await confirm.isDisabled(),true); // new successful response is eligible, unselected
+      assert.equal(await a.getAttribute('aria-pressed'),'false');
+      assert.equal(await b.getAttribute('aria-pressed'),'false');
+      await page.getByRole('button',{name:'Story',exact:true}).click(); await idle();
+      assert.equal(await confirm.isDisabled(),true);
+    }
     await a.click(); fail=true; await confirm.click(); await idle();
     await page.getByRole('alert').filter({hasText:'Rejected'}).waitFor();
     assert.equal(await a.getAttribute('aria-pressed'),'true'); // safe rejected-request retry
@@ -85,7 +133,17 @@ const assert = require('node:assert/strict');
     messages=initial(); await open(); await a.click(); partial=true; await confirm.click(); await idle();
     assert.equal(await region.count(),0); // failed/partial answer never enables choices
     assert.equal(await page.getByRole('button',{name:'Send',exact:true}).isDisabled(),true);
+    // Privacy/storage restrictions must not break in-memory invalidation or sending.
+    partial=false; messages=initial(); await open();
+    await page.evaluate(() => Object.defineProperty(window,'sessionStorage',{
+      get() { throw Error('Storage disabled by browser policy'); },
+    }));
+    await a.click(); regenerateFailure='rejected';
+    await page.getByRole('button',{name:'Regenerate response',exact:true}).click(); await idle();
+    assert.equal(await region.count(),0);
+    await page.getByRole('button',{name:'Story',exact:true}).click(); await idle();
+    assert.equal(await region.count(),0);
     assert.deepEqual(errors,[]);
-    console.log('PASS: choices, keyboard, safe text, mobile, order, limit/deselection, synchronous send race, reload, conversation/project isolation, regenerate, retry, failed stream.');
+    console.log('PASS: choices, keyboard, safe text, mobile, order, limit/deselection, synchronous send race, reload, conversation/project isolation, successful/rejected/failed/truncated regenerate, history/page reload invalidation, selection reset, unavailable tab storage, retry, failed stream.');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exit(1);});

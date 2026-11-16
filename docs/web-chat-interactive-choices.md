@@ -9,7 +9,11 @@ backend SSE validation, persistence, authentication and memory scopes are unchan
 `chatChoices.js` accepts 2–8 sequential A–H or 1–8 labels with consistent `)` or `.`
 punctuation, optional Markdown bullets/bold markers, or plain Markdown bullets.
 Numeric and plain bullet groups require an explicit Indonesian/English decision cue
-outside the list (for example “Pilih satu opsi” or “Choose your action”). Bare alphabetic
+outside the list (for example “Pilihlah tindakan yang kamu inginkan”, “Pilihlah salah
+satu tindakan”, “Apa yang akan kamu lakukan selanjutnya?”, “Kamu mau pilih yang mana?”,
+“Choose your action” or “What would you like to do next?”). A preceding cue must be
+within 280 characters of the options. With a nearby cue, descriptions may start with
+“Kamu…” or “You…”; no opening action verb is required. Without a cue, bare alphabetic
 lists qualify only when every description begins with a recognized action verb.
 A short decision question can follow the group. Adjacent continuations indented by
 2–3 spaces are included; ambiguous wrapping is rejected. Each description is capped
@@ -48,14 +52,28 @@ Only the last message can expose controls, and only if it is an assistant messag
 persisted ID and no incomplete flag. Streaming placeholders never qualify. Successful
 terminal SSE handling and authoritative history reload precede activating a new answer.
 Older lists remain ordinary Markdown. Reload derives choices without storing selections.
+Regenerated message IDs are excluded as described below.
 The existing conversation endpoint handles sends and regenerate, including project scope,
 ownership, memory boundaries and persisted user messages; there is no new API or migration.
 
 Choice submission and the composer share `send()`, a synchronous ref guard and existing
 busy/lease protections. Navigation guards prevent switching during sends; version and
 source-message checks reject stale handlers. Conversation/project/message keys reset
-selections on navigation or a changed response. Regenerate resets selection even when
-it restores the original answer after failure. Locks release in `finally`.
+selections on navigation or a changed response. Regenerate immediately invalidates the
+current assistant message's controls before making the request. The controls unmount,
+clearing selections. An in-memory set plus tab-scoped `sessionStorage` records only the
+conversation/message IDs (no text, Project instructions, memory or selections). Failed,
+rejected or truncated Regenerate attempts cannot reactivate the restored original response,
+including after history reconciliation, switching chats and page reloads in the same tab.
+A successful replacement has a new persisted message ID and may expose fresh, unselected
+choices even if its text is identical. Source-message checks also reject invalidated IDs.
+Locks release in `finally`.
+
+Invalidation is local to the browser tab, not stored on the server or synchronized across
+devices. Closing the tab or clearing its storage removes it. If browser policy/quota blocks
+session storage, in-memory invalidation still protects the mounted chat and history reloads,
+but cannot survive a full page reload. Existing backend scope and ownership remain the
+security boundary; this UI metadata grants no permissions.
 
 On rejected requests, history reconciliation preserves the selected choices when no turn
 was persisted, so confirmation can retry. If a user turn was persisted but generation
@@ -94,11 +112,17 @@ conversation quality, live OAuth, actual screen-reader narration and real Discor
 behavior require separate manual evaluation. No deployment or production configuration
 change is part of this feature.
 
-Validation for this change: `npm ci`, `npm test` (32 cases), `npm run build`, the
+Validation for this change: `npm ci`, `npm test` (63 cases), `npm run build`, the
 full Python suite (76 tests), all four browser/E2E commands above, and
 `git diff --check` passed. The chat E2E suite additionally verifies combined-choice
 message persistence and inactive old choices after reload through the real local API.
 Existing Authlib deprecation warnings remain. The new browser suite initially needed
 its project-button selector corrected to include the existing memory-mode label;
 the corrected suite passed, including rejection plus failed-history reconciliation.
+Review follow-up also covers the exact Indonesian roleplay structure, English/Indonesian
+pronoun-led options and nearby questions, plus negative procedural/code/quoted/technical
+cases. Browser regressions cover successful, rejected, error, truncated and unreconciled
+Regenerate, history/page reloads, conversation isolation and storage-disabled fallback.
+The API-backed suite confirms a failed Regenerate retains the original persisted response
+without reactivating its controls; successful retry replaces its ID and clears selection.
 No live-provider or production checks were run.

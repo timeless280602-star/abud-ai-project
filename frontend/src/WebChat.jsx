@@ -27,7 +27,7 @@ function speechLanguage(text) {
 async function api(path = "", method = "GET", body) {
   return chatApi("/conversations" + path, method, body);
 }
-export default function WebChat() {
+export default function WebChat({ navigationTarget, onConversationOpen }) {
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState(null),
     [archived, setArchived] = useState(false),
@@ -106,7 +106,12 @@ export default function WebChat() {
     setError("");
     try {
       const d = await (await api("/" + cid)).json();
-      if (v === version.current) { setMessages(d.messages); setChoicesBlocked(false); setArchivedChat(Boolean(d.archived_at)); }
+      if (v === version.current) {
+        setMessages(d.messages);
+        setChoicesBlocked(false);
+        setArchivedChat(Boolean(d.archived_at));
+        onConversationOpen();
+      }
     } catch (e) {
       if (v === version.current) setError(e.message);
     } finally {
@@ -304,7 +309,7 @@ export default function WebChat() {
   }
   return (
     <section className="web-chat" aria-label="AI Chat">
-      <ChatOrganization list={list} projects={projects} projectId={projectId} archived={archived}
+      <ChatOrganization navigationTarget={navigationTarget} list={list} projects={projects} projectId={projectId} archived={archived}
         busy={busy || ratingBusy} id={id} onOpen={open} onCreate={create} onView={view}
         onRefresh={refresh} onChanged={organizationChanged} />
       <div className="chat-main">

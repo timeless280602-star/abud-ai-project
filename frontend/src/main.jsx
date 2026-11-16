@@ -2262,6 +2262,9 @@ function App() {
     try { return localStorage.getItem('abud:sidebar-collapsed') === 'true'; }
     catch { return false; }
   });
+  const [chatNavigation, setChatNavigation] = useState(null);
+  const [chatMenuOpen, setChatMenuOpen] = useState(true);
+  const sidebarRef = useRef(null);
   const mobileMenuRef = useRef(null);
   const mobileCloseRef = useRef(null);
   const mainRef = useRef(null);
@@ -2279,10 +2282,18 @@ function App() {
     const closeOnDesktop = (event) => {
       if (event.matches) setMobileOpen(false);
     };
+    const onEscape = (event) => {
+      if (event.key === 'Escape' && !event.defaultPrevented && sidebarRef.current?.contains(event.target)) {
+        event.preventDefault();
+        setMobileOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onEscape);
     desktop.addEventListener('change', closeOnDesktop);
     if (main) main.inert = true;
     mobileCloseRef.current?.focus();
     return () => {
+      document.removeEventListener('keydown', onEscape);
       desktop.removeEventListener('change', closeOnDesktop);
       if (main) main.inert = false;
       if (!desktop.matches) menu?.focus();
@@ -2291,10 +2302,7 @@ function App() {
 
   function handleDrawerKeys(event) {
     if (!mobileOpen) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      setMobileOpen(false);
-    } else if (event.key === 'Tab') {
+    if (event.key === 'Tab') {
       const buttons = event.currentTarget.querySelectorAll('button:not([disabled])');
       const first = buttons[0];
       const last = buttons[buttons.length - 1];
@@ -2362,7 +2370,7 @@ function App() {
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
       {mobileOpen && <button type="button" className="mobile-backdrop" tabIndex={-1}
         onClick={() => setMobileOpen(false)} aria-label="Close menu"/>}
-      <aside id="dashboard-sidebar" className={`sidebar${mobileOpen ? ' sidebar-open' : ''}`}
+      <aside id="dashboard-sidebar" ref={sidebarRef} className={`sidebar${mobileOpen ? ' sidebar-open' : ''}`}
         role={mobileOpen ? 'dialog' : undefined} aria-modal={mobileOpen || undefined}
         aria-label={mobileOpen ? 'Dashboard menu' : undefined} onKeyDown={handleDrawerKeys}>
         <div className="sidebar-brand">
@@ -2376,13 +2384,35 @@ function App() {
             <div className="nav-label">{group}</div>
             {visibleModules.filter(m => m.group === group).map(m => {
               const Icon = m.icon;
-              return <button type="button" key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`}
-                aria-current={active === m.id ? 'page' : undefined} aria-label={m.label}
-                title={sidebarCollapsed && !mobileOpen ? m.label : undefined}
-                onClick={() => {setActive(m.id);setMobileOpen(false);}}>
-                <Icon size={17} aria-hidden="true"/><span>{m.label}</span>
-                {active === m.id && <ChevronRight size={14} className="nav-arrow" aria-hidden="true"/>}
-              </button>;
+              const isChat = m.id === 'chat';
+              const selected = active === m.id;
+              return <div className={isChat ? 'dashboard-chat-item' : undefined} key={m.id}>
+                <div className={isChat ? 'dashboard-chat-row' : undefined}>
+                  <button type="button" className={`nav-item ${selected ? 'active' : ''}`}
+                    aria-current={selected ? 'page' : undefined} aria-label={m.label}
+                    title={sidebarCollapsed && !mobileOpen ? m.label : undefined}
+                    onClick={() => {
+                      setActive(m.id);
+                      if (isChat) {
+                        setChatMenuOpen(true);
+                        if (!mobileOpen) setSidebarCollapsed(false);
+                      } else {
+                        setMobileOpen(false);
+                      }
+                    }}>
+                    <Icon size={17} aria-hidden="true"/><span>{m.label}</span>
+                    {selected && !isChat && <ChevronRight size={14} className="nav-arrow" aria-hidden="true"/>}
+                  </button>
+                  {isChat && selected && <button type="button" className="chat-navigation-toggle"
+                    aria-controls="dashboard-chat-navigation" aria-expanded={chatMenuOpen}
+                    aria-label={chatMenuOpen ? 'Hide chat navigation' : 'Show chat navigation'}
+                    onClick={() => setChatMenuOpen((open) => !open)}>
+                    <ChevronDown size={16} aria-hidden="true"/>
+                  </button>}
+                </div>
+                {isChat && <div id="dashboard-chat-navigation" className="dashboard-chat-navigation"
+                  ref={setChatNavigation} hidden={!selected || !chatMenuOpen}/>}
+              </div>;
             })}
           </div>)}
         </nav>
@@ -2409,7 +2439,7 @@ function App() {
           <div className="topbar-right"><span className="top-status"><i/> API {health?.status === 'healthy' ? 'CONNECTED' : 'UNKNOWN'}</span><span className="top-clock">UTC+7 / ID</span><div className="top-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div></div>
         </header>
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}
-        {active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat/></React.Suspense> : active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
+        {active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat navigationTarget={chatNavigation} onConversationOpen={() => setMobileOpen(false)}/></React.Suspense> : active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
           active === 'memory' ? <MemoryMatrix user={user} guilds={guilds}/> :
           active === 'security' ? <SecurityProtocol user={user}/> :
           active === 'neural' ? <NeuralEngine user={user}/> :

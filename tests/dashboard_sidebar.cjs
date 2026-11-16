@@ -47,14 +47,24 @@ const { chromium } = require('playwright');
 
     const nav = page.getByRole('navigation', { name: 'Dashboard navigation' });
     const chat = nav.getByRole('button', { name: 'AI Chat', exact: true });
-    assert.equal(await nav.getByRole('button').count(), 10);
+    assert.equal(await nav.locator('.nav-item').count(), 10);
     assert.equal(await chat.getAttribute('aria-current'), 'page');
+    const projects = nav.getByRole('navigation', { name: 'Projects', exact: true });
+    const conversations = nav.getByRole('navigation', { name: 'Conversations', exact: true });
+    assert.equal(await projects.isVisible(), true);
+    assert.equal(await conversations.isVisible(), true);
+    assert.equal(await page.locator('.web-chat aside').count(), 0);
+    await nav.getByRole('button', { name: 'Hide chat navigation' }).click();
+    assert.equal(await conversations.isVisible(), false);
+    await nav.getByRole('button', { name: 'Show chat navigation' }).click();
+    assert.equal(await conversations.isVisible(), true);
     await capture('desktop-expanded');
 
     await page.getByRole('button', { name: 'Collapse sidebar' }).click();
     assert.equal(await page.getByRole('button', { name: 'Expand sidebar' }).getAttribute('aria-expanded'), 'false');
     assert.equal(await chat.getByText('AI Chat').isVisible(), false);
-    assert.equal(await nav.getByRole('button').count(), 10);
+    assert.equal(await nav.locator('.nav-item').count(), 10);
+    assert.equal(await conversations.isVisible(), false);
     await capture('desktop-collapsed');
 
     await page.reload();
@@ -80,6 +90,11 @@ const { chromium } = require('playwright');
     await drawer.waitFor({ state: 'hidden' });
     await page.waitForFunction(() => document.activeElement?.classList.contains('mobile-menu'));
     assert.equal(await menu.getAttribute('aria-expanded'), 'false');
+
+    await menu.click();
+    await nav.getByRole('button', { name: '＋ New conversation', exact: true }).click();
+    await drawer.waitFor({ state: 'hidden' });
+    await page.getByLabel('Message Abud', { exact: true }).waitFor();
 
     await menu.click();
     await nav.getByRole('button', { name: 'Command Center', exact: true }).click();

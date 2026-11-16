@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { chatApi } from "./chatApi";
 
 function Dialog({ title, children, onClose }) {
@@ -15,7 +16,7 @@ function Dialog({ title, children, onClose }) {
   </dialog>;
 }
 
-export default function ChatOrganization({ list, projects, projectId, archived, busy, id, onOpen, onCreate, onView, onRefresh, onChanged }) {
+export default function ChatOrganization({ navigationTarget, list, projects, projectId, archived, busy, id, onOpen, onCreate, onView, onRefresh, onChanged }) {
   const [menu, setMenu] = useState(null), [editor, setEditor] = useState(null),
     [saving, setSaving] = useState(false), [error, setError] = useState("");
   const menuRef = useRef(null), menuButton = useRef(null);
@@ -45,8 +46,7 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
   }
   const update = (field, value) => setEditor((old) => ({ ...old, [field]: value }));
   return <>
-    <aside className="chat-sidebar">
-      <h1>AI Chat</h1>
+    {navigationTarget && createPortal(<div className="chat-navigation">
       <h2 className="chat-section-label">PROJECTS</h2>
       <button disabled={busy || saving} onClick={() => projectEditor()}>＋ New project</button>
       <nav aria-label="Projects">
@@ -93,7 +93,7 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
         </React.Fragment>)}
       </nav>
       {error && !editor && <p role="alert" className="chat-error">{error}</p>}
-    </aside>
+    </div>, navigationTarget)}
     {selected && !archived && <div className="chat-project-panel">
       <div><h2>{selected.name}</h2><span className="chat-memory-mode">{selected.memory_mode === "project_only" ? "Project-only memory" : "Default memory"}</span></div>
       {selected.description && <p>{selected.description}</p>}

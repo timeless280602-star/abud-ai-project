@@ -33,6 +33,7 @@ jobs:
       PYTHONUNBUFFERED: '1'
       PYTHONDONTWRITEBYTECODE: '1'
       ABUD_DATABASE_PATH: /tmp/abud-ci-bootstrap.db
+      ABUD_BASE_URL: https://example.test
     steps:
       - name: Check out PR branch
         uses: actions/checkout@v4

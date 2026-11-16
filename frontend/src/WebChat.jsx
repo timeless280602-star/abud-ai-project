@@ -5,6 +5,8 @@ import "highlight.js/styles/github-dark.css";
 import ChatOrganization from "./ChatOrganization";
 import ChatChoices from "./ChatChoices";
 import { eligibleChoices } from "./chatChoices";
+import ChatImages from "./ChatImages";
+import { imageQuotaMessage } from "./imageQuota";
 import { chatApi } from "./chatApi";
 const root = "/web/chat/conversations";
 const messageTime = new Intl.DateTimeFormat(undefined, {
@@ -45,6 +47,7 @@ export default function WebChat() {
     [ratingBusy, setRatingBusy] = useState(false),
     [speakingId, setSpeakingId] = useState(null);
   const sending = useRef(false);
+  const [imageLoading, setImageLoading] = useState(false);
   const invalidatedChoices = useRef(new Set());
   const [choicesBlocked, setChoicesBlocked] = useState(false);
   const version = useRef(0),
@@ -163,7 +166,7 @@ export default function WebChat() {
         signal: abort.current.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          regenerate ? { regenerate: true } : { message: text },
+          regenerate ? { regenerate: true } : { message: text, request_id: crypto.randomUUID() },
         ),
       });
       if (!r.ok) {
@@ -184,7 +187,7 @@ export default function WebChat() {
       const decoder = new TextDecoder();
       let buffer = "",
         answer = "",
-        complete = false;
+        complete = false, images = [];
       while (true) {
         const chunk = await reader.read();
         buffer += decoder.decode(chunk.value, { stream: !chunk.done });
@@ -195,11 +198,17 @@ export default function WebChat() {
           const e = JSON.parse(f.slice(6));
           if (e.type === "error") throw Error(e.message);
           if (e.type === "done") complete = true;
+          if (e.type === "image_loading") setImageLoading(true);
+          if (e.type === "image_quota") setNotice(imageQuotaMessage(e));
+          if (e.type === "images") {
+            images = e.images;
+            setMessages([...base, { role: "assistant", content: answer, images, created_at }]);
+          }
           if (e.type === "memory_saved") setNotice("Personal memory saved.");
           if (e.type === "memory_not_saved") setNotice(e.message);
           if (e.type === "delta") {
             answer += e.text;
-            setMessages([...base, { role: "assistant", content: answer, created_at }]);
+            setMessages([...base, { role: "assistant", content: answer, images, created_at }]);
           }
         }
         if (chunk.done) break;
@@ -228,6 +237,7 @@ export default function WebChat() {
       }
       sending.current = false;
       setBusy(false);
+      setImageLoading(false);
     }
   }
   async function rate(message, rating) {
@@ -312,6 +322,7 @@ export default function WebChat() {
                 <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
                   {m.content || (m.incomplete ? "No response received." : "Thinking…")}
                 </ReactMarkdown>
+                {m.images?.length > 0 && <ChatImages images={m.images} />}
                 {m.incomplete && <small>Incomplete response · Regenerate to retry.</small>}
               </div>
               {m === messages.at(-1) && choices && !archivedChat && !loading &&
@@ -361,7 +372,7 @@ export default function WebChat() {
           ))}
           <div ref={bottom} />
         </div>
-        <div role="status">{busy ? "Abud is responding…" : notice}</div>
+        <div role="status">{busy ? (imageLoading ? "Generating image…" : "Abud is responding…") : notice}</div>
         {error && (
           <p className="chat-error" role="alert">
             {error}

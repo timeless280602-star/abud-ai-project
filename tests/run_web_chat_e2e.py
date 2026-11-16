@@ -98,6 +98,18 @@ def main():
                 yield text
                 await asyncio.sleep(0.1)
 
+        # Local-only image fixture: never contacts any paid provider.
+        from app import web_images
+        import base64
+        import io
+        from PIL import Image
+        output = io.BytesIO()
+        Image.new('RGB', (32, 32), 'blue').save(output, format='PNG')
+        encoded_image = base64.b64encode(output.getvalue()).decode()
+        async def fixture_images(prompt, count, job_id):
+            await asyncio.sleep(.4)
+            return [{'b64_json': encoded_image} for _ in range(count)]
+        web_images.provider_generate = fixture_images
         web_chat.model_stream = fixture_stream
         subprocess.run(
             [

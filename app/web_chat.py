@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import auth, database, web_projects
+from app import auth, database, web_projects, web_images
 
 router = APIRouter(prefix="/web/chat")
 logger = logging.getLogger(__name__)
@@ -147,8 +147,13 @@ def init_schema():
         }.items():
             if name not in columns:
                 db.execute(f'ALTER TABLE web_conversations ADD COLUMN {name} {definition}')
+        message_columns = {r['name'] for r in db.execute('PRAGMA table_info(web_messages)')}
+        if 'request_id' not in message_columns:
+            db.execute('ALTER TABLE web_messages ADD COLUMN request_id TEXT')
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_web_turn_request ON web_messages(request_id) WHERE request_id IS NOT NULL')
         db.execute('CREATE INDEX IF NOT EXISTS idx_web_conversation_group ON web_conversations(identity_id,project_id,archived_at,pinned,updated_at)')
 
+    web_images.init_schema()
 
 def identity(request):
     user = auth.get_current_identity(request)
@@ -180,6 +185,7 @@ class Turn(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     message: str = Field(default="", max_length=6000)
     regenerate: bool = False
+    request_id: uuid.UUID | None = None
 
 
 class NewConversation(Title):
@@ -238,6 +244,10 @@ def retrieve(cid: str, request: Request):
                 (cid,),
             )
         ]
+        for message in messages:
+            images = web_images.artifacts(db, message['id'])
+            if images:
+                message['images'] = images
     return {"id": cid, "title": row["title"], "project_id": row['project_id'],
             "archived_at": row['archived_at'], "pinned": row['pinned'], "messages": messages}
 
@@ -438,20 +448,9 @@ def send(cid: str, request: Request, payload: Turn):
             raise HTTPException(409, 'Restore this archived conversation before sending messages.')
         if row["lease_until"] > now:
             raise HTTPException(409, "A response is still running.")
-        limit = db.execute(
-            "SELECT * FROM web_chat_limits WHERE identity_id=?", (owner,)
-        ).fetchone()
-        if limit and limit["window"] > now - 60 and limit["count"] >= 10:
-            raise HTTPException(429, "Too many messages. Please wait a minute.")
-        window, count = (
-            (limit["window"], limit["count"] + 1)
-            if limit and limit["window"] > now - 60
-            else (now, 1)
-        )
-        db.execute(
-            "INSERT OR REPLACE INTO web_chat_limits VALUES (?,?,?)",
-            (owner, window, count),
-        )
+        request_key = f"{owner}:{payload.request_id}" if payload.request_id else None
+        if request_key and db.execute('SELECT 1 FROM web_messages WHERE request_id=?', (request_key,)).fetchone():
+            raise HTTPException(409, 'This request was already submitted. Reload the conversation.')
         history = [
             dict(r)
             for r in db.execute(
@@ -476,11 +475,30 @@ def send(cid: str, request: Request, payload: Turn):
         else:
             if history and history[-1]["role"] == "user":
                 raise HTTPException(409, "Retry the previous message using Regenerate.")
-            db.execute(
-                "INSERT INTO web_messages(conversation_id,role,content,created_at) VALUES (?,?,?,?)",
-                (cid, "user", payload.message, database.utc_now()),
+            user_message = db.execute(
+                "INSERT INTO web_messages(conversation_id,role,content,created_at,request_id) VALUES (?,?,?,?,?)",
+                (cid, "user", payload.message, database.utc_now(), request_key),
             )
-            history.append({"role": "user", "content": payload.message})
+            history.append({"id": user_message.lastrowid, "role": "user", "content": payload.message})
+        image_intent = web_images.intent(history[-1]["content"])
+        verified_creator = auth._is_creator_identity(db, owner) if image_intent else False
+        limit = db.execute(
+            "SELECT * FROM web_chat_limits WHERE identity_id=?", (owner,)
+        ).fetchone()
+        if limit and limit["window"] > now - 60 and limit["count"] >= 10:
+            # Let quota exhaustion reach its structured notification; trusted
+            # Creator image requests have no image-count rate cap.
+            if not image_intent or (not verified_creator and sum(web_images.quota(db, owner, now)[:2]) < web_images.LIMIT):
+                raise HTTPException(429, "Too many messages. Please wait a minute.")
+        window, count = (
+            (limit["window"], limit["count"] + 1)
+            if limit and limit["window"] > now - 60
+            else (now, 1)
+        )
+        db.execute(
+            "INSERT OR REPLACE INTO web_chat_limits VALUES (?,?,?)",
+            (owner, window, count),
+        )
         db.execute(
             "UPDATE web_conversations SET lease_until=?,updated_at=? WHERE id=?",
             (lease_until, database.utc_now(), cid),
@@ -491,6 +509,12 @@ def send(cid: str, request: Request, payload: Turn):
         stage = "prompt"
         answer = ""
         try:
+            if image_intent:
+                count, prompt = image_intent
+                async with aclosing(web_images.generate(owner, cid, history[-1]['id'], count, prompt, verified_creator, replace_id)) as stream:
+                    async for frame in stream:
+                        yield frame
+                return
             if first_title:
                 task = asyncio.create_task(generate_title(cid, owner, payload.message, fallback))
                 title_tasks.add(task)
@@ -628,3 +652,8 @@ async def generate_title(cid, owner, message, fallback):
                        (title, cid, owner, fallback))
     except Exception:
         pass  # The persisted fallback remains valid, including after a worker restart.
+
+
+@router.get("/images/{image_id}")
+def generated_image(image_id: uuid.UUID, request: Request, download: bool = False):
+    return web_images.image_response(str(image_id), identity(request), download)

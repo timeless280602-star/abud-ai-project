@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import ChatOrganization from "./ChatOrganization";
+import { chatApi } from "./chatApi";
 const root = "/web/chat/conversations";
 const messageTime = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "short", day: "numeric",
@@ -19,19 +21,14 @@ function speechLanguage(text) {
   return indonesian > english ? "id-ID" : english > indonesian ? "en-US" : navigator.language;
 }
 async function api(path = "", method = "GET", body) {
-  const r = await fetch(root + path, {
-    method,
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  if (!r.ok) {
-    const d = await r.json();
-    throw Error(typeof d.detail === "string" ? d.detail : "Request rejected.");
-  }
-  return r;
+  return chatApi("/conversations" + path, method, body);
 }
 export default function WebChat() {
+  const [projects, setProjects] = useState([]),
+    [projectId, setProjectId] = useState(null),
+    [archived, setArchived] = useState(false),
+    [archivedChat, setArchivedChat] = useState(false);
+  const listVersion = useRef(0), titleRefresh = useRef(null);
   const [list, setList] = useState([]),
     [id, setId] = useState(null),
     [messages, setMessages] = useState([]);
@@ -57,18 +54,26 @@ export default function WebChat() {
     setSpeakingId(null);
   }
   async function refresh() {
-    setList(await (await api()).json());
+    const v = ++listVersion.current;
+    const query = new URLSearchParams({ archived: String(archived) });
+    if (projectId) query.set("project_id", projectId);
+    const [chats, groups] = await Promise.all([api("?" + query), chatApi("/projects")]);
+    const [chatData, groupData] = await Promise.all([chats.json(), groups.json()]);
+    if (v === listVersion.current) { setList(chatData); setProjects(groupData); }
   }
   useEffect(() => {
-    refresh().catch((e) => setError(e.message));
     return () => {
       abort.current?.abort();
+      clearTimeout(titleRefresh.current);
       if (speech.current) {
         speech.current = null;
         window.speechSynthesis?.cancel();
       }
     };
   }, []);
+  useEffect(() => {
+    refresh().catch((e) => setError(e.message));
+  }, [projectId, archived]);
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "nearest" });
   }, [messages]);
@@ -83,7 +88,7 @@ export default function WebChat() {
     setError("");
     try {
       const d = await (await api("/" + cid)).json();
-      if (v === version.current) setMessages(d.messages);
+      if (v === version.current) { setMessages(d.messages); setArchivedChat(Boolean(d.archived_at)); }
     } catch (e) {
       if (v === version.current) setError(e.message);
     } finally {
@@ -92,38 +97,31 @@ export default function WebChat() {
   }
   async function create() {
     try {
-      const d = await (await api("", "POST", {})).json();
+      const d = await (await api("", "POST", { project_id: projectId })).json();
       await refresh();
       await open(d.id);
     } catch (e) {
       setError(e.message);
     }
   }
-  async function edit(item, remove = false) {
-    const title = remove
-      ? null
-      : window.prompt("Conversation name", item.title);
-    if (remove ? !window.confirm("Delete this conversation?") : !title?.trim())
-      return;
-    try {
-      await api(
-        "/" + item.id,
-        remove ? "DELETE" : "PATCH",
-        remove ? undefined : { title: title.trim() },
-      );
-      if (remove && id === item.id) {
-        stopSpeech();
-        ++version.current;
-        setId(null);
-        setMessages([]);
-      }
-      await refresh();
-    } catch (e) {
-      setError(e.message);
+  function view(pid, showArchived) {
+    ++version.current;
+    ++listVersion.current;
+    stopSpeech();
+    setId(null); setMessages([]); setList([]); setRatingId(null); setError(""); setNotice("");
+    clearTimeout(titleRefresh.current);
+    setArchivedChat(false); setProjectId(pid); setArchived(showArchived);
+    if (pid === projectId && showArchived === archived) refresh().catch((e) => setError(e.message));
+  }
+  function organizationChanged(change) {
+    if (change.project === projectId) view(null, false);
+    else if (change.clear && change.conversation === id) {
+      ++version.current;
+      stopSpeech(); setId(null); setMessages([]); setRatingId(null); setArchivedChat(false);
     }
   }
   async function send(regenerate = false) {
-    if (busy || loading || ratingBusy || !id || (!regenerate && (!draft.trim() || messages.at(-1)?.role === "user"))) return;
+    if (busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!draft.trim() || messages.at(-1)?.role === "user"))) return;
     stopSpeech();
     setRatingId(null);
     setBusy(true);
@@ -186,6 +184,8 @@ export default function WebChat() {
         try {
           setMessages((await (await api("/" + id)).json()).messages);
           await refresh();
+          clearTimeout(titleRefresh.current);
+          titleRefresh.current = setTimeout(() => refresh().catch(() => {}), 5500);
         } catch (e) {
           setError(e.message);
         }
@@ -254,39 +254,9 @@ export default function WebChat() {
   }
   return (
     <section className="web-chat" aria-label="AI Chat">
-      <aside className="chat-sidebar">
-        <h1>AI Chat</h1>
-        <button disabled={busy} onClick={create}>
-          ＋ New conversation
-        </button>
-        <nav aria-label="Conversations">
-          {list.map((c) => (
-            <div className="chat-conversation" key={c.id}>
-              <button
-                disabled={busy}
-                aria-current={id === c.id ? "page" : undefined}
-                onClick={() => open(c.id)}
-              >
-                {c.title}
-              </button>
-              <button
-                disabled={busy}
-                aria-label={"Rename " + c.title}
-                onClick={() => edit(c)}
-              >
-                ✎
-              </button>
-              <button
-                disabled={busy}
-                aria-label={"Delete " + c.title}
-                onClick={() => edit(c, true)}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </nav>
-      </aside>
+      <ChatOrganization list={list} projects={projects} projectId={projectId} archived={archived}
+        busy={busy || ratingBusy} id={id} onOpen={open} onCreate={create} onView={view}
+        onRefresh={refresh} onChanged={organizationChanged} />
       <div className="chat-main">
         <div className="chat-messages" aria-busy={busy}>
           {!id && (
@@ -354,7 +324,8 @@ export default function WebChat() {
             {error}
           </p>
         )}
-        {id && (
+        {id && archivedChat && <p className="chat-archive-notice">Archived chat · Restore it from the conversation menu to continue.</p>}
+        {id && !archivedChat && (
           <form
             className="chat-composer"
             onSubmit={(e) => {
@@ -398,7 +369,7 @@ export default function WebChat() {
             </small>
             <small>
               AI can make mistakes. Explicit remember requests save personal
-              memory separately from Discord.
+              memory separately from Discord. In Project-Only mode, saved memories and feedback stay inside that project.
             </small>
           </form>
         )}

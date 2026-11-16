@@ -17,7 +17,7 @@ from app import auth as dashboard_auth
 from app import tools as abud_tools
 from app.memory_review import review_meaning
 from app.auth import router as auth_router
-from app import web_chat
+from app import web_chat, web_projects
 from app.skills.engine import get_relevant_skills
 
 
@@ -40,6 +40,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(web_chat.router)
+app.include_router(web_projects.router)
 
 @app.exception_handler(database.ArchivedMemoryError)
 async def archived_memory_conflict(request, error):

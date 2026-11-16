@@ -24,6 +24,7 @@ const assert = require("node:assert/strict");
       },
     }),
   );
+  await page.route("**/web/chat/projects", (r) => r.fulfill({ json: [] }));
   await page.route("**/health", (r) =>
     r.fulfill({ json: { status: "healthy" } }),
   );
@@ -90,10 +91,10 @@ const assert = require("node:assert/strict");
     .getByRole("button", { name: "Regenerate response", exact: true })
     .click();
   await page.getByText("world", { exact: true }).waitFor();
-  page.once("dialog", (d) => d.accept("Renamed"));
-  await page
-    .getByRole("button", { name: "Rename New conversation", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Options for New conversation", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+  await page.getByRole("dialog").getByLabel("Name", { exact: true }).fill("Renamed");
+  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
   await page.getByRole("button", { name: "Renamed", exact: true }).waitFor();
   for (const width of [320, 390, 768, 1280]) {
     await page.setViewportSize({ width, height: 844 });
@@ -101,10 +102,9 @@ const assert = require("node:assert/strict");
     const composer = await page.getByLabel("Message Abud", { exact: true }).boundingBox();
     assert.ok(composer.width > 100 && composer.x >= 0 && composer.x + composer.width <= width);
   }
-  page.once("dialog", (d) => d.accept());
-  await page
-    .getByRole("button", { name: "Delete Renamed", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Options for Renamed", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete permanently", exact: true }).click();
   await page.getByText("Talk with Abud", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log(

@@ -87,7 +87,7 @@ const fs = require("node:fs");
     await otherZone.route("**/*", (r) => r.request().url().startsWith(url) ? r.continue() : r.abort());
     const otherPage = await otherZone.newPage();
     await otherPage.goto(url);
-    await otherPage.getByRole("button", { name: "New conversation", exact: true }).click();
+    await otherPage.getByRole("button", { name: history.title, exact: true }).click();
     await otherPage.locator("time.chat-time").first().waitFor();
     assert.notEqual(await otherPage.locator("time.chat-time").first().textContent(), localStamp);
     assert.equal(await otherPage.locator("time.chat-time").first().getAttribute("datetime"), history.messages[0].created_at);
@@ -105,7 +105,7 @@ const fs = require("node:fs");
     assert.equal(rated.messages[1].rating, "good");
     await page.reload();
     await page
-      .getByRole("button", { name: "New conversation", exact: true })
+      .getByRole("button", { name: history.title, exact: true })
       .click();
     await page.getByText("world", { exact: true }).waitFor();
     assert.ok((await page.getByRole("button", { name: "Rate response", exact: true }).textContent()).includes("Good"));

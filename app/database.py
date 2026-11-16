@@ -7,6 +7,8 @@ from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from app.memory_review import wording_match
+
 DATABASE_PATH = Path(
     os.getenv("ABUD_DATABASE_PATH", "/app/data/abud_memory.db")
 )
@@ -687,6 +689,26 @@ def get_recent_messages(
 # RANKED MEMORY SEARCH
 # ==============================================
 
+def _memory_search_scope(scope, user_id, guild_id):
+    if scope == "personal":
+        if not user_id:
+            return None
+        table, where, params = "memories", "user_id = ?", (str(user_id),)
+        columns = "id, content, created_at, updated_at, source, revision"
+    elif scope == "guild":
+        if not guild_id:
+            return None
+        table, where, params = "guild_memories", "guild_id = ?", (str(guild_id),)
+        columns = "id, guild_id, content, created_by_user_id, created_at, updated_at, source, revision"
+    elif scope == "global":
+        table, where, params = "global_memories", "1 = 1", ()
+        columns = "id, category, content, created_by_user_id, created_at, updated_at, source, revision"
+    else:
+        raise ValueError("Scope Memory tidak valid.")
+
+    return table, where, params, columns
+
+
 def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
     """Search one scope; callers must authorize the supplied identity first.
 
@@ -699,21 +721,10 @@ def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
         raise ValueError("Limit pencarian harus berupa bilangan bulat.")
     limit = max(1, min(limit, 100))
 
-    if scope == "personal":
-        if not user_id:
-            return []
-        table, where, params = "memories", "user_id = ?", (str(user_id),)
-        columns = "id, content, created_at, updated_at, source, revision"
-    elif scope == "guild":
-        if not guild_id:
-            return []
-        table, where, params = "guild_memories", "guild_id = ?", (str(guild_id),)
-        columns = "id, guild_id, content, created_by_user_id, created_at, updated_at, source, revision"
-    elif scope == "global":
-        table, where, params = "global_memories", "1 = 1", ()
-        columns = "id, category, content, created_by_user_id, created_at, updated_at, source, revision"
-    else:
-        raise ValueError("Scope Memory tidak valid.")
+    selection = _memory_search_scope(scope, user_id, guild_id)
+    if selection is None:
+        return []
+    table, where, params, columns = selection
 
     def tokens(text):
         return re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
@@ -751,6 +762,46 @@ def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5):
                 WHERE {where} ORDER BY id DESC LIMIT ?
             """, (*params, limit)).fetchall()
     return [dict(row) for row in rows]
+
+
+def find_similar_memories(scope, content, *, user_id=None, guild_id=None,
+                          category="general", exclude_memory_id=None, limit=5, include_unmatched=False):
+    """Rank wording candidates across one authorized scope before limiting results."""
+    if not isinstance(content, str) or not 1 <= len(content.strip()) <= 1000:
+        raise ValueError("Isi Memory harus berisi 1 sampai 1000 karakter.")
+    if type(limit) is not int or type(include_unmatched) is not bool:
+        raise ValueError("Limit atau mode pencarian tidak valid.")
+    if exclude_memory_id is not None and (type(exclude_memory_id) is not int or exclude_memory_id < 1):
+        raise ValueError("Memory ID tidak valid.")
+    selection = _memory_search_scope(scope, user_id, guild_id)
+    if selection is None:
+        return []
+    table, where, params, columns = selection
+    if scope == "global":
+        where += " AND category = ?"
+        params += (str(category).strip() or "general",)
+    if exclude_memory_id is not None:
+        where += " AND id != ?"
+        params += (exclude_memory_id,)
+
+    def similarity(existing):
+        result = wording_match(content, existing)
+        return round(result['similarity'] * 1000) if result else 0
+
+    if not include_unmatched:
+        where += " AND memory_similarity(content) > 0"
+    with get_connection() as db:
+        # ponytail: scan one scope; consider an index when measured latency warrants it.
+        db.create_function("memory_similarity", 1, similarity, deterministic=True)
+        rows = db.execute(f"""
+            SELECT {columns} FROM {table}
+            WHERE {where}
+            ORDER BY memory_similarity(content) DESC, id DESC LIMIT ?
+        """, (*params, max(1, min(limit, 10)))).fetchall()
+    return [{**dict(row), **(wording_match(content, row['content']) or {
+        'similarity': 0, 'relation': 'unmatched',
+        'reason': 'Tidak ada kemiripan kata; kandidat terbaru untuk tinjauan makna.',
+    })} for row in rows]
 
 
 # ==============================================

@@ -118,7 +118,7 @@ def main():
                     raise RuntimeError("Local API did not start")
                 time.sleep(0.05)
             subprocess.run(
-                ["node", str(root / "tests/web_chat_e2e.cjs")],
+                ["node", str(root / "tests" / (sys.argv[1] if len(sys.argv) > 1 else "web_chat_e2e.cjs"))],
                 input=json.dumps({"url": url, "tokens": tokens}),
                 text=True,
                 check=True,

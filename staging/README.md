@@ -116,3 +116,17 @@ Python 3.11 image with networking disabled. The image now upgrades pip before
 application installation; npm/pip dependency scans reported no known issues.
 See [the current audit](../docs/web-chat-audit.md) for exact scope and limitations.
 Live OAuth/9router/proxy staging acceptance is still pending.
+
+## Projects dan memory isolation
+
+Branch `feature/web-chat-projects` menambahkan project, judul otomatis, pin/arsip,
+serta memory Project-Only. Lihat [panduan fitur dan migrasi](../docs/web-chat-projects.md).
+Validasi staging harus mencakup dua akun dan dua project-only: personal/global,
+project lain, dan feedback di luar project tidak boleh masuk prompt. Chat berisi
+pesan tidak boleh melintasi batas Project-Only. Gunakan explicit memory yang tidak
+sensitif untuk pengujian dan jangan membawa data production.
+
+Rollback ke versi pra-Projects tidak aman setelah data Project-Only dibuat karena
+kode lama tidak memahami scope tersebut. Batasi akses sebelum rollback dan ikuti
+kebijakan backup/restore pada panduan fitur; jangan menjalankan API lama terhadap
+riwayat project-only yang masih aktif.

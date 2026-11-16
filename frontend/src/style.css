@@ -886,3 +886,54 @@ body{background:#070708}
   .chat-navigation .chat-section-toggle svg { opacity: 1; }
   .chat-navigation .chat-header-icon { min-width: 40px; }
 }
+
+.chat-response-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-top: 9px;
+}
+.web-chat .chat-response-toolbar button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #b9aeb7;
+}
+.web-chat .chat-response-toolbar button:hover:enabled,
+.web-chat .chat-response-toolbar button:focus-visible {
+  background: #ffffff12;
+  color: #fff;
+}
+.web-chat .chat-response-toolbar button:focus-visible { outline-color: #ff8996; }
+.web-chat .chat-response-toolbar button[data-rating],
+.web-chat .chat-response-toolbar button[aria-pressed="true"] { color: #f2b9c4; }
+.chat-response-toolbar [data-tooltip]::after {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% + 5px);
+  left: 0;
+  display: none;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #2a242b;
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
+  font-size: 11px;
+  content: attr(data-tooltip);
+}
+.chat-response-toolbar [data-tooltip]:focus-visible::after { display: block; }
+@media (hover: hover) {
+  .chat-response-toolbar [data-tooltip]:hover::after { display: block; }
+}
+@media (pointer: coarse) {
+  .web-chat .chat-response-toolbar button { width: 42px; height: 42px; }
+}

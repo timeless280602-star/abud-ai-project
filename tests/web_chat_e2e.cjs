@@ -108,7 +108,7 @@ const fs = require("node:fs");
       .getByRole("button", { name: history.title, exact: true })
       .click();
     await page.getByText("world", { exact: true }).waitFor();
-    assert.ok((await page.getByRole("button", { name: "Rate response", exact: true }).textContent()).includes("Good"));
+    assert.equal(await page.getByRole("button", { name: "Rate response", exact: true }).getAttribute("data-rating"), "good");
     await page.getByRole("button", { name: "Rate response", exact: true }).click();
     await page.getByRole("button", { name: "Bad response", exact: true }).click();
     assert.equal(await page.getByRole("button", { name: "Submit feedback", exact: true }).isDisabled(), true);

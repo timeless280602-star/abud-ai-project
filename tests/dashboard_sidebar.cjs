@@ -90,6 +90,14 @@ const { chromium } = require('playwright');
     await input.fill('Hello, Abud.');
     await input.press('Enter');
     await page.getByText('world', { exact: true }).waitFor();
+    const toolbar = page.getByRole('group', { name: 'Response actions' });
+    for (const label of ['Copy response', 'Rate response', 'Read aloud', 'Share response', 'Branch in new chat']) {
+      await toolbar.getByRole('button', { name: label, exact: true }).waitFor();
+    }
+    assert.equal(await toolbar.getByRole('button').count(), 5);
+    await toolbar.getByRole('button', { name: 'Copy response', exact: true }).hover();
+    await capture('response-toolbar');
+    await page.locator('.breadcrumb').hover();
     await capture('desktop-expanded');
 
     await page.getByRole('button', { name: 'Collapse sidebar' }).click();
@@ -141,6 +149,22 @@ const { chromium } = require('playwright');
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole('button', { name: 'Expand sidebar' }).click();
     assert.equal(await page.getByRole('button', { name: 'Collapse sidebar' }).getAttribute('aria-expanded'), 'true');
+    await nav.getByRole('button', { name: 'AI Chat', exact: true }).click();
+    await conversations.getByRole('button', { name: 'Shipment tracking', exact: true }).click();
+    await page.getByText('world', { exact: true }).waitFor();
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'share', {
+        configurable: true, value: async ({ text }) => { window.sharedResponse = text; },
+      });
+    });
+    await toolbar.getByRole('button', { name: 'Share response', exact: true }).click();
+    assert.match(await page.evaluate(() => window.sharedResponse), /world/);
+    await toolbar.getByRole('button', { name: 'Branch in new chat', exact: true }).click();
+    const branch = conversations.getByRole('button', { name: 'Branch: Shipment tracking', exact: true });
+    await branch.waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll('nav[aria-label="Conversations"] button')]
+      .some((button) => button.textContent.trim() === 'Branch: Shipment tracking' && button.getAttribute('aria-current') === 'page'));
+    await page.getByText('world', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
     console.log('PASS dashboard sidebar: desktop collapse, persisted preference, mobile focus and navigation');
   } finally {

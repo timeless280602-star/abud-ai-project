@@ -118,6 +118,35 @@ The browser check is retained as `tests/web_chat_browser.cjs`; run Vite on port
 5173, then `node tests/web_chat_browser.cjs` in an environment with Playwright and
 Chromium at `/usr/bin/chromium`. Playwright is a test tool, not a runtime dependency.
 
+## Local HTTPS end-to-end verification
+
+In addition to mocked-HTTP browser checks, a headless Chromium run passed against
+**the actual FastAPI service and built React assets**, with a self-signed local
+HTTPS certificate, real Secure/HttpOnly session cookies, and disposable SQLite.
+No web/auth API requests were mocked. The fixture creates Google-provider accounts
+locally instead of contacting Google and replaces only AI inference with delayed
+stream chunks and a timeout case. External browser requests are blocked.
+
+Verified: Google-only entry, explicit personal-memory request, token streaming,
+Markdown/code highlighting, persisted messages after browser reload, regeneration
+without duplicate turns, another session receiving 404 for an owned conversation,
+wrong-Origin rejection, generic streamed error and partial-answer exclusion,
+390px mobile overflow, no JavaScript exceptions, and thread deletion.
+
+Run with project Python dependencies plus Node/Playwright, Chromium and openssl:
+
+```sh
+(cd frontend && npm ci && npm run build)
+python tests/run_web_chat_e2e.py
+```
+
+The harness binds a temporary loopback port, generates temporary TLS keys, starts
+only the API, passes disposable session tokens through stdin, stops the API, and
+cleans its temporary database/certificate directory on completion. Chromium path
+can be overridden with `CHROMIUM_PATH`. It does not start the Discord bot or use
+production credentials/data. This validates local integration, not real OAuth,
+9router, or the deployment reverse proxy.
+
 ## Deployment requirements and limitations
 
 No deployment, merge, production SQLite operation, or second Discord bot was

@@ -638,7 +638,8 @@ def build_memory_commands(
         memory_id = database.save_guild_memory(
             guild_id,
             content,
-            created_by_user_id=user_id
+            created_by_user_id=user_id,
+            source="direct"
         )
 
         return (
@@ -718,7 +719,8 @@ def build_memory_commands(
             memory_id = database.save_global_memory(
                 content,
                 category=category,
-                created_by_user_id=user_id
+                created_by_user_id=user_id,
+                source="direct"
             )
 
             return (
@@ -827,7 +829,7 @@ def build_memory_commands(
         if not content:
             return "Apa yang ingin kamu minta aku ingat?"
 
-        memory_id = database.save_memory(user_id, content)
+        memory_id = database.save_memory(user_id, content, source="direct")
 
         return (
             f"Siap, aku sudah menyimpan informasi tersebut "
@@ -1083,7 +1085,8 @@ PESAN PENGGUNA:
                     scope,
                     content,
                     context,
-                    category
+                    category,
+                    source="auto"
                 )
 
                 if saved.get("event") == "memory_saved":
@@ -1467,7 +1470,8 @@ def chat(request: ChatRequest):
                         saved = abud_tools.save_memory_tool(
                             "personal",
                             explicit_memory_content,
-                            tool_context
+                            tool_context,
+                            source="direct"
                         )
 
                         if saved.get("event") == "memory_saved":
@@ -1913,7 +1917,7 @@ async def dashboard_memory_create(
             )
         if not _memory_has_personal_permission(identity, "memory.personal.manage"):
             raise HTTPException(status_code=403, detail="Tidak memiliki akses mengelola Personal Memory.")
-        memory_id = database.save_memory(discord_user_id, content)
+        memory_id = database.save_memory(discord_user_id, content, source="dashboard")
 
     elif payload.scope == "guild":
         if not _dashboard_has_permission(
@@ -1925,7 +1929,8 @@ async def dashboard_memory_create(
             )
         await _memory_verify_guild(payload.guild_id, discord_user_id)
         memory_id = database.save_guild_memory(
-            str(payload.guild_id), content, created_by_user_id=discord_user_id
+            str(payload.guild_id), content, created_by_user_id=discord_user_id,
+            source="dashboard"
         )
 
     elif payload.scope == "global":
@@ -1935,6 +1940,7 @@ async def dashboard_memory_create(
             content,
             category=payload.category.strip() or "general",
             created_by_user_id=discord_user_id,
+            source="dashboard",
         )
 
     else:

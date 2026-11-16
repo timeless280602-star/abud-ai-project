@@ -187,6 +187,18 @@ async def generate(owner, cid, user_message_id, count, prompt, creator, replace_
             if existing['status'] in ('reserved', 'running', 'unknown'):
                 early.append(event('error', code='image_generation_unknown', message='This image request is pending reconciliation. Contact the administrator before retrying.'))
             else:
+                # Regenerate is a read-only replay: preserve the original assistant
+                # message ID and all image foreign keys, even for partial batches.
+                if existing['response_message_id']:
+                    response = db.execute(
+                        'SELECT content FROM web_messages WHERE id=? AND conversation_id=? AND role=?',
+                        (existing['response_message_id'], cid, 'assistant'),
+                    ).fetchone()
+                    if response:
+                        early.append(event('delta', text=response['content']))
+                        saved_images = artifacts(db, existing['response_message_id'])
+                        if saved_images:
+                            early.append(event('images', images=saved_images))
                 early.append(event('done'))
         elif not 1 <= count <= 10:
             early.append(event('error', code='image_invalid_request', message='Request 1–10 images at a time.'))

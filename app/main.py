@@ -1835,18 +1835,6 @@ def _memory_audit(identity, discord_user_id, action, scope, guild_id=None, memor
         )
 
 
-def _memory_filter(items, query):
-    query = (query or "").strip().casefold()
-    if not query:
-        return items
-
-    return [
-        item for item in items
-        if query in str(item.get("content", "")).casefold()
-        or query in str(item.get("category", "")).casefold()
-    ]
-
-
 @app.get("/dashboard/memory")
 async def dashboard_memory_list(
     request: Request,
@@ -1870,7 +1858,9 @@ async def dashboard_memory_list(
                 status_code=403,
                 detail="Permission Personal Memory belum diberikan.",
             )
-        items = database.get_memories(discord_user_id, limit=100)
+        items = database.search_memories(
+            scope, q, user_id=discord_user_id, limit=100
+        )
 
     elif scope == "guild":
         if not _dashboard_has_permission(
@@ -1881,7 +1871,9 @@ async def dashboard_memory_list(
                 detail="Permission Guild Memory untuk server ini belum diberikan.",
             )
         await _memory_verify_guild(guild_id, discord_user_id)
-        items = database.get_guild_memories(str(guild_id), limit=100)
+        items = database.search_memories(
+            scope, q, guild_id=guild_id, limit=100
+        )
 
     elif scope == "global":
         if discord_user_id != dashboard_auth.CREATOR_DISCORD_ID:
@@ -1889,15 +1881,15 @@ async def dashboard_memory_list(
                 status_code=403,
                 detail="Global Memory hanya dapat diakses Bos Bara.",
             )
-        items = database.get_global_memories(limit=100)
+        items = database.search_memories(scope, q, limit=100)
 
     else:
         raise HTTPException(status_code=400, detail="Scope Memory tidak valid.")
 
     return {
         "scope": scope,
-        "items": _memory_filter(items, q),
-        "count": len(_memory_filter(items, q)),
+        "items": items,
+        "count": len(items),
     }
 
 

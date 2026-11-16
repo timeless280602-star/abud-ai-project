@@ -308,7 +308,9 @@ def search_memory(scope, query, context):
                 "message": "Identitas pengguna tidak tersedia."
             }
 
-        memories = database.get_memories(user_id, limit=100)
+        memories = database.search_memories(
+            scope, query, user_id=user_id, limit=5
+        )
 
     elif scope == "guild":
         if context_type != "guild" or not guild_id:
@@ -318,25 +320,17 @@ def search_memory(scope, query, context):
                 "message": "Guild Memory hanya tersedia di dalam server."
             }
 
-        memories = database.get_guild_memories(guild_id, limit=100)
+        memories = database.search_memories(
+            scope, query, guild_id=guild_id, limit=5
+        )
 
     else:
         raise ValueError("Scope Memory tidak diperbolehkan.")
 
-    keyword = query.casefold()
-    matches = []
-
-    for item in memories:
-        content = str(item.get("content", ""))
-
-        if keyword in content.casefold():
-            matches.append({
-                "id": item["id"],
-                "content": content[:500]
-            })
-
-        if len(matches) >= 5:
-            break
+    matches = [
+        {"id": item["id"], "content": item["content"][:500]}
+        for item in memories
+    ]
 
     return {
         "scope": scope,

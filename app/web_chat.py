@@ -360,8 +360,10 @@ async def model_stream(messages):
             },
         ) as response:
             response.raise_for_status()
+            finished = False
             async for value in stream_events(response):
-                if value == "[DONE]":
+                # Some compatible gateways omit finish_reason and send only [DONE].
+                if value.strip() == "[DONE]":
                     return
                 try:
                     chunk = json.loads(value)
@@ -371,25 +373,34 @@ async def model_stream(messages):
                     if not isinstance(choices, list):
                         raise ValueError
                     choice = choices[0] if choices else {}
-                    delta = choice.get("delta", {})
+                    delta = choice.get("delta")
+                    if delta is None:
+                        delta = {}
                     if not isinstance(delta, dict):
                         raise ValueError
                     text = delta.get("content")
                     if text is not None and not isinstance(text, str):
                         raise ValueError
+                    # Qoder can forward a reason in delta or at the top level.
+                    reasons = [source['finish_reason'] for source in (choice, delta, chunk)
+                               if source.get('finish_reason') is not None]
+                    if any(not isinstance(reason, str) or not reason for reason in reasons):
+                        raise ValueError
                 except (ValueError, TypeError, AttributeError, IndexError) as error:
                     raise StreamProtocolError("Invalid stream event") from error
                 if chunk.get("error"):
                     raise UpstreamStreamError("Router error")
+                if any(reason != "stop" for reason in reasons):
+                    raise UpstreamStreamError("Generation did not finish normally")
+                if finished and text:
+                    raise StreamProtocolError("Content after terminal chunk")
+                finished = finished or bool(reasons)
                 if choices:
                     if text:
                         yield text
-                    reason = choice.get("finish_reason")
-                    if reason == "stop":
-                        return
-                    if reason:
-                        raise UpstreamStreamError("Generation did not finish normally")
-            raise StreamProtocolError("Incomplete stream")
+            # Do not return at 'stop': validate trailers/errors until [DONE] or clean EOF.
+            if not finished:
+                raise StreamProtocolError("Incomplete stream")
 
 
 async def stream_events(response):
@@ -405,7 +416,9 @@ async def stream_events(response):
         elif not line.startswith((":", "event:", "id:", "retry:")):
             raise StreamProtocolError("Invalid SSE field")
     if data:
-        raise StreamProtocolError("Unterminated SSE event")
+        # Tolerate a final frame without a blank delimiter; model_stream still
+        # requires [DONE] or a successful finish reason, never content-only EOF.
+        yield "\n".join(data)
 
 
 @router.post("/conversations/{cid}/messages")

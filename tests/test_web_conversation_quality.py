@@ -10,11 +10,112 @@ import httpx
 import test_web_chat as fixtures
 
 
+def sse_chunk(choice=None, **fields):
+    if choice is not None:
+        fields['choices'] = [choice]
+    return 'data: ' + json.dumps(fields) + '\n\n'
+
+
+def terminal_cases():
+    """The same protocol cases must agree at the parser and persistence boundary."""
+    content = sse_chunk({'delta': {'content': 'Complete answer'}})
+    stop = sse_chunk({'delta': {}, 'finish_reason': 'stop'})
+    usage = sse_chunk(choices=[], usage={'total_tokens': 12})
+    done = 'data: [DONE]\n\n'
+    return [
+        ('done_only', content + done, None),
+        ('stop_only', content + stop, None),
+        ('stop_and_done', content + stop + done, None),
+        ('terminal_null_delta', content + sse_chunk({'delta': None, 'finish_reason': 'stop'}) + done, None),
+        ('terminal_missing_delta', content + sse_chunk({'finish_reason': 'stop'}), None),
+        ('content_and_stop_same_chunk', sse_chunk({'delta': {'content': 'Complete answer'}, 'finish_reason': 'stop'}), None),
+        ('usage_after_stop', content + stop + usage + done, None),
+        ('usage_then_clean_eof', content + stop + usage, None),
+        ('nested_stop', content + sse_chunk({'delta': {'finish_reason': 'stop'}}) + done, None),
+        ('top_level_stop', content + sse_chunk(finish_reason='stop') + done, None),
+        ('done_whitespace', content + 'data:   [DONE]  \r\n\r\n', None),
+        ('done_without_blank_line', content + done.rstrip('\n') + '\n', None),
+        ('done_without_final_newline', content + done.rstrip('\n'), None),
+        ('stop_without_blank_line', content + stop.rstrip('\n'), None),
+        ('content_only', content, 'protocol'),
+        ('usage_is_not_success', content + usage, 'protocol'),
+        ('null_reason_is_not_success', content + sse_chunk({'delta': None, 'finish_reason': None}), 'protocol'),
+        ('content_without_blank_line', content.rstrip('\n'), 'protocol'),
+        ('partial_terminal_json', content + 'data: {"choices":[{"finish_reason":"sto', 'protocol'),
+        ('error_after_stop', content + stop + sse_chunk(error={'message': 'SECRET'}) + done, 'upstream'),
+        ('malformed_after_stop', content + stop + 'data: invalid-json\n\n', 'protocol'),
+        ('content_after_stop', content + stop + content + done, 'protocol'),
+        ('conflicting_reasons', content + sse_chunk({'finish_reason': 'stop', 'delta': {'finish_reason': 'length'}}) + done, 'upstream'),
+        ('invalid_reason_type', content + sse_chunk({'finish_reason': False}) + done, 'protocol'),
+    ] + [
+        (reason, content + sse_chunk({'finish_reason': reason}) + done, 'upstream')
+        for reason in ('length', 'content_filter', 'tool_calls', 'function_call', 'error', 'unknown')
+    ] + [
+        ('length_after_stop', content + stop + sse_chunk({'finish_reason': 'length'}) + done, 'upstream'),
+        ('nested_length', content + sse_chunk({'delta': {'finish_reason': 'length'}}) + done, 'upstream'),
+        ('top_level_length', content + sse_chunk(finish_reason='length') + done, 'upstream'),
+    ]
+
+
 class ConversationQualityTests(unittest.TestCase):
     setUp = fixtures.WebChatTests.setUp
     user = fixtures.WebChatTests.user
     create = fixtures.WebChatTests.create
     send = fixtures.WebChatTests.send
+
+    def test_transport_failure_after_stop_preserves_retry_and_original_answer(self):
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield sse_chunk({'delta': {'content': 'Incomplete replacement'}, 'finish_reason': 'stop'}).encode()
+                raise httpx.ReadError('SECRET connection reset')
+
+        cid = self.create()
+        client_type = httpx.AsyncClient
+        broken = True
+        def make_client(**kwargs):
+            def respond(request):
+                if broken:
+                    return httpx.Response(200, stream=BrokenStream())
+                return httpx.Response(200, text=sse_chunk({'delta': {'content': 'Original answer'}, 'finish_reason': 'stop'}))
+            return client_type(transport=httpx.MockTransport(respond), **kwargs)
+        with patch.dict(os.environ, {'NINE_ROUTER_API_KEY': 'fixture'}), patch.object(self.web, 'generate_title', AsyncMock()), patch.object(self.web.httpx, 'AsyncClient', make_client):
+            failed = self.send(cid)
+            self.assertIn('"type": "error"', failed.text)
+            self.assertNotIn('"type": "done"', failed.text)
+            self.assertEqual(len(self.client.get('/web/chat/conversations/' + cid).json()['messages']), 1)
+            broken = False
+            self.assertIn('"type": "done"', self.send(cid, regenerate=True).text)
+            before = self.client.get('/web/chat/conversations/' + cid).json()['messages']
+            broken = True
+            failed = self.send(cid, regenerate=True)
+            self.assertIn('"type": "error"', failed.text)
+            self.assertNotIn('"type": "done"', failed.text)
+            self.assertEqual(self.client.get('/web/chat/conversations/' + cid).json()['messages'], before)
+        with self.db.get_connection() as db:
+            self.assertEqual(db.execute('SELECT lease_until FROM web_conversations WHERE id=?', (cid,)).fetchone()[0], 0)
+
+    def test_real_parser_terminal_variants_control_persistence_and_regeneration(self):
+        client_type = httpx.AsyncClient
+        for name, body, failure in terminal_cases() + [('empty_done', 'data: [DONE]\n\n', 'protocol')]:
+            with self.subTest(name=name):
+                cid = self.create()
+                def make_client(**kwargs):
+                    return client_type(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=body)), **kwargs)
+                with patch.dict(os.environ, {'NINE_ROUTER_API_KEY': 'fixture'}), patch.object(self.web, 'generate_title', AsyncMock()), patch.object(self.web.httpx, 'AsyncClient', make_client):
+                    response = self.send(cid)
+                self.assertIn('"type": "error"' if failure else '"type": "done"', response.text)
+                self.assertNotIn('"type": "done"' if failure else '"type": "error"', response.text)
+                messages = self.client.get('/web/chat/conversations/' + cid).json()['messages']
+                self.assertEqual([m['role'] for m in messages], ['user'] if failure else ['user', 'assistant'])
+                with self.db.get_connection() as db:
+                    self.assertEqual(db.execute('SELECT lease_until FROM web_conversations WHERE id=?', (cid,)).fetchone()[0], 0)
+                    db.execute('DELETE FROM web_chat_limits')
+                body = sse_chunk({'delta': {'content': 'Recovered'}, 'finish_reason': 'stop'})
+                with patch.dict(os.environ, {'NINE_ROUTER_API_KEY': 'fixture'}), patch.object(self.web.httpx, 'AsyncClient', make_client):
+                    self.assertIn('"type": "done"', self.send(cid, regenerate=True).text)
+                messages = self.client.get('/web/chat/conversations/' + cid).json()['messages']
+                self.assertEqual([m['role'] for m in messages], ['user', 'assistant'])
+                self.assertEqual(messages[-1]['content'], 'Recovered')
 
     def test_intents_keep_current_request_and_history_without_keyword_filtering(self):
         requests = [
@@ -133,7 +234,8 @@ class ConversationQualityTests(unittest.TestCase):
                 async def stream(messages):
                     try:
                         if mode == 'deadline':
-                            yield 'partial'
+                            # Expire while waiting on the provider, not during ASGI
+                            # delivery/disconnect polling with an unrelated cancel scope.
                             await asyncio.Event().wait()
                         else:
                             yield ' '
@@ -180,6 +282,21 @@ class ConversationQualityTests(unittest.TestCase):
 
 
 class StreamParserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_terminal_variants(self):
+        from app import web_chat
+        client_type = httpx.AsyncClient
+        for name, body, failure in terminal_cases():
+            with self.subTest(name=name):
+                def make_client(**kwargs):
+                    return client_type(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=body)), **kwargs)
+                with patch.dict(os.environ, {'NINE_ROUTER_API_KEY': 'fixture'}), patch.object(web_chat.httpx, 'AsyncClient', make_client):
+                    if failure:
+                        expected = web_chat.StreamProtocolError if failure == 'protocol' else web_chat.UpstreamStreamError
+                        with self.assertRaises(expected):
+                            _ = [part async for part in web_chat.model_stream([])]
+                    else:
+                        self.assertEqual([part async for part in web_chat.model_stream([])], ['Complete answer'])
+
     async def test_http_status_and_transport_failures_propagate_without_retries(self):
         from app import web_chat
         client_type = httpx.AsyncClient
@@ -212,7 +329,7 @@ class StreamParserTests(unittest.IsolatedAsyncioTestCase):
             ('data: {"choices":[{"delta":{"content":42}}]}\n\n', web_chat.StreamProtocolError),
             ('data: {"choices":[{"delta":[]}]}\n\n', web_chat.StreamProtocolError),
             ('not SSE\n', web_chat.StreamProtocolError),
-            ('data: [DONE]\n', web_chat.StreamProtocolError),
+            ('data: [DONE]\n', []),
             ('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', web_chat.StreamProtocolError),
             ('data: {"error":{"message":"SECRET"}}\n\n', web_chat.UpstreamStreamError),
             ('data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\n', web_chat.UpstreamStreamError),

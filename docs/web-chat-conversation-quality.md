@@ -57,3 +57,32 @@ No automated suite was skipped. Live OAuth/provider evaluation, real Discord gat
 ## Release notes
 
 Review and merge the PR into `dev` using the normal process. Before any separately authorized deployment, back up the database, build the frontend, run the checks below, and evaluate live conversational behavior and failure logging in staging. No new schema migration or dependency is required by this change. Confirm failed turns remain retryable and monitor sanitized failure categories. Rollback is an application-code rollback; stored memory/message formats are unchanged. No deployment, container restart, VPS/9Router change or database reset was performed for this task.
+
+## PR #7 follow-up: terminal SSE semantics
+
+The previous parser returned immediately on `finish_reason: "stop"`. That could hide a later error, malformed trailer, contradictory failure reason or transport reset and persist the earlier text as a successful response. It also rejected `delta: null` terminal chunks and complete terminal payloads missing the last blank SSE delimiter.
+
+The parser now consumes trailers until `[DONE]` or clean EOF. Successful text completion requires either `[DONE]` without any preceding failure, or an explicit `stop` and a clean end of the HTTP stream. Empty text still fails in `send()`. Content-only EOF, usage-only trailers without a completion marker, invalid/truncated JSON, transport failures (including after `stop`), unknown/non-success finish reasons, contradictory reasons and new content after `stop` all fail. A received failure is never overridden by a later `[DONE]`. Unsupported tool-call finishes remain failures because Web Chat has no tools.
+
+Compatible variants include terminal `delta` as an object, null or omitted; usage-only trailers with `choices: []`; comments/CRLF/multi-line data; and a complete final payload without a final blank delimiter. A final payload must still contain a valid success marker; accepting EOF framing never makes content-only EOF successful. Reasons in the choice, delta or top-level chunk are checked together so one cannot conceal a failure in another location.
+
+Public 9Router references inspected at commit `1855aa44473e88feac9d3f131b9c0c5fc9706b68`:
+
+- [Documented chat streaming shape](https://github.com/decolua/9router/blob/1855aa44473e88feac9d3f131b9c0c5fc9706b68/skills/9router-chat/SKILL.md): content chunks followed by `[DONE]`, without requiring a finish reason in the example. Requiring both markers would reject this supported shape.
+- [SSE chunk builder](https://github.com/decolua/9router/blob/1855aa44473e88feac9d3f131b9c0c5fc9706b68/open-sse/utils/sse.js): choice-level finish reason.
+- [Qoder coalescer](https://github.com/decolua/9router/blob/1855aa44473e88feac9d3f131b9c0c5fc9706b68/open-sse/shared/qoder/sse.js): usage after finish, and reasons originating in the choice, delta or top-level chunk; valuable deltas may be forwarded as-is.
+
+The deployed 9Router version and production traffic were not inspected. These are compatibility references, not a claim that the production gateway emits every tested variant. Native Anthropic/Gemini/Responses event protocols are not inferred at this `/chat/completions` endpoint. A gateway that falsely reports a normal terminal marker while suppressing all upstream failure evidence cannot be diagnosed from that marker alone.
+
+Regression cases run through both the actual HTTP/SSE parser and authenticated persistence/regeneration endpoints using disposable SQLite. They verify no completed assistant message on failures, lease cleanup, successful regeneration without duplicate messages, and preservation of the original answer when regeneration encounters a transport reset after `stop`.
+
+Follow-up validation (all passed):
+
+- `ABUD_DATABASE_PATH=/workspace/work/test-bootstrap.db .venv/bin/python -m unittest discover -s tests -v`: 76 tests, 34.819 seconds; includes 33 terminal-protocol variants tested at both parser and persistence boundaries, empty-response handling, and post-stop transport resets.
+- `cd frontend && npm run build`: Vite build succeeded in 16.55 seconds.
+- `.venv/bin/python tests/run_web_chat_e2e.py`: passed.
+- `.venv/bin/python tests/run_web_chat_e2e.py web_projects_e2e.cjs`: passed.
+- `.venv/bin/python tests/run_web_chat_e2e.py web_chat_browser.cjs`: passed.
+- `git diff --check`: passed.
+
+One full run was interrupted after the existing 10 ms deadline fixture stalled during partial-chunk ASGI delivery/disconnect polling. The fixture now expires while waiting for the provider, avoiding that unrelated cancellation-scope timing race. Partial-failure behavior remains covered separately. The full suite passed on rerun; production timeout implementation was not changed. No live provider calls, production changes or deployment were performed.

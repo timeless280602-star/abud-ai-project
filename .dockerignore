@@ -1,0 +1,32 @@
+# secrets dan data runtime
+.env
+.env.*
+data
+*.db
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# git, tooling, dan dokumen desain
+.git
+.gitignore
+.claude
+.superdesign
+tests
+
+# backup
+backups
+old-backups
+backup*
+**/*.bak*
+**/*.backup*
+**/*.before-*
+**/*.pre_hardening
+**/*.nonroot_backup
+*.tar.gz
+
+# artefak build
+**/node_modules
+frontend/dist
+**/__pycache__
+**/*.pyc

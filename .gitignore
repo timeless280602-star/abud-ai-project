@@ -1,0 +1,75 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# data runtime
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# backup
+backups/
+old-backups/
+backup*/
+*.bak*
+*.backup*
+*.before-*
+*.pre_hardening
+*.nonroot_backup
+*.tar.gz
+
+# artefak build
+__pycache__/
+*.pyc
+node_modules/
+frontend/dist/
+.superdesign
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*
+*secret*
+
+# Runtime data
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Backups and old code
+*.tar
+*.tar.gz
+*.bak
+*.bak_*
+*.old*
+*.pre_*
+*.before-*
+*backup*
+.gitignore.old*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+build/
+
+# Local tooling
+.claude/
+.superdesign/
+
+/skill-sources/anthropics-skills/

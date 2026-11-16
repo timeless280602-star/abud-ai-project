@@ -1,0 +1,44 @@
+services:
+  abud-api:
+    build: .
+    container_name: abud-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      NINE_ROUTER_BASE_URL: http://9router:20128/v1
+      NINE_ROUTER_MODEL: Abud-Combo
+      ABUD_INTERNAL_API_KEY: ${ABUD_INTERNAL_API_KEY}
+      ABUD_BOT_VERIFY_URL: http://abud-bot:8765/internal/verify/guild-member
+      ABUD_DATABASE_PATH: /app/data/abud_memory.db
+    volumes:
+      - /opt/abud/data:/app/data
+      - /opt/abud/skills:/app/skills:ro
+    networks:
+      - default
+      - nine_router
+    mem_limit: 512m
+
+  abud-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: abud-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ABUD_API_URL: http://abud-api:8000/chat
+      ABUD_INTERNAL_API_KEY: ${ABUD_INTERNAL_API_KEY}
+      ABUD_BOT_VERIFY_HOST: 0.0.0.0
+      ABUD_BOT_VERIFY_PORT: 8765
+    networks:
+      - default
+    mem_limit: 256m
+
+networks:
+  nine_router:
+    external: true
+    name: 9router_default

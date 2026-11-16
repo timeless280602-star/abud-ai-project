@@ -67,6 +67,11 @@ async def extract_page(url, key):
                 result = await session.call_tool(
                     name, {"urls": [url], "extract_depth": "basic", "format": "text"}
                 )
+
+    return extracted_text(result)
+
+
+def extracted_text(result):
     if result.isError:
         return ""
     if isinstance(result.structuredContent, dict):
@@ -75,7 +80,12 @@ async def extract_page(url, key):
             for row in rows:
                 if isinstance(row, dict) and isinstance(row.get("raw_content"), str):
                     return row["raw_content"][:12000]
-    return "\n".join(item.text[:12000] for item in result.content[:2] if item.type == "text")[:12000]
+    for item in result.content[:2]:
+        if item.type == "text":
+            match = re.search(r"^Raw Content:\s*(.+)", item.text, re.M | re.S)
+            if match:
+                return match.group(1)[:12000]
+    return ""
 
 
 def page_reply(url):

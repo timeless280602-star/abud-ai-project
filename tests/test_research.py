@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import httpx
 
@@ -104,4 +105,12 @@ class ResearchTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertIn("URL HTTPS publik", research.reply(url, page=True))
         extract.assert_not_called()
+
+    def test_extract_response_requires_page_content(self):
+        result = SimpleNamespace(isError=False, structuredContent=None, content=[
+            SimpleNamespace(type="text", text="Detailed Results:\n"),
+        ])
+        self.assertEqual(research.extracted_text(result), "")
+        result.content[0].text += "\nURL: https://example.org/\nRaw Content: Halaman ada."
+        self.assertEqual(research.extracted_text(result), "Halaman ada.")
 

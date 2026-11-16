@@ -1164,9 +1164,9 @@ def chat(request: ChatRequest):
             request.guild_owner_id
         )
 
-    research_query = research.intent(request.message)
-    if research_query is not None:
-        answer = research.reply(research_query)
+    research_request = research.request_from(request.message)
+    if research_request is not None:
+        answer = research.reply(*research_request)
         if user_id:
             save_conversation(request, user_id, request.message, answer)
         return {"status": "success", "model": model, "reply": answer, "memory_events": []}

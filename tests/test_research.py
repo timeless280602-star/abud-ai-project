@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import httpx
 
@@ -83,3 +84,33 @@ class ResearchTests(unittest.TestCase):
                 post.return_value = httpx.Response(status)
                 self.assertIn("kuota", research.reply("klaim publik"))
                 post.assert_called_once()
+
+    @patch.dict(os.environ, {"ABUD_TAVILY_API_KEY": "test-key"})
+    @patch("app.research.summarize")
+    @patch("app.research.extract_page")
+    def test_explicit_page_command_passes_only_page_to_mcp(self, extract, summarize):
+        request = research.request_from("Baca halaman: https://example.org/article")
+        extract.return_value = "<b>Isi halaman</b>"
+        summarize.return_value = "Ringkasan [1]"
+
+        self.assertEqual(research.reply(*request), "Ringkasan [1]")
+        extract.assert_awaited_once_with("https://example.org/article", "test-key")
+        self.assertEqual(summarize.call_args.args[1][0]["excerpt"], "Isi halaman")
+
+    @patch("app.research.extract_page")
+    def test_rejects_private_and_credential_urls_before_calling_mcp(self, extract):
+        for url in ("https://127.0.0.1/", "https://private.internal/",
+                    "https://mcp.example.org/?tavilyApiKey=secret",
+                    "https://user:password@example.org/"):
+            with self.subTest(url=url):
+                self.assertIn("URL HTTPS publik", research.reply(url, page=True))
+        extract.assert_not_called()
+
+    def test_extract_response_requires_page_content(self):
+        result = SimpleNamespace(isError=False, structuredContent=None, content=[
+            SimpleNamespace(type="text", text="Detailed Results:\n"),
+        ])
+        self.assertEqual(research.extracted_text(result), "")
+        result.content[0].text += "\nURL: https://example.org/\nRaw Content: Halaman ada."
+        self.assertEqual(research.extracted_text(result), "Halaman ada.")
+

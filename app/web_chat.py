@@ -516,10 +516,10 @@ def send(cid: str, request: Request, payload: Turn):
                         yield frame
                 return
             query = history[-1]["content"]
-            research_query = research.intent(query)
-            if research_query is not None:
+            research_request = research.request_from(query)
+            if research_request is not None:
                 stage = "research"
-                answer = await asyncio.to_thread(research.reply, research_query)
+                answer = await asyncio.to_thread(research.reply, *research_request)
                 if await request.is_disconnected():
                     return
                 yield event("delta", text=answer)

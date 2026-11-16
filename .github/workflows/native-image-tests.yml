@@ -32,7 +32,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       PYTHONDONTWRITEBYTECODE: '1'
-      ABUD_DATABASE_PATH: ${{ runner.temp }}/abud-ci-bootstrap.db
+      ABUD_DATABASE_PATH: /tmp/abud-ci-bootstrap.db
     steps:
       - name: Check out PR branch
         uses: actions/checkout@v4

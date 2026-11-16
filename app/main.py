@@ -17,7 +17,7 @@ from app import auth as dashboard_auth
 from app import tools as abud_tools
 from app.memory_review import review_meaning
 from app.auth import router as auth_router
-from app import web_chat, web_projects
+from app import research, web_chat, web_projects
 from app.skills.engine import get_relevant_skills
 
 
@@ -1163,6 +1163,13 @@ def chat(request: ChatRequest):
             request.guild_name,
             request.guild_owner_id
         )
+
+    research_query = research.intent(request.message)
+    if research_query is not None:
+        answer = research.reply(research_query)
+        if user_id:
+            save_conversation(request, user_id, request.message, answer)
+        return {"status": "success", "model": model, "reply": answer, "memory_events": []}
 
     messages = [
         {

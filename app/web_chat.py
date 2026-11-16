@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import auth, database, web_projects, web_images
+from app import auth, database, research, web_projects, web_images
 
 router = APIRouter(prefix="/web/chat")
 logger = logging.getLogger(__name__)
@@ -515,56 +515,64 @@ def send(cid: str, request: Request, payload: Turn):
                     async for frame in stream:
                         yield frame
                 return
-            if first_title:
-                task = asyncio.create_task(generate_title(cid, owner, payload.message, fallback))
-                title_tasks.add(task)
-                task.add_done_callback(title_tasks.discard)
-            from app.main import extract_explicit_memory_content
-
-            memory_owner = web_projects.memory_scope(owner, settings)
             query = history[-1]["content"]
-            content = extract_explicit_memory_content(query)
-            english = re.match(
-                r"^(?:please\s+)?remember(?:\s+that)?[\s,:]+(.+)$",
-                query,
-                re.IGNORECASE | re.DOTALL,
-            )
-            if english:
-                content = english.group(1).strip()
-            saved = False
-            memory_status = "No memory action was performed on this turn. Do not claim it was."
-            if content and len(content) <= 1000 and not payload.regenerate:
-                try:
-                    database.save_memory(memory_owner, content, source="direct")
-                except database.ArchivedMemoryError:
-                    memory_status = "This personal memory is archived. It was not saved or restored."
+            research_query = research.intent(query)
+            if research_query is not None:
+                stage = "research"
+                answer = await asyncio.to_thread(research.reply, research_query)
+                if await request.is_disconnected():
+                    return
+                yield event("delta", text=answer)
+            else:
+                if first_title:
+                    task = asyncio.create_task(generate_title(cid, owner, payload.message, fallback))
+                    title_tasks.add(task)
+                    task.add_done_callback(title_tasks.discard)
+                from app.main import extract_explicit_memory_content
+
+                memory_owner = web_projects.memory_scope(owner, settings)
+                content = extract_explicit_memory_content(query)
+                english = re.match(
+                    r"^(?:please\s+)?remember(?:\s+that)?[\s,:]+(.+)$",
+                    query,
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if english:
+                    content = english.group(1).strip()
+                saved = False
+                memory_status = "No memory action was performed on this turn. Do not claim it was."
+                if content and len(content) <= 1000 and not payload.regenerate:
+                    try:
+                        database.save_memory(memory_owner, content, source="direct")
+                    except database.ArchivedMemoryError:
+                        memory_status = "This personal memory is archived. It was not saved or restored."
+                        yield event("memory_not_saved", message=memory_status)
+                    else:
+                        saved = True
+                        yield event("memory_saved")
+                elif content and len(content) > 1000 and not payload.regenerate:
+                    memory_status = "Personal memory was not saved: the limit is 1000 characters."
                     yield event("memory_not_saved", message=memory_status)
-                else:
-                    saved = True
-                    yield event("memory_saved")
-            elif content and len(content) > 1000 and not payload.regenerate:
-                memory_status = "Personal memory was not saved: the limit is 1000 characters."
-                yield event("memory_not_saved", message=memory_status)
-            memories = database.search_memories(
-                "personal", query[:200], user_id=memory_owner, limit=5
-            )
-            globals_ = [] if settings and settings['memory_mode'] == 'project_only' else database.get_global_memories(limit=20)
-            context = "\n".join(item["content"] for item in [*memories, *globals_])[
-                :12000
-            ]
-            messages = compose_messages(
-                history, context, settings, feedback_context(owner, memory_owner),
-                "The explicit personal memory request was saved successfully." if saved else memory_status,
-            )
-            stage = "upstream"
-            async with asyncio.timeout(GENERATION_TIMEOUT), aclosing(model_stream(messages)) as stream:
-                async for text in stream:
-                    if await request.is_disconnected():
-                        return
-                    answer += text
-                    if len(answer) > 60000:
-                        raise StreamProtocolError("Response too large")
-                    yield event("delta", text=text)
+                memories = database.search_memories(
+                    "personal", query[:200], user_id=memory_owner, limit=5
+                )
+                globals_ = [] if settings and settings['memory_mode'] == 'project_only' else database.get_global_memories(limit=20)
+                context = "\n".join(item["content"] for item in [*memories, *globals_])[
+                    :12000
+                ]
+                messages = compose_messages(
+                    history, context, settings, feedback_context(owner, memory_owner),
+                    "The explicit personal memory request was saved successfully." if saved else memory_status,
+                )
+                stage = "upstream"
+                async with asyncio.timeout(GENERATION_TIMEOUT), aclosing(model_stream(messages)) as stream:
+                    async for text in stream:
+                        if await request.is_disconnected():
+                            return
+                        answer += text
+                        if len(answer) > 60000:
+                            raise StreamProtocolError("Response too large")
+                        yield event("delta", text=text)
             if not answer.strip():
                 raise StreamProtocolError("Empty response")
             if await request.is_disconnected():

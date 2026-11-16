@@ -135,5 +135,5 @@ jobs:
 
       - name: Run private-image browser E2E against disposable HTTPS server
         run: |
-          export CHROMIUM_PATH="$(node -e \"process.stdout.write(require('playwright').chromium.executablePath())\")"
+          export CHROMIUM_PATH="$(node -e "process.stdout.write(require('playwright').chromium.executablePath())")"
           timeout --signal=TERM --kill-after=15s 8m python tests/run_web_chat_e2e.py web_chat_images.cjs

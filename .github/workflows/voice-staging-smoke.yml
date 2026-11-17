@@ -1,0 +1,128 @@
+name: Abud Voice Staging Smoke
+
+on:
+  push:
+    branches: [feat/local-voice-chat]
+    paths:
+      - 'app/**'
+      - 'frontend/**'
+      - 'voice_worker/**'
+      - 'compose*.yaml'
+      - 'tests/web_voice_staging.cjs'
+      - '.github/workflows/voice-staging-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-staging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  voice:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      COMPOSE_FILE: compose.staging.yaml:compose.staging.voice.yaml
+      ABUD_OLLAMA_TAG: "0.40.16"
+      ABUD_BASE_URL: https://127.0.0.1:18443
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Configure isolated staging
+        run: |
+          umask 077
+          sed "s|^ABUD_BASE_URL=.*|ABUD_BASE_URL=$ABUD_BASE_URL|" staging/.env.example > .env.staging
+          mkdir -p voice-models
+          source_url=https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium
+          for suffix in onnx onnx.json; do
+            name="id_ID-news_tts-medium.$suffix"
+            curl --fail --silent --show-error --location --retry 3 "$source_url/$name" --output "voice-models/$name"
+            chmod a+r "voice-models/$name"
+          done
+          docker compose config --quiet
+      - name: Build staging and load real models
+        run: |
+          docker compose up -d --build --wait api abud-voice ollama
+          docker compose exec -T ollama ollama pull qwen2.5:1.5b
+          docker compose exec -T abud-voice python - > "$RUNNER_TEMP/abud-voice-input.wav" <<'PY'
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          request = urllib.request.Request(
+              "http://localhost:8001/synthesize",
+              data="Halo, saya sedang menguji percakapan suara.".encode(),
+              headers={"Content-Type": "text/plain"},
+          )
+          for attempt in range(120):
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      sys.stdout.buffer.write(response.read())
+                      break
+              except urllib.error.URLError:
+                  if attempt == 119:
+                      raise
+                  time.sleep(2)
+          PY
+      - name: Check microphone through generated reply and playback
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+            -keyout "$RUNNER_TEMP/voice-key.pem" -out "$RUNNER_TEMP/voice-cert.pem"
+          node - <<'JS' &
+          const fs = require("node:fs");
+          const http = require("node:http");
+          const https = require("node:https");
+          const { RUNNER_TEMP } = process.env;
+          https.createServer({
+            key: fs.readFileSync(RUNNER_TEMP + "/voice-key.pem"),
+            cert: fs.readFileSync(RUNNER_TEMP + "/voice-cert.pem"),
+          }, (request, response) => {
+            const upstream = http.request({
+              hostname: "127.0.0.1", port: 18000, path: request.url,
+              method: request.method, headers: request.headers,
+            }, (reply) => {
+              response.writeHead(reply.statusCode, reply.headers);
+              reply.pipe(response);
+            });
+            upstream.on("error", () => response.writeHead(502).end());
+            request.pipe(upstream);
+          }).listen(18443, "127.0.0.1");
+          JS
+          proxy_pid=$!
+          trap 'kill "$proxy_pid" 2>/dev/null || true' EXIT
+          curl --insecure --fail --silent --retry 10 --retry-connrefused "$ABUD_BASE_URL/health"
+          docker compose exec -T api python - <<'PY' | node tests/web_voice_staging.cjs "$RUNNER_TEMP/abud-voice-input.wav"
+          import json
+          from app import auth, database
+
+          owner = auth.get_or_create_identity("google", {"id": "voice-smoke", "email_verified": True})
+          now = database.utc_now()
+          with database.get_connection() as db:
+              db.execute(
+                  """INSERT INTO auth_local_credentials(
+                      identity_id, username, username_normalized, password_hash,
+                      profile_completed_at, created_at, updated_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                  (owner, "voice-smoke", "voice-smoke", "unused", now, now, now),
+              )
+          print(json.dumps({"url": auth.BASE_URL, "token": auth.create_session(owner),
+                            "cookieName": auth.SESSION_COOKIE}))
+          PY
+      - name: Show staging diagnostics on failure
+        if: failure()
+        run: docker compose logs --tail 80
+      - name: Remove disposable stack
+        if: always()
+        run: |
+          if [ -f .env.staging ]; then
+            docker compose down --volumes --remove-orphans
+          fi

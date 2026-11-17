@@ -45,3 +45,24 @@ konfigurasi chat biasa. Untuk staging atau layanan model yang sudah tersedia,
 tetapkan `ABUD_VOICE_WORKER_URL`, `ABUD_VOICE_OLLAMA_URL`, dan
 `ABUD_VOICE_OLLAMA_MODEL` pada API. Gunakan alamat jaringan privat yang dapat
 dijangkau dari container API.
+
+## Staging terisolasi
+
+Gunakan checkout terpisah dan ikuti [konfigurasi staging](../staging/README.md)
+untuk `.env.staging`, HTTPS, dan akses penguji. Siapkan dua file model suara
+Piper seperti di atas. Jalankan perintah ini dari checkout staging.
+
+```sh
+docker compose -f compose.staging.yaml -f compose.staging.voice.yaml config --quiet
+docker compose -f compose.staging.yaml -f compose.staging.voice.yaml up -d --build abud-voice ollama
+docker compose -f compose.staging.yaml -f compose.staging.voice.yaml exec ollama ollama pull qwen2.5:1.5b
+docker compose -f compose.staging.yaml -f compose.staging.voice.yaml up -d --build api
+curl --fail http://127.0.0.1:18000/health
+```
+
+Overlay staging memakai volume dan jaringan milik proyek staging. API
+mendengarkan pada port loopback 18000. Whisper, Piper, dan Ollama tetap
+dijangkau melalui jaringan Compose. Workflow **Abud Voice Staging Smoke**
+menjalankan stack yang sama dengan database sementara, akun fixture, audio
+sintetis, dan model asli. Uji OAuth, proxy HTTPS serta mikrofon pengguna
+dilakukan saat staging telah tersedia pada server tujuan.

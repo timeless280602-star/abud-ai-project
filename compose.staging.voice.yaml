@@ -1,0 +1,27 @@
+# Optional overlay for compose.staging.yaml.
+services:
+  api:
+    networks:
+      - default
+      - voice
+    environment:
+      ABUD_VOICE_WORKER_URL: http://abud-voice:8001
+      ABUD_VOICE_OLLAMA_URL: http://ollama:11434
+      ABUD_VOICE_OLLAMA_MODEL: ${ABUD_VOICE_OLLAMA_MODEL:-qwen2.5:1.5b}
+
+  abud-voice:
+    extends:
+      file: compose.voice.yaml
+      service: abud-voice
+
+  ollama:
+    extends:
+      file: compose.voice.yaml
+      service: ollama
+
+networks:
+  voice:
+
+volumes:
+  whisper-cache:
+  ollama-models:

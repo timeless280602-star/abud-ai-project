@@ -1,0 +1,59 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { chromium } = require("playwright");
+
+async function main() {
+  const { url, token, cookieName } = JSON.parse(fs.readFileSync(0, "utf8"));
+  const recording = path.resolve(process.argv[2]);
+  const browser = await chromium.launch({
+    args: [
+      "--use-fake-device-for-media-stream",
+      "--use-fake-ui-for-media-stream",
+      `--use-file-for-fake-audio-capture=${recording}`,
+      "--autoplay-policy=no-user-gesture-required",
+    ],
+  });
+  try {
+    const context = await browser.newContext({ permissions: ["microphone"], ignoreHTTPSErrors: true });
+    await context.addCookies([{ name: cookieName, value: token, url, httpOnly: true }]);
+    const page = await context.newPage();
+    page.setDefaultTimeout(120_000);
+    await page.goto(url);
+    await page.getByRole("button", { name: "＋ New conversation", exact: true }).click();
+    await page.getByRole("button", { name: "Rekam suara", exact: true }).click();
+    const stop = page.getByRole("button", { name: "Berhenti merekam", exact: true });
+    await stop.waitFor();
+    await page.waitForTimeout(4500);
+    await stop.click();
+
+    const send = page.getByRole("button", { name: "Kirim ke Ollama", exact: true });
+    await send.waitFor();
+    const draft = page.getByLabel("Message Abud", { exact: true });
+    assert.match(await draft.inputValue(), /halo/i, "Whisper should transcribe the Indonesian greeting");
+    const prompt = "Halo Abud. Jawab dalam satu kalimat pendek dalam bahasa Indonesia.";
+    await draft.fill(prompt);
+    const wavResponse = page.waitForResponse((response) =>
+      /\/voice\/messages\/\d+\/audio$/.test(new URL(response.url()).pathname)
+    );
+    await send.click();
+    const audio = await wavResponse;
+    assert.equal(audio.status(), 200);
+    assert.match(audio.headers()["content-type"], /^audio\/wav/);
+    assert.equal((await audio.body()).subarray(0, 4).toString(), "RIFF");
+    await page.getByRole("button", { name: /^(Read aloud|Stop reading)$/ }).waitFor();
+    const conversation = new URL(audio.url()).pathname.split("/").slice(0, 5).join("/");
+    const messages = await (await context.request.get(url + conversation)).json();
+    assert.equal(messages.messages.at(-2).content, prompt);
+    assert.equal(messages.messages.at(-1).voice, 1);
+    assert.ok(messages.messages.at(-1).content.trim());
+    console.log("Passed: Chromium recording, Whisper transcript, Ollama response, Piper WAV and saved history.");
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});

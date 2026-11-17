@@ -72,7 +72,7 @@ async function main() {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: "Open chat history" }).click();
     await page.getByRole("navigation", { name: "Conversations" }).waitFor();
-    await page.getByRole("button", { name: "Close chat history", exact: true }).click();
+    await page.getByRole("button", { name: "Close menu", exact: true }).click();
     await page.getByLabel("Add attachment", { exact: true }).click();
     await page.getByRole("button", { name: /Upload a document/ }).waitFor();
     console.log("Passed: Chromium recording, Whisper transcript, Ollama response, Piper WAV, saved history, branch, mobile history and attachment menu.");

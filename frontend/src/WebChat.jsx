@@ -36,7 +36,7 @@ function speechLanguage(text) {
 async function api(path = "", method = "GET", body) {
   return chatApi("/conversations" + path, method, body);
 }
-export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegrations } = {}) {
+export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegrations, navigationTarget, onOpenNavigation, onNavigateFromSidebar } = {}) {
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState(null),
     [archived, setArchived] = useState(false),
@@ -58,7 +58,6 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     [speakingId, setSpeakingId] = useState(null);
   const shareCategory = !projectId || projects.some((project) => project.id === projectId && project.memory_mode === "default");
   const sending = useRef(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [branching, setBranching] = useState(false);
   const branchRequest = useRef(false);
   const [voiceProvider, setVoiceProvider] = useState("ollama");
@@ -192,7 +191,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   async function open(cid) {
     if (sending.current) return;
     const v = ++version.current;
-    setHistoryOpen(false);
+    onNavigateFromSidebar?.();
     stopSpeech();
     setRatingId(null);
     setNotice("");
@@ -224,6 +223,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   }
   function view(pid, showArchived) {
     if (sending.current) return;
+    onNavigateFromSidebar?.();
     ++version.current;
     ++listVersion.current;
     stopSpeech();
@@ -459,17 +459,14 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     next();
   }
   return (
-    <section className={`web-chat abud-chat-room ${historyOpen ? "history-open" : ""}`} aria-label="AI Chat">
-      {historyOpen && <button type="button" className="chat-history-scrim" tabIndex={-1} aria-label="Dismiss chat history" onClick={() => setHistoryOpen(false)} />}
+    <section className="web-chat abud-chat-room" aria-label="AI Chat">
       <ChatOrganization list={list} projects={projects} projectId={projectId} archived={archived}
         busy={busy || ratingBusy || branching} id={id} onOpen={open} onCreate={create} onView={view}
-        onRefresh={refresh} onChanged={organizationChanged}
-        closeHistory={historyOpen && <ChatIcon label="Close chat history" icon={X}
-          onClick={() => setHistoryOpen(false)} />} />
+        onRefresh={refresh} onChanged={organizationChanged} navigationTarget={navigationTarget} />
       <div className="chat-main">
         <header className="chat-room-heading">
           <ChatIcon label="Open chat history" icon={PanelLeft}
-            className="chat-history-toggle" aria-expanded={historyOpen} onClick={() => setHistoryOpen(true)} />
+            className="chat-history-toggle" onClick={onOpenNavigation} />
           <h1>{list.find((conversation) => conversation.id === id)?.title || "AI Chat"}</h1>
           {id && <ChatIcon label="New chat" icon={Plus} disabled={busy || loading || branching} onClick={create} />}
         </header>

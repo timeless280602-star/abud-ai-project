@@ -1,6 +1,6 @@
 .abud-chat-room {
   position: relative;
-  grid-template-columns: minmax(185px, 238px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   height: calc(100dvh - 65px);
   min-height: 0;
@@ -8,26 +8,9 @@
   isolation: isolate;
 }
 
-.abud-chat-room .chat-sidebar {
-  background: #18171b;
-  padding: 18px 13px;
-  border-color: #30292f;
-}
-
-.abud-chat-room .chat-sidebar button,
-.abud-chat-room .chat-view-actions button {
-  background: #211e24;
-  border-color: #3d343d;
-}
-
-.abud-chat-room .chat-sidebar [aria-current="page"],
-.abud-chat-room .chat-sidebar [aria-pressed="true"] {
-  background: #321e27;
-  border-color: #78424d;
-  color: #ffe0e4;
-}
-
-.abud-chat-room .chat-main { padding: 0; min-width: 0; }
+.abud-chat-room .chat-main { grid-column: 1; grid-row: 1/3; padding: 0; min-width: 0; }
+.abud-chat-room .chat-project-panel { grid-column: 1; grid-row: 1; }
+.abud-chat-room .chat-project-panel ~ .chat-main { grid-row: 2; }
 .chat-room-heading {
   display: flex;
   align-items: center;
@@ -45,8 +28,6 @@
   white-space: nowrap;
   font-size: 1.08rem;
 }
-.chat-history-scrim { display: none; }
-.chat-sidebar-heading { display: flex; align-items: start; justify-content: space-between; }
 
 .abud-chat-room .chat-messages { padding: 20px max(14px, calc((100% - 730px) / 2)); }
 .abud-chat-room .chat-message { padding: 12px 0; background: transparent; }
@@ -166,37 +147,11 @@
   white-space: nowrap;
 }
 
-@media (max-width: 960px) {
-  .abud-chat-room { grid-template-columns: minmax(0, 1fr); }
-  .abud-chat-room .chat-main { grid-column: 1; grid-row: 1/3; }
-  .abud-chat-room .chat-project-panel { grid-column: 1; grid-row: 1; }
-  .abud-chat-room .chat-project-panel ~ .chat-main { grid-row: 2; }
-  .abud-chat-room .chat-sidebar {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: min(265px, 82%);
-    max-height: none;
-    z-index: 2;
-    visibility: hidden;
-    transform: translateX(-100%);
-  }
-  .abud-chat-room.history-open .chat-sidebar { visibility: visible; transform: none; }
-  .abud-chat-room .chat-history-scrim {
-    display: block;
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    background: #0009;
-    border: 0;
-  }
-  .abud-chat-room .chat-history-toggle { display: inline-grid; }
-}
-
 @media (max-width: 700px) {
   .abud-chat-room { height: calc(100dvh - 58px); }
   .abud-chat-room .chat-composer textarea { font-size: 16px; }
 }
 
-@media (min-width: 961px) {
-  .abud-chat-room .chat-history-toggle, .chat-sidebar-heading .chat-icon { display: none; }
+@media (min-width: 701px) {
+  .abud-chat-room .chat-history-toggle { display: none; }
 }

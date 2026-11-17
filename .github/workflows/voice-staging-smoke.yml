@@ -10,6 +10,7 @@ on:
       - 'ollama_cpu/**'
       - 'compose*.yaml'
       - 'tests/web_voice_staging.cjs'
+      - 'tests/web_navigation.cjs'
       - '.github/workflows/voice-staging-smoke.yml'
   workflow_dispatch:
 
@@ -117,6 +118,7 @@ jobs:
           proxy_pid=$!
           trap 'kill "$proxy_pid" 2>/dev/null || true' EXIT
           curl --insecure --fail --silent --retry 10 --retry-connrefused "$ABUD_BASE_URL/health"
+          printf '{"url":"%s"}' "$ABUD_BASE_URL" | node tests/web_navigation.cjs
           docker compose exec -T api python - <<'PY' | node tests/web_voice_staging.cjs "$RUNNER_TEMP/abud-voice-input.wav"
           import json
           from app import auth, database
@@ -134,6 +136,13 @@ jobs:
           print(json.dumps({"url": auth.BASE_URL, "token": auth.create_session(owner),
                             "cookieName": auth.SESSION_COOKIE}))
           PY
+      - name: Save navigation screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: navigation-screenshots
+          path: /tmp/abud-navigation-*.png
+          if-no-files-found: ignore
       - name: Show staging diagnostics on failure
         if: failure()
         run: docker compose logs --tail 80

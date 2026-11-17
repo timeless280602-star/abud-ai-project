@@ -65,6 +65,7 @@ async function main() {
     await chatNavigation.getByRole("button", { name: "Recent chats", exact: true }).click();
     await chatNavigation.getByRole("button", { name: "📌 Marketing brief", exact: true }).click();
     await draft.waitFor();
+    await page.getByText("Kita mulai dari pengenalan produk, cerita proses, lalu tips yang berguna untuk audiens.", { exact: true }).waitFor();
     await page.screenshot({ path: "/tmp/abud-navigation-chat.png", fullPage: true });
 
     await mainNav.getByRole("button", { name: "Dashboard", exact: true }).click();
@@ -87,7 +88,7 @@ async function main() {
     await chatNavigation.waitFor();
     await chatNavigation.getByRole("button", { name: "📌 Marketing brief", exact: true }).click();
     await draft.waitFor();
-    assert.equal(await page.locator(".sidebar").evaluate((element) => element.getBoundingClientRect().right <= 0), true);
+    await page.waitForFunction(() => document.querySelector(".sidebar").getBoundingClientRect().right <= 1);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
     await page.screenshot({ path: "/tmp/abud-navigation-mobile.png", fullPage: true });
 

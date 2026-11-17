@@ -8,6 +8,7 @@ import { eligibleChoices } from "./chatChoices";
 import ChatImages from "./ChatImages";
 import { imageQuotaMessage } from "./imageQuota";
 import { chatApi } from "./chatApi";
+import VoiceRecorder from "./VoiceRecorder";
 const root = "/web/chat/conversations";
 const messageTime = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "short", day: "numeric",
@@ -49,6 +50,72 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     [speakingId, setSpeakingId] = useState(null);
   const shareCategory = !projectId || projects.some((project) => project.id === projectId && project.memory_mode === "default");
   const sending = useRef(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [voiceDraft, setVoiceDraft] = useState(false);
+  const piper = useRef(null);
+
+  function stopPiper() {
+    const playing = piper.current;
+    piper.current = null;
+    if (!playing) return;
+    playing.controller.abort();
+    playing.audio?.pause();
+    if (playing.url) URL.revokeObjectURL(playing.url);
+  }
+
+  async function playPiper(conversation, messageId) {
+    const queued = piper.current;
+    if (queued?.waiting && queued.messageId === messageId && queued.conversation === conversation) {
+      try {
+        queued.waiting = false;
+        setError("");
+        setSpeakingId(messageId);
+        await queued.audio.play();
+      } catch {
+        if (piper.current === queued) {
+          stopSpeech();
+          setError("Audio Piper tidak dapat diputar.");
+        }
+      }
+      return;
+    }
+    stopSpeech();
+    const playing = { controller: new AbortController(), messageId, conversation };
+    piper.current = playing;
+    setSpeakingId(messageId);
+    try {
+      const response = await fetch(`${root}/${conversation}/voice/messages/${messageId}/audio`, {
+        method: "POST", credentials: "same-origin", signal: playing.controller.signal,
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw Error(result.detail || "Suara Piper tidak tersedia.");
+      }
+      const wav = await response.blob();
+      if (piper.current !== playing) return;
+      playing.url = URL.createObjectURL(wav);
+      playing.audio = new Audio(playing.url);
+      playing.audio.onended = () => { if (piper.current === playing) stopSpeech(); };
+      playing.audio.onerror = () => {
+        if (piper.current === playing) {
+          stopSpeech();
+          setError("Audio Piper tidak dapat diputar.");
+        }
+      };
+      await playing.audio.play();
+    } catch (error) {
+      if (piper.current !== playing) return;
+      if (error.name === "NotAllowedError" && playing.audio) {
+        playing.waiting = true;
+        setSpeakingId(null);
+        setError("Browser memblokir putar otomatis. Tekan Read aloud pada jawaban.");
+      } else {
+        stopSpeech();
+        setError(error.message);
+      }
+    }
+  }
   const [attachment, setAttachment] = useState(null);
   const attachmentInput = useRef(null);
   function clearAttachment() {
@@ -70,6 +137,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   } catch { /* Storage may be unavailable; in-memory invalidation still applies. */ }
   const choices = !choiceInvalidated && eligibleChoices(messages.at(-1), messages.at(-1));
   function stopSpeech() {
+    stopPiper();
     if (speech.current) {
       speech.current = null;
       window.speechSynthesis?.cancel();
@@ -85,7 +153,13 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     if (v === listVersion.current) { setList(chatData); setProjects(groupData); }
   }
   useEffect(() => {
+    let mounted = true;
+    chatApi("/voice").then((response) => response.json()).then((status) => {
+      if (mounted) setVoiceEnabled(status.enabled);
+    }).catch(() => {});
     return () => {
+      mounted = false;
+      stopPiper();
       abort.current?.abort();
       clearTimeout(titleRefresh.current);
       if (speech.current) {
@@ -111,6 +185,8 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     setNotice("");
     setLoading(true);
     setId(cid);
+    if (voiceDraft) setDraft("");
+    setVoiceDraft(false);
     clearAttachment();
     setMessages([]);
     setError("");
@@ -139,6 +215,8 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     ++listVersion.current;
     stopSpeech();
     clearAttachment();
+    if (voiceDraft) setDraft("");
+    setVoiceDraft(false);
     setId(null); setMessages([]); setList([]); setRatingId(null); setError(""); setNotice("");
     clearTimeout(titleRefresh.current);
     setArchivedChat(false); setProjectId(pid); setArchived(showArchived);
@@ -149,14 +227,17 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     else if (change.clear && change.conversation === id) {
       ++version.current;
       clearAttachment();
+      if (voiceDraft) setDraft("");
+      setVoiceDraft(false);
       stopSpeech(); setId(null); setMessages([]); setRatingId(null); setArchivedChat(false);
     }
   }
   async function send(regenerate = false, choiceText, sourceId) {
     const text = (choiceText ?? draft).trim();
+    const voice = !regenerate && choiceText === undefined && voiceDraft;
     const file = !regenerate && choiceText === undefined ? attachment : null;
     if (sourceId !== undefined && (choicesBlocked || invalidatedChoices.current.has(`${id}:${sourceId}`) || sourceId !== messages.at(-1)?.id)) return;
-    if (renderedVersion !== version.current || sending.current || busy || loading || ratingBusy || archivedChat || !id || (file && text.length > 1000) || (!regenerate && ((!text && !file) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
+    if (renderedVersion !== version.current || sending.current || voiceActive || busy || loading || ratingBusy || archivedChat || !id || (file && text.length > 1000) || (!regenerate && ((!text && !file) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
     sending.current = true;
     setChoicesBlocked(true);
     const currentVersion = version.current;
@@ -185,7 +266,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
       } else {
         body = JSON.stringify(regenerate
           ? { regenerate: true }
-          : { message: text, request_id: requestId });
+          : { message: text, request_id: requestId, ...(voice ? { voice: true } : {}) });
       }
       const r = await fetch(root + "/" + id + (file ? "/attachment-messages" : "/messages"), {
         method: "POST",
@@ -206,14 +287,14 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
           : messages
         : [...messages, { role: "user", content: file ? [text, `Lampiran: ${file.name}`].filter(Boolean).join("\n\n") : text, created_at: new Date().toISOString() }];
       const created_at = new Date().toISOString();
-      setDraft("");
+      if (!regenerate && choiceText === undefined) { setDraft(""); setVoiceDraft(false); }
       if (file) clearAttachment();
       setMessages([...base, { role: "assistant", content: "", created_at }]);
       reader = r.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "",
         answer = "",
-        complete = false, images = [];
+        complete = false, images = [], voiceMessageId;
       while (true) {
         const chunk = await reader.read();
         buffer += decoder.decode(chunk.value, { stream: !chunk.done });
@@ -223,7 +304,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
           if (!f.startsWith("data: ")) continue;
           const e = JSON.parse(f.slice(6));
           if (e.type === "error") throw Error(e.message);
-          if (e.type === "done") complete = true;
+          if (e.type === "done") { complete = true; voiceMessageId = e.message_id; }
           if (e.type === "image_loading") setImageLoading(true);
           if (e.type === "image_quota") setNotice(imageQuotaMessage(e));
           if (e.type === "images") {
@@ -240,6 +321,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
         if (chunk.done) break;
       }
       if (!complete) throw Error("Connection interrupted. Please regenerate.");
+      if (voiceMessageId && currentVersion === version.current) playPiper(id, voiceMessageId);
     } catch (e) {
       if (e.name !== "AbortError") setError(e.message);
       setMessages((items) => items.map((item) =>
@@ -290,6 +372,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   }
   function readAloud(message, element) {
     if (speakingId === message.id) { stopSpeech(); return; }
+    if (message.voice && voiceEnabled) { playPiper(id, message.id); return; }
     stopSpeech();
     if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
       setError("Read aloud is not supported by this browser.");
@@ -433,7 +516,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
             <textarea
               id="chat-draft"
               value={draft}
-              disabled={busy}
+              disabled={busy || voiceActive}
               maxLength={attachment ? 1000 : 6000}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -451,7 +534,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
                 ref={attachmentInput}
                 type="file"
                 accept=".pdf,.docx,.pptx"
-                disabled={busy || loading}
+                disabled={busy || loading || voiceActive || voiceDraft}
                 onChange={(event) => {
                   const selected = event.target.files[0];
                   if (selected && selected.size > 5 * 1024 * 1024) {
@@ -467,16 +550,30 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
               {attachment && <small>Cuplikan teks lampiran akan disimpan dalam riwayat chat.</small>}
             </div>
             <div>
+              {voiceEnabled && <VoiceRecorder
+                key={id}
+                conversation={id}
+                disabled={busy || loading || ratingBusy || Boolean(attachment) || Boolean(draft.trim())
+                  || messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete}
+                onTranscript={(text) => { setDraft(text); setVoiceDraft(true); }}
+                onError={setError}
+                onActive={(active) => {
+                  if (active) stopSpeech();
+                  setVoiceActive(active);
+                }}
+              />}
+              {voiceDraft && <button type="button" disabled={busy}
+                onClick={() => { setDraft(""); setVoiceDraft(false); }}>Hapus transkrip</button>}
               <button
                 disabled={
-                  busy || loading || ratingBusy || (!draft.trim() && !attachment) || (attachment && draft.trim().length > 1000) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)
+                  voiceActive || busy || loading || ratingBusy || (!draft.trim() && !attachment) || (attachment && draft.trim().length > 1000) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)
                 }
               >
-                Send
+                {voiceDraft ? "Kirim ke Ollama" : "Send"}
               </button>
               <button
                 type="button"
-                disabled={busy || loading || ratingBusy || !messages.length}
+                disabled={voiceActive || busy || loading || ratingBusy || !messages.length}
                 onClick={() => send(true)}
               >
                 Regenerate response

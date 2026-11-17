@@ -73,3 +73,5 @@ build/
 .superdesign/
 
 /skill-sources/anthropics-skills/
+
+/voice-models/

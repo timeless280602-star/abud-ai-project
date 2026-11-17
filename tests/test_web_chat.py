@@ -83,6 +83,49 @@ class WebChatTests(unittest.TestCase):
             headers=self.headers,
         )
 
+    def test_voice_turns_stay_on_ollama_and_playback_requires_ownership(self):
+        import httpx
+
+        cid = self.create()
+        path = f"/web/chat/conversations/{cid}/voice"
+        headers = {**self.headers, "Content-Type": "audio/webm;codecs=opus"}
+        self.assertEqual(self.send(cid, message="Halo", voice=True).status_code, 503)
+
+        async def local(messages):
+            self.assertEqual(messages[-1]["content"], "Halo Abud")
+            yield "Halo, ada yang bisa dibantu?"
+
+        worker = AsyncMock(side_effect=[
+            httpx.Response(200, json={"text": "Halo Abud"}),
+            httpx.Response(200, content=b"RIFF-test-wave"),
+        ])
+        with patch.object(self.web.web_voice, "enabled", return_value=True), \
+             patch.object(self.web.web_voice, "worker", worker), \
+             patch.object(self.web.web_voice, "model_stream", side_effect=local) as ollama, \
+             patch.object(self.web, "model_stream") as regular, \
+             patch.object(self.web, "generate_title") as remote_title:
+            self.assertEqual(self.client.get("/web/chat/voice").json(), {"enabled": True})
+            forbidden = self.client.post(path + "/transcribe", content=b"audio")
+            self.assertEqual(forbidden.status_code, 403)
+            transcript = self.client.post(path + "/transcribe", content=b"audio", headers=headers)
+            self.assertEqual(transcript.json(), {"text": "Halo Abud"})
+            self.assertEqual(self.send(cid, message=transcript.json()["text"], voice=True).status_code, 200)
+            self.assertIn('"type": "done"', self.send(cid, regenerate=True).text)
+            regular.assert_not_called()
+            remote_title.assert_not_called()
+            self.assertEqual(ollama.call_count, 2)
+
+            messages = self.client.get(f"/web/chat/conversations/{cid}").json()["messages"]
+            self.assertEqual([m["voice"] for m in messages], [1, 1])
+            playback = path + f"/messages/{messages[-1]['id']}/audio"
+            result = self.client.post(playback, headers=self.headers)
+            self.assertEqual(result.headers["content-type"], "audio/wav")
+            self.assertEqual(result.content, b"RIFF-test-wave")
+            self.client.cookies.set(self.auth.SESSION_COOKIE, self.bob_token)
+            self.assertEqual(self.client.post(playback, headers=self.headers).status_code, 404)
+            self.assertEqual(self.client.post(path + "/transcribe", content=b"audio", headers=headers).status_code, 404)
+            self.assertEqual(worker.await_count, 2)
+
     def test_improvement_counts_only_voluntarily_shared_categories(self):
         cid = self.create()
         now = self.db.utc_now()

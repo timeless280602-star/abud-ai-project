@@ -27,7 +27,7 @@ function speechLanguage(text) {
 async function api(path = "", method = "GET", body) {
   return chatApi("/conversations" + path, method, body);
 }
-export default function WebChat({ onOpenIntegrations } = {}) {
+export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegrations } = {}) {
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState(null),
     [archived, setArchived] = useState(false),
@@ -36,7 +36,7 @@ export default function WebChat({ onOpenIntegrations } = {}) {
   const [list, setList] = useState([]),
     [id, setId] = useState(null),
     [messages, setMessages] = useState([]);
-  const [draft, setDraft] = useState(""),
+  const [draft, setDraft] = useState(initialDraft),
     [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -94,6 +94,9 @@ export default function WebChat({ onOpenIntegrations } = {}) {
       }
     };
   }, []);
+  useEffect(() => {
+    if (initialChatId) open(initialChatId);
+  }, [initialChatId]);
   useEffect(() => {
     refresh().catch((e) => setError(e.message));
   }, [projectId, archived]);
@@ -334,6 +337,7 @@ export default function WebChat({ onOpenIntegrations } = {}) {
             <div className="chat-empty">
               <h2>Talk with Abud</h2>
               <p>Create a conversation to begin. No Discord account needed.</p>
+              <button type="button" disabled={loading} onClick={create}>New chat</button>
             </div>
           )}
           {id && !messages.length && <p>How can I help you today?</p>}

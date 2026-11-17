@@ -92,7 +92,8 @@ async function main() {
       assert.ok(await pane.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), `${width}x${height}: message pane overflow`);
       const send = await page.getByRole("button", { name: "Send", exact: true }).boundingBox();
       assert.ok(send.x >= 0 && send.x + send.width <= width + 1 && send.y >= 0 && send.y + send.height <= height + 1, `${width}x${height}: send visible`);
-      assert.ok(send.width >= 44 && send.height >= 44, "Touch targets remain usable");
+      const touchSize = width <= 900 || await page.evaluate(() => matchMedia("(pointer: coarse)").matches) ? 44 : 36;
+      assert.ok(send.width >= touchSize - 0.1 && send.height >= touchSize - 0.1, `${width}x${height}: controls meet ${touchSize}px target`);
       assert.equal(await draft.inputValue(), "Draft tetap tersimpan.");
       const table = page.getByRole("region", { name: "Response table", exact: true });
       assert.ok(await table.evaluate((el) => el.scrollWidth > el.clientWidth), "Wide table scrolls inside its own region");

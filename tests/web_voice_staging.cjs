@@ -19,7 +19,17 @@ async function main() {
     await context.addCookies([{ name: cookieName, value: token, url, httpOnly: true }]);
     const page = await context.newPage();
     page.setDefaultTimeout(120_000);
+    await page.addInitScript(() => {
+      const play = Audio.prototype.play;
+      Audio.prototype.play = function (...args) {
+        if (this.src.startsWith("blob:")) {
+          this.addEventListener("playing", () => { window.abudVoicePlaybackStarted = true; }, { once: true });
+        }
+        return play.apply(this, args);
+      };
+    });
     await page.goto(url);
+    await page.getByRole("navigation").getByRole("button", { name: "AI Chat", exact: true }).click({ timeout: 30000 });
     await page.getByRole("button", { name: "＋ New conversation", exact: true }).click();
     await page.getByRole("button", { name: "Rekam suara", exact: true }).click();
     const stop = page.getByRole("button", { name: "Berhenti merekam", exact: true });
@@ -41,7 +51,7 @@ async function main() {
     assert.equal(audio.status(), 200);
     assert.match(audio.headers()["content-type"], /^audio\/wav/);
     assert.equal((await audio.body()).subarray(0, 4).toString(), "RIFF");
-    await page.getByRole("button", { name: /^(Read aloud|Stop reading)$/ }).waitFor();
+    await page.waitForFunction(() => window.abudVoicePlaybackStarted === true, null, { timeout: 15000 });
     const conversation = new URL(audio.url()).pathname.split("/").slice(0, 5).join("/");
     const messages = await (await context.request.get(url + conversation)).json();
     assert.equal(messages.messages.at(-2).content, prompt);

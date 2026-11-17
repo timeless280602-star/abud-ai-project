@@ -44,7 +44,7 @@ async function main() {
     assert.equal(await page.locator("main .chat-sidebar").count(), 0);
     assert.equal(await chatNavigation.evaluate((element) =>
       element.closest("#chat-navigation").previousElementSibling.textContent.trim()), "AI Chat");
-    await chatNavigation.getByRole("button", { name: /Marketing brief/ }).click();
+    await chatNavigation.getByRole("button", { name: "📌 Marketing brief", exact: true }).click();
     const draft = page.getByLabel("Message Abud", { exact: true });
     await draft.fill("Keep this draft");
     await mainNav.getByRole("button", { name: "AI Chat", exact: true }).click();
@@ -63,7 +63,7 @@ async function main() {
     await page.getByRole("button", { name: "Project settings", exact: true }).click();
     await page.getByRole("dialog", { name: "Project settings" }).getByRole("button", { name: "Cancel", exact: true }).click();
     await chatNavigation.getByRole("button", { name: "Recent chats", exact: true }).click();
-    await chatNavigation.getByRole("button", { name: /Marketing brief/ }).click();
+    await chatNavigation.getByRole("button", { name: "📌 Marketing brief", exact: true }).click();
     await draft.waitFor();
     await page.screenshot({ path: "/tmp/abud-navigation-chat.png", fullPage: true });
 
@@ -85,7 +85,7 @@ async function main() {
     await mainNav.getByRole("button", { name: "AI Chat", exact: true }).click();
     await page.getByRole("button", { name: "Open chat history", exact: true }).click();
     await chatNavigation.waitFor();
-    await chatNavigation.getByRole("button", { name: /Marketing brief/ }).click();
+    await chatNavigation.getByRole("button", { name: "📌 Marketing brief", exact: true }).click();
     await draft.waitFor();
     assert.equal(await page.locator(".sidebar").evaluate((element) => element.getBoundingClientRect().right <= 0), true);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));

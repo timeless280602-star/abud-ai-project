@@ -17,7 +17,8 @@ Ollama. Perintah riset dan gambar tetap tersedia melalui alur chat teks.
 
 Siapkan file `id_ID-news_tts-medium.onnx` dan `id_ID-news_tts-medium.onnx.json`
 dari [Piper Voices](https://huggingface.co/rhasspy/piper-voices/tree/main/id/id_ID/news_tts/medium)
-di direktori `voice-models/`. Gunakan `ABUD_PIPER_VOICES_DIR` dan
+di direktori `voice-models/`. Direktori harus dapat dilalui dan kedua file harus
+dapat dibaca oleh UID 10001, pengguna worker di container. Gunakan `ABUD_PIPER_VOICES_DIR` dan
 `ABUD_PIPER_MODEL` untuk memilih direktori atau model lain. Periksa ketentuan
 model suara yang dipilih sebelum dipakai dalam deployment.
 

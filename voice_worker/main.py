@@ -61,7 +61,9 @@ def recognize(model, data, format_name):
     if len(decoded) > SAMPLE_RATE * 2 * MAX_SECONDS:
         raise HTTPException(413, "Recording exceeds 30 seconds")
     samples = np.frombuffer(decoded, dtype="<i2").astype(np.float32) / 32768.0
-    segments, _ = model.transcribe(samples, vad_filter=True, condition_on_previous_text=False, beam_size=2)
+    segments, _ = model.transcribe(
+        samples, vad_filter=True, condition_on_previous_text=False, beam_size=2, hotwords="Abud",
+    )
     return " ".join(segment.text.strip() for segment in segments).strip()
 
 

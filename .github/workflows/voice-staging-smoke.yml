@@ -41,6 +41,7 @@ jobs:
           umask 077
           sed "s|^ABUD_BASE_URL=.*|ABUD_BASE_URL=$ABUD_BASE_URL|" staging/.env.example > .env.staging
           mkdir -p voice-models
+          chmod a+rx voice-models
           source_url=https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium
           for suffix in onnx onnx.json; do
             name="id_ID-news_tts-medium.$suffix"

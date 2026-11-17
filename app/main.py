@@ -59,6 +59,8 @@ async def require_internal_api_key(request: Request, call_next):
         "/dashboard/neural-engine",
         "/dashboard/neural-engine/test-inference",
         "/dashboard/neural-engine/history",
+        "/dashboard/chat",
+        "/dashboard/chat/history",
         "/dashboard/activity-logs",
         "/dashboard/network-command",
     }
@@ -1767,6 +1769,102 @@ def _dashboard_has_permission(
         and item.get("scope_id") == str(scope_id)
         for item in grants
     )
+
+
+class DashboardChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=6000)
+
+
+@app.post("/dashboard/chat")
+def dashboard_chat(request: Request, payload: DashboardChatRequest):
+    identity, discord_user_id = _memory_dashboard_identity(request)
+    if not _dashboard_has_permission(identity, "ai_config.view"):
+        raise HTTPException(
+            status_code=403,
+            detail="Permission Chat Abud belum diberikan.",
+        )
+
+    user_id = discord_user_id or str(identity["identity_id"])
+    result = chat(ChatRequest(
+        message=payload.message,
+        user_id=user_id,
+        username=identity.get("display_name"),
+        context_type="dm",
+    ))
+    return {
+        "status": result.get("status", "success"),
+        "answer": result.get("reply") or result.get("answer") or "",
+        "model": result.get("model"),
+    }
+
+
+@app.get("/dashboard/chat/history")
+def dashboard_chat_history(request: Request, q: str = "", limit: int = 100):
+    identity, discord_user_id = _memory_dashboard_identity(request)
+    if not _dashboard_has_permission(identity, "ai_config.view"):
+        raise HTTPException(
+            status_code=403,
+            detail="Permission Chat Abud belum diberikan.",
+        )
+
+    limit = max(1, min(limit, 100))
+    user_id = discord_user_id or str(identity["identity_id"])
+    search = (q or "").strip()
+
+    with database.get_connection() as db:
+        params = [user_id, "dm"]
+        sql = """
+            SELECT id, role, content, created_at
+            FROM conversations
+            WHERE user_id = ?
+              AND context_type = 'dm'
+        """
+        if search:
+            sql += " AND LOWER(content) LIKE LOWER(?)"
+            params.append(f"%{search}%")
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit * 8)
+        rows = [dict(row) for row in db.execute(sql, params).fetchall()]
+
+    items = []
+    seen = set()
+    for row in rows:
+        if row["role"] != "user":
+            continue
+        if row["id"] in seen:
+            continue
+        seen.add(row["id"])
+
+        title = str(row["content"]).strip().replace("\n", " ")
+        if len(title) > 64:
+            title = title[:61].rstrip() + "..."
+
+        preview = ""
+        for candidate in rows:
+            if candidate["role"] == "assistant" and candidate["id"] > row["id"]:
+                preview = str(candidate["content"]).strip().replace("\n", " ")
+                break
+        if len(preview) > 90:
+            preview = preview[:87].rstrip() + "..."
+
+        items.append({
+            "id": row["id"],
+            "title": title or "Percakapan",
+            "preview": preview or "Pesan tanpa respons",
+            "created_at": row["created_at"],
+            "messages": [
+                {"role": "user", "content": row["content"]},
+                *([
+                    {"role": "assistant", "content": candidate["content"]}
+                    for candidate in rows
+                    if candidate["role"] == "assistant" and candidate["id"] > row["id"]
+                ][-1:] if rows else [])
+            ],
+        })
+        if len(items) >= limit:
+            break
+
+    return {"items": items}
 
 
 def _memory_has_personal_permission(identity, permission):

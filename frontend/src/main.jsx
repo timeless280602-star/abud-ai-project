@@ -6,12 +6,14 @@ import {
   Cpu, Database, Fingerprint, Gauge, Globe, HardDrive, Hexagon,
   LayoutDashboard, LockKeyhole, LogOut, Menu, Network, Radio,
   RefreshCw, Server, Settings, Shield, ShieldCheck, Terminal,
-  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2
+  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2,
+  Send, Mic, Square
 } from 'lucide-react';
 import './style.css';
 
 const modules = [
   { id: 'overview', label: 'Command Center', group: 'MAIN', icon: LayoutDashboard },
+  { id: 'chat', label: 'Chat Abud', group: 'MAIN', icon: Bot },
   { id: 'neural', label: 'Neural Engine', group: 'INTELLIGENCE', icon: BrainCircuit },
   { id: 'memory', label: 'Memory Matrix', group: 'INTELLIGENCE', icon: Database },
   { id: 'network', label: 'Network Command', group: 'INFRASTRUCTURE', icon: Network },
@@ -57,6 +59,7 @@ function canOpenModule(user, moduleId) {
   if (user?.is_creator) return true;
 
   const requirements = {
+    chat: 'ai_config.view',
     neural: 'ai_config.view',
     memory: 'memory.personal.view',
     network: 'server.view',
@@ -2032,6 +2035,205 @@ function ModulePlaceholder({ module }) {
   );
 }
 
+function ChatAbud({ user }) {
+  const [messages, setMessages] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [query, setQuery] = useState('');
+  const [draft, setDraft] = useState('');
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState('');
+  const [lastMessage, setLastMessage] = useState('');
+  const [recording, setRecording] = useState(false);
+  const recognitionRef = React.useRef(null);
+
+  async function loadHistory(search = '') {
+    try {
+      const data = await api(`/dashboard/chat/history?q=${encodeURIComponent(search)}&limit=100`);
+      setHistory(Array.isArray(data.items) ? data.items : []);
+    } catch (e) {
+      setError(e.message || 'Riwayat chat gagal dimuat.');
+    }
+  }
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      document.querySelector('.chat-log')?.scrollTo({
+        top: document.querySelector('.chat-log')?.scrollHeight || 0,
+        behavior: 'smooth'
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, status]);
+
+  async function sendMessage(messageText = draft) {
+    const message = messageText.trim();
+    if (!message || status === 'processing') return;
+    setError('');
+    setStatus('processing');
+    setLastMessage(message);
+    setMessages(current => [...current, { role: 'user', content: message }]);
+    setDraft('');
+    try {
+      const data = await api('/dashboard/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message })
+      });
+      setMessages(current => [...current, {
+        role: 'assistant',
+        content: data.answer || data.message || 'Abud tidak memberikan respons.'
+      }]);
+      await loadHistory(query);
+    } catch (e) {
+      setError(e.message || 'Abud gagal memproses pesan.');
+      setStatus('error');
+      return;
+    }
+    setStatus('idle');
+  }
+
+  function toggleRecording() {
+    if (recording) {
+      recognitionRef.current?.stop();
+      setRecording(false);
+      setStatus('idle');
+      return;
+    }
+
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) {
+      setError('Perekaman suara tidak didukung oleh browser ini.');
+      setStatus('error');
+      return;
+    }
+    const recognition = new Recognition();
+    recognition.lang = 'id-ID';
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    recognition.onresult = event => {
+      const transcript = Array.from(event.results)
+        .map(result => result[0].transcript)
+        .join('');
+      setDraft(transcript);
+    };
+    recognition.onerror = event => {
+      setRecording(false);
+      setStatus('error');
+      setError(event.error === 'no-speech' ? 'Tidak ada suara yang terdeteksi.' : 'Perekaman suara gagal.');
+    };
+    recognition.onend = () => {
+      setRecording(false);
+      setStatus('idle');
+    };
+    recognitionRef.current = recognition;
+    recognition.start();
+    setRecording(true);
+    setStatus('recording');
+  }
+
+  return (
+    <div className="chat-page">
+      <aside className="chat-history">
+        <div className="chat-history-heading">
+          <div>
+            <div className="eyebrow">CONVERSATION INDEX</div>
+            <h2>RIWAYAT <span>CHAT</span></h2>
+          </div>
+          <button className="chat-new-button" onClick={() => { setMessages([]); setError(''); setStatus('idle'); }} title="Chat baru">
+            <Plus size={16}/>
+          </button>
+        </div>
+        <label className="chat-search">
+          <Search size={15}/>
+          <input
+            value={query}
+            onChange={e => {
+              setQuery(e.target.value);
+              loadHistory(e.target.value);
+            }}
+            placeholder="Cari percakapan..."
+          />
+        </label>
+        <div className="chat-history-list">
+          {history.map(item => (
+            <button
+              key={item.id}
+              className="chat-history-item"
+              title={item.title}
+              onClick={() => setMessages(item.messages || [])}
+            >
+              <strong>{item.title}</strong>
+              <small>{item.preview}</small>
+              <time>{item.created_at}</time>
+            </button>
+          ))}
+          {!history.length && <div className="chat-history-empty">Tidak ada riwayat yang cocok.</div>}
+        </div>
+      </aside>
+
+      <section className="chat-workspace">
+        <div className="chat-statusbar" aria-live="polite">
+          {status === 'processing' && <><span className="pulse-dot"/> Abud sedang memproses...</>}
+          {status === 'recording' && <><span className="pulse-dot"/> Merekam suara...</>}
+          {status === 'error' && <><AlertTriangle size={14}/> {error}</>}
+          {status === 'idle' && !error && <><CircleDot size={14}/> Siap menerima pesan</>}
+        </div>
+        {error && status !== 'error' && (
+          <div className="chat-error">
+            <span><AlertTriangle size={14}/>{error}</span>
+            {lastMessage && <button onClick={() => sendMessage(lastMessage)}>Coba lagi</button>}
+          </div>
+        )}
+        {status === 'error' && lastMessage && (
+          <button className="chat-retry" onClick={() => sendMessage(lastMessage)}>Coba lagi</button>
+        )}
+
+        <div className="chat-log" aria-label="Pesan percakapan">
+          {!messages.length && (
+            <div className="chat-empty">
+              <Bot size={34}/>
+              <h3>Mulai percakapan dengan Abud</h3>
+              <p>Tulis pesan atau gunakan mikrofon jika browser mendukung.</p>
+            </div>
+          )}
+          {messages.map((message, index) => (
+            <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}>
+              <div className="chat-message-role">{message.role === 'assistant' ? 'ABUD' : (user?.display_name || 'ANDA')}</div>
+              <div className="chat-message-content">{message.content}</div>
+            </article>
+          ))}
+        </div>
+
+        <form className="chat-composer" onSubmit={event => { event.preventDefault(); sendMessage(); }}>
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+              }
+            }}
+            rows={1}
+            maxLength={6000}
+            placeholder="Tulis pesan..."
+            aria-label="Pesan untuk Abud"
+          />
+          <button type="button" className={`chat-mic ${recording ? 'is-recording' : ''}`} onClick={toggleRecording} aria-label={recording ? 'Hentikan perekaman' : 'Mulai perekaman'}>
+            {recording ? <Square size={16}/> : <Mic size={16}/>}
+          </button>
+          <button type="submit" className="chat-send" disabled={!draft.trim() || status === 'processing'} aria-label="Kirim pesan">
+            <Send size={17}/>
+          </button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [guilds, setGuilds] = useState([]);
@@ -2068,6 +2270,29 @@ function App() {
   }
 
   useEffect(() => { loadDashboard(true); }, []);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const syncViewport = () => {
+      const height = viewport?.height || window.innerHeight;
+      document.documentElement.style.setProperty('--visual-viewport-height', `${height}px`);
+    };
+    syncViewport();
+    window.addEventListener('resize', syncViewport);
+    viewport?.addEventListener('resize', syncViewport);
+    return () => {
+      window.removeEventListener('resize', syncViewport);
+      viewport?.removeEventListener('resize', syncViewport);
+    };
+  }, []);
+
+  useEffect(() => {
+    const closeOnEscape = event => {
+      if (event.key === 'Escape') setMobileOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, []);
 
   const visibleModules = modules.filter(module => canOpenModule(user, module.id));
 
@@ -2106,7 +2331,7 @@ function App() {
             <div className="nav-label">{group}</div>
             {visibleModules.filter(m => m.group === group).map(m => {
               const Icon = m.icon;
-              return <button key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`} onClick={() => {setActive(m.id);setMobileOpen(false);}}>
+              return <button key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`} aria-current={active === m.id ? 'page' : undefined} onClick={() => {setActive(m.id);setMobileOpen(false);}}>
                 <Icon size={17}/><span>{m.label}</span>{active === m.id && <ChevronRight size={14} className="nav-arrow"/>}
               </button>;
             })}
@@ -2124,6 +2349,7 @@ function App() {
         </header>
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}
         {active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
+          active === 'chat' ? <ChatAbud user={user}/> :
           active === 'memory' ? <MemoryMatrix user={user} guilds={guilds}/> :
           active === 'security' ? <SecurityProtocol user={user}/> :
           active === 'neural' ? <NeuralEngine/> :

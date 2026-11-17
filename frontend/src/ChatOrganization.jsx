@@ -15,7 +15,7 @@ function Dialog({ title, children, onClose }) {
   </dialog>;
 }
 
-export default function ChatOrganization({ list, projects, projectId, archived, busy, id, onOpen, onCreate, onView, onRefresh, onChanged }) {
+export default function ChatOrganization({ list, projects, projectId, archived, busy, id, onOpen, onCreate, onView, onRefresh, onChanged, closeHistory }) {
   const [menu, setMenu] = useState(null), [editor, setEditor] = useState(null),
     [saving, setSaving] = useState(false), [error, setError] = useState("");
   const menuRef = useRef(null), menuButton = useRef(null);
@@ -46,7 +46,7 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
   const update = (field, value) => setEditor((old) => ({ ...old, [field]: value }));
   return <>
     <aside className="chat-sidebar">
-      <h1>AI Chat</h1>
+      <div className="chat-sidebar-heading"><h1>AI Chat</h1>{closeHistory}</div>
       <h2 className="chat-section-label">PROJECTS</h2>
       <button disabled={busy || saving} onClick={() => projectEditor()}>＋ New project</button>
       <nav aria-label="Projects">

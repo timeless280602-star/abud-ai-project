@@ -459,14 +459,16 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   }
   return (
     <section className={`web-chat abud-chat-room ${historyOpen ? "history-open" : ""}`} aria-label="AI Chat">
-      {historyOpen && <button type="button" className="chat-history-scrim" aria-label="Close chat history" onClick={() => setHistoryOpen(false)} />}
+      {historyOpen && <button type="button" className="chat-history-scrim" tabIndex={-1} aria-label="Dismiss chat history" onClick={() => setHistoryOpen(false)} />}
       <ChatOrganization list={list} projects={projects} projectId={projectId} archived={archived}
         busy={busy || ratingBusy || branching} id={id} onOpen={open} onCreate={create} onView={view}
-        onRefresh={refresh} onChanged={organizationChanged} />
+        onRefresh={refresh} onChanged={organizationChanged}
+        closeHistory={historyOpen && <ChatIcon label="Close chat history" icon={X}
+          onClick={() => setHistoryOpen(false)} />} />
       <div className="chat-main">
         <header className="chat-room-heading">
-          <ChatIcon label={historyOpen ? "Close history" : "Open chat history"} icon={historyOpen ? X : PanelLeft}
-            className="chat-history-toggle" aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)} />
+          <ChatIcon label="Open chat history" icon={PanelLeft}
+            className="chat-history-toggle" aria-expanded={historyOpen} onClick={() => setHistoryOpen(true)} />
           <h1>{list.find((conversation) => conversation.id === id)?.title || "AI Chat"}</h1>
           {id && <ChatIcon label="New chat" icon={Plus} disabled={busy || loading || branching} onClick={create} />}
         </header>

@@ -45,7 +45,8 @@
   white-space: nowrap;
   font-size: 1.08rem;
 }
-.chat-room-heading .chat-history-toggle, .chat-history-scrim { display: none; }
+.chat-history-scrim { display: none; }
+.chat-sidebar-heading { display: flex; align-items: start; justify-content: space-between; }
 
 .abud-chat-room .chat-messages { padding: 20px max(14px, calc((100% - 730px) / 2)); }
 .abud-chat-room .chat-message { padding: 12px 0; background: transparent; }
@@ -194,4 +195,8 @@
 @media (max-width: 700px) {
   .abud-chat-room { height: calc(100dvh - 58px); }
   .abud-chat-room .chat-composer textarea { font-size: 16px; }
+}
+
+@media (min-width: 961px) {
+  .abud-chat-room .chat-history-toggle, .chat-sidebar-heading .chat-icon { display: none; }
 }

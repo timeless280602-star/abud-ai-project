@@ -27,7 +27,7 @@ function speechLanguage(text) {
 async function api(path = "", method = "GET", body) {
   return chatApi("/conversations" + path, method, body);
 }
-export default function WebChat() {
+export default function WebChat({ onOpenIntegrations } = {}) {
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState(null),
     [archived, setArchived] = useState(false),
@@ -363,6 +363,8 @@ export default function WebChat() {
                     setError("Clipboard unavailable. Select and copy the message.");
                   }
                 }}>Copy</button>
+                {m.role === "assistant" && onOpenIntegrations && /^\s*buat paket konten\s*:/i.test(messages[i - 1]?.content ?? "") &&
+                  <button type="button" disabled={busy} onClick={onOpenIntegrations}>Buat desain di Canva</button>}
                 {m.role === "assistant" && m.id && <>
                   <button type="button" disabled={busy || ratingBusy}
                     aria-expanded={ratingId === m.id} aria-label="Rate response"

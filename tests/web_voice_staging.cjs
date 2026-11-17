@@ -23,6 +23,9 @@ async function main() {
       const play = Audio.prototype.play;
       Audio.prototype.play = function (...args) {
         if (this.src.startsWith("blob:")) {
+          window.abudVoiceWavHeader = fetch(this.src)
+            .then((response) => response.blob())
+            .then((blob) => blob.slice(0, 4).text());
           this.addEventListener("playing", () => { window.abudVoicePlaybackStarted = true; }, { once: true });
         }
         return play.apply(this, args);
@@ -50,8 +53,8 @@ async function main() {
     const audio = await wavResponse;
     assert.equal(audio.status(), 200);
     assert.match(audio.headers()["content-type"], /^audio\/wav/);
-    assert.equal((await audio.body()).subarray(0, 4).toString(), "RIFF");
     await page.waitForFunction(() => window.abudVoicePlaybackStarted === true, null, { timeout: 15000 });
+    assert.equal(await page.evaluate(() => window.abudVoiceWavHeader), "RIFF");
     const conversation = new URL(audio.url()).pathname.split("/").slice(0, 5).join("/");
     const messages = await (await context.request.get(url + conversation)).json();
     assert.equal(messages.messages.at(-2).content, prompt);

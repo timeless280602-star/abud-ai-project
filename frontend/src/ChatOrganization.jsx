@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { chatApi } from "./chatApi";
 
 function Dialog({ title, children, onClose }) {
@@ -15,10 +16,13 @@ function Dialog({ title, children, onClose }) {
   </dialog>;
 }
 
-export default function ChatOrganization({ list, projects, projectId, archived, busy, id, onOpen, onCreate, onView, onRefresh, onChanged }) {
+export default function ChatOrganization({ list, projects, projectId, archived, busy, id, onOpen, onCreate, onView, onRefresh, onChanged, navigationTarget }) {
   const [menu, setMenu] = useState(null), [editor, setEditor] = useState(null),
     [saving, setSaving] = useState(false), [error, setError] = useState("");
   const menuRef = useRef(null), menuButton = useRef(null);
+  const [search, setSearch] = useState("");
+  const matchingChats = list.filter((chat) => chat.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  useEffect(() => { setSearch(""); setMenu(null); }, [projectId, archived]);
   const selected = projects.find((p) => p.id === projectId);
   useEffect(() => {
     if (!menu) return;
@@ -44,9 +48,7 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
       instructions: project?.instructions || "", memory_mode: project?.memory_mode || "default" });
   }
   const update = (field, value) => setEditor((old) => ({ ...old, [field]: value }));
-  return <>
-    <aside className="chat-sidebar">
-      <h1>AI Chat</h1>
+  const navigation = <div className="chat-sidebar" role="region" aria-label="Chat navigation">
       <h2 className="chat-section-label">PROJECTS</h2>
       <button disabled={busy || saving} onClick={() => projectEditor()}>＋ New project</button>
       <nav aria-label="Projects">
@@ -54,7 +56,6 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
           aria-current={projectId === p.id && !archived ? "page" : undefined} onClick={() => onView(p.id, false)}>
           <span>{p.name}</span><small>{p.conversation_count || 0} · {p.memory_mode === "project_only" ? "Project-only" : "Default"}</small>
         </button>)}
-        {!projects.length && <small className="chat-sidebar-hint">Group related conversations in a project.</small>}
       </nav>
       <h2 className="chat-section-label">CHATS</h2>
       <div className="chat-view-actions">
@@ -62,12 +63,15 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
         <button disabled={busy || saving} aria-pressed={archived} onClick={() => onView(null, true)}>Archived chats</button>
       </div>
       <button disabled={busy || saving || archived} onClick={onCreate}>＋ New conversation</button>
+      <input className="chat-search" type="search" aria-label="Search chat titles" placeholder="Search chat titles…"
+        value={search} onChange={(event) => { setSearch(event.target.value); setMenu(null); }} />
       <nav aria-label="Conversations">
         {!list.length && <p className="chat-sidebar-hint">{archived ? "No archived chats." : "No conversations yet."}</p>}
-        {list.map((c, index) => <React.Fragment key={c.id}>
-          {(index === 0 || Boolean(list[index - 1].pinned) !== Boolean(c.pinned)) && <h3 className="chat-section-label">{c.pinned ? "Pinned" : "Recent"}</h3>}
+        {list.length > 0 && !matchingChats.length && <p className="chat-sidebar-hint">No matching chat titles.</p>}
+        {matchingChats.map((c, index) => <React.Fragment key={c.id}>
+          {(index === 0 || Boolean(matchingChats[index - 1].pinned) !== Boolean(c.pinned)) && <h3 className="chat-section-label">{c.pinned ? "Pinned" : "Recent"}</h3>}
           <div className="chat-conversation">
-            <button disabled={busy || saving} aria-current={id === c.id ? "page" : undefined} onClick={() => onOpen(c.id)}>
+            <button title={c.title} disabled={busy || saving} aria-current={id === c.id ? "page" : undefined} onClick={() => onOpen(c.id)}>
               {c.pinned ? "📌 " : ""}{c.title}
               {archived && c.project_name && <small className="chat-project-caption">{c.project_name}</small>}
             </button>
@@ -93,7 +97,9 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
         </React.Fragment>)}
       </nav>
       {error && !editor && <p role="alert" className="chat-error">{error}</p>}
-    </aside>
+    </div>;
+  return <>
+    {navigationTarget && createPortal(navigation, navigationTarget)}
     {selected && !archived && <div className="chat-project-panel">
       <div><h2>{selected.name}</h2><span className="chat-memory-mode">{selected.memory_mode === "project_only" ? "Project-only memory" : "Default memory"}</span></div>
       {selected.description && <p>{selected.description}</p>}

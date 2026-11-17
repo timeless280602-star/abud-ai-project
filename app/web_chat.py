@@ -12,10 +12,10 @@ from typing import Literal
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import auth, database, research, web_attachments, web_projects, web_images
+from app import auth, database, research, web_attachments, web_projects, web_images, web_voice
 
 router = APIRouter(prefix="/web/chat")
 logger = logging.getLogger(__name__)
@@ -199,6 +199,8 @@ def init_schema():
         message_columns = {r['name'] for r in db.execute('PRAGMA table_info(web_messages)')}
         if 'request_id' not in message_columns:
             db.execute('ALTER TABLE web_messages ADD COLUMN request_id TEXT')
+        if 'voice' not in message_columns:
+            db.execute('ALTER TABLE web_messages ADD COLUMN voice INTEGER NOT NULL DEFAULT 0')
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_web_turn_request ON web_messages(request_id) WHERE request_id IS NOT NULL')
         db.execute('CREATE INDEX IF NOT EXISTS idx_web_conversation_group ON web_conversations(identity_id,project_id,archived_at,pinned,updated_at)')
 
@@ -234,6 +236,7 @@ class Turn(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     message: str = Field(default="", max_length=6000)
     regenerate: bool = False
+    voice: bool = False
     request_id: uuid.UUID | None = None
 
 
@@ -255,6 +258,17 @@ def conversations(request: Request, archived: bool = False, project_id: uuid.UUI
         return web_projects.list_conversations(db, owner, archived, project_id)
 
 
+def check_conversation_limit(db, owner):
+    if (
+        db.execute(
+            "SELECT count(*) FROM web_conversations WHERE identity_id=?", (owner,)
+        ).fetchone()[0]
+        >= 200
+    ):
+        raise HTTPException(
+            409, "Conversation limit reached. Delete an old conversation first."
+        )
+
 @router.post("/conversations", status_code=201)
 def create(request: Request, payload: NewConversation):
     owner = identity(request)
@@ -263,15 +277,7 @@ def create(request: Request, payload: NewConversation):
     with database.get_connection() as db:
         db.execute("BEGIN IMMEDIATE")
         web_projects.project(db, payload.project_id, owner)
-        if (
-            db.execute(
-                "SELECT count(*) FROM web_conversations WHERE identity_id=?", (owner,)
-            ).fetchone()[0]
-            >= 200
-        ):
-            raise HTTPException(
-                409, "Conversation limit reached. Delete an old conversation first."
-            )
+        check_conversation_limit(db, owner)
         db.execute(
             "INSERT INTO web_conversations(id,identity_id,title,updated_at,project_id,title_state) VALUES (?,?,?,?,?,?)",
             (cid, owner, payload.title, now, str(payload.project_id) if payload.project_id else None,
@@ -288,7 +294,7 @@ def retrieve(cid: str, request: Request):
         messages = [
             dict(r)
             for r in db.execute(
-                """SELECT m.id,m.role,m.content,m.created_at,f.rating,f.reason AS feedback_reason,
+                """SELECT m.id,m.role,m.content,m.created_at,m.voice,f.rating,f.reason AS feedback_reason,
                           f.improvement_category AS feedback_category
                    FROM web_messages m LEFT JOIN web_response_feedback f ON f.message_id=m.id
                    WHERE m.conversation_id=? ORDER BY m.id""",
@@ -325,6 +331,42 @@ def delete(cid: str, request: Request):
             raise HTTPException(409, "A response is still running.")
         db.execute("DELETE FROM web_conversations WHERE id=?", (cid,))
     return {"success": True}
+
+
+@router.post("/conversations/{cid}/messages/{message_id}/branch", status_code=201)
+def branch(cid: str, message_id: int, request: Request):
+    owner = identity(request)
+    new_id = str(uuid.uuid4())
+    with database.get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        source = owned(db, cid, owner)
+        messages = db.execute(
+            """SELECT id, role, content, created_at, voice FROM web_messages
+               WHERE conversation_id=? AND id<=? ORDER BY id""", (cid, message_id)
+        ).fetchall()
+        if not messages or messages[-1]["id"] != message_id or messages[-1]["role"] != "assistant":
+            raise HTTPException(404, "Response not found.")
+        check_conversation_limit(db, owner)
+        title = ("Branch · " + source["title"])[:100]
+        db.execute(
+            """INSERT INTO web_conversations(id,identity_id,title,updated_at,project_id,title_state)
+               VALUES (?,?,?,?,?,'manual')""",
+            (new_id, owner, title, database.utc_now(), source["project_id"]),
+        )
+        for message in messages:
+            copied_id = db.execute(
+                """INSERT INTO web_messages(conversation_id,role,content,created_at,voice)
+                   VALUES (?,?,?,?,?)""",
+                (new_id, message["role"], message["content"], message["created_at"], message["voice"]),
+            ).lastrowid
+            db.execute(
+                """INSERT INTO web_images(id,job_id,identity_id,conversation_id,message_id,
+                                          filename,media_type,created_at,charged)
+                   SELECT lower(hex(randomblob(16))),job_id,identity_id,?,?,filename,media_type,created_at,0
+                   FROM web_images WHERE message_id=? AND identity_id=?""",
+                (new_id, copied_id, message["id"], owner),
+            )
+    return {"id": new_id, "title": title, "project_id": source["project_id"]}
 
 
 @router.post("/conversations/{cid}/messages/{message_id}/feedback")
@@ -489,6 +531,74 @@ async def stream_events(response):
         yield "\n".join(data)
 
 
+@router.get("/voice")
+def voice_status(request: Request):
+    identity(request)
+    return {"enabled": web_voice.enabled(), "provider": web_voice.provider()}
+
+
+def require_voice():
+    if not web_voice.enabled():
+        raise HTTPException(503, "Voice chat belum tersedia.")
+
+
+@router.post("/conversations/{cid}/voice/transcribe")
+async def transcribe(cid: str, request: Request):
+    owner = identity(request)
+    require_voice()
+    with database.get_connection() as db:
+        if owned(db, cid, owner)["archived_at"]:
+            raise HTTPException(409, "Pulihkan percakapan sebelum merekam.")
+    content_type = request.headers.get("content-type", "").split(";", 1)[0]
+    if content_type not in web_voice.AUDIO_TYPES:
+        raise HTTPException(415, "Format rekaman tidak didukung.")
+    audio = bytearray()
+    async for chunk in request.stream():
+        if len(audio) + len(chunk) > web_voice.MAX_AUDIO:
+            raise HTTPException(413, "Rekaman maksimal 3 MB.")
+        audio.extend(chunk)
+    try:
+        response = await web_voice.worker("/transcribe", content=bytes(audio), content_type=content_type)
+        text = response.json()["text"].strip()[:6000]
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code in {413, 422, 429}:
+            detail = {413: "Rekaman terlalu besar.", 422: "Rekaman tidak dapat dibaca.",
+                      429: "Mesin suara sedang sibuk. Coba lagi."}
+            code = error.response.status_code
+            raise HTTPException(code, detail[code]) from None
+        raise HTTPException(503, "Mesin transkripsi tidak tersedia.") from None
+    except (httpx.HTTPError, ValueError, KeyError, AttributeError):
+        raise HTTPException(503, "Mesin transkripsi tidak tersedia.") from None
+    if not text:
+        raise HTTPException(422, "Tidak ada ucapan yang terdeteksi.")
+    return {"text": text}
+
+
+@router.post("/conversations/{cid}/voice/messages/{message_id}/audio")
+async def voice_audio(cid: str, message_id: int, request: Request):
+    owner = identity(request)
+    require_voice()
+    with database.get_connection() as db:
+        owned(db, cid, owner)
+        row = db.execute(
+            "SELECT content FROM web_messages WHERE conversation_id=? AND id=? AND role='assistant' AND voice=1",
+            (cid, message_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Jawaban suara tidak ditemukan.")
+    try:
+        result = await web_voice.worker(
+            "/synthesize", content=row["content"][:2400].encode(), content_type="text/plain; charset=utf-8"
+        )
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 429:
+            raise HTTPException(429, "Mesin suara sedang sibuk. Coba lagi.") from None
+        raise HTTPException(503, "Suara Piper tidak tersedia.") from None
+    except httpx.HTTPError:
+        raise HTTPException(503, "Suara Piper tidak tersedia.") from None
+    return Response(result.content, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
 @router.post("/conversations/{cid}/attachment-messages")
 def send_attachment(
     cid: str,
@@ -533,7 +643,7 @@ def send(cid: str, request: Request, payload: Turn):
         history = [
             dict(r)
             for r in db.execute(
-                "SELECT id,role,content FROM web_messages WHERE conversation_id=? ORDER BY id",
+                "SELECT id,role,content,voice FROM web_messages WHERE conversation_id=? ORDER BY id",
                 (cid,),
             )
         ]
@@ -557,12 +667,17 @@ def send(cid: str, request: Request, payload: Turn):
         else:
             if history and history[-1]["role"] == "user":
                 raise HTTPException(409, "Retry the previous message using Regenerate.")
+            if payload.voice:
+                require_voice()
             user_message = db.execute(
-                "INSERT INTO web_messages(conversation_id,role,content,created_at,request_id) VALUES (?,?,?,?,?)",
-                (cid, "user", payload.message, database.utc_now(), request_key),
+                "INSERT INTO web_messages(conversation_id,role,content,created_at,request_id,voice) VALUES (?,?,?,?,?,?)",
+                (cid, "user", payload.message, database.utc_now(), request_key, payload.voice),
             )
-            history.append({"id": user_message.lastrowid, "role": "user", "content": payload.message})
-        image_intent = web_images.intent(history[-1]["content"])
+            history.append({"id": user_message.lastrowid, "role": "user", "content": payload.message, "voice": payload.voice})
+        voice = bool(history[-1]["voice"])
+        if voice:
+            require_voice()
+        image_intent = None if voice else web_images.intent(history[-1]["content"])
         verified_creator = auth._is_creator_identity(db, owner) if image_intent else False
         limit = db.execute(
             "SELECT * FROM web_chat_limits WHERE identity_id=?", (owner,)
@@ -598,7 +713,7 @@ def send(cid: str, request: Request, payload: Turn):
                         yield frame
                 return
             query = history[-1]["content"]
-            research_request = research.request_from(query)
+            research_request = None if voice else research.request_from(query)
             if research_request is not None:
                 stage = "research"
                 answer = await asyncio.to_thread(research.reply, *research_request)
@@ -606,7 +721,7 @@ def send(cid: str, request: Request, payload: Turn):
                     return
                 yield event("delta", text=answer)
             else:
-                if first_title:
+                if first_title and not voice:
                     task = asyncio.create_task(generate_title(cid, owner, title_message, fallback))
                     title_tasks.add(task)
                     task.add_done_callback(title_tasks.discard)
@@ -647,7 +762,8 @@ def send(cid: str, request: Request, payload: Turn):
                     "The explicit personal memory request was saved successfully." if saved else memory_status,
                 )
                 stage = "upstream"
-                async with asyncio.timeout(GENERATION_TIMEOUT), aclosing(model_stream(messages)) as stream:
+                stream_model = web_voice.model_stream if voice else model_stream
+                async with asyncio.timeout(GENERATION_TIMEOUT), aclosing(stream_model(messages)) as stream:
                     async for text in stream:
                         if await request.is_disconnected():
                             return
@@ -670,11 +786,11 @@ def send(cid: str, request: Request, payload: Turn):
                         "DELETE FROM web_messages WHERE id=? AND conversation_id=?",
                         (replace_id, cid),
                     )
-                db.execute(
-                    "INSERT INTO web_messages(conversation_id,role,content,created_at) VALUES (?,?,?,?)",
-                    (cid, "assistant", answer, database.utc_now()),
-                )
-            yield event("done")
+                assistant_id = db.execute(
+                    "INSERT INTO web_messages(conversation_id,role,content,created_at,voice) VALUES (?,?,?,?,?)",
+                    (cid, "assistant", answer, database.utc_now(), voice),
+                ).lastrowid
+            yield event("done", message_id=assistant_id) if voice else event("done")
         except asyncio.CancelledError:
             logger.info("web_chat_cancelled stage=%s partial=%s", stage, bool(answer))
             raise

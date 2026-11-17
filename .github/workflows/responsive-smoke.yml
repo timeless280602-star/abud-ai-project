@@ -1,0 +1,55 @@
+name: Abud Responsive Browser Checks
+on:
+  push:
+    branches: [feat/local-voice-chat]
+    paths: ['frontend/**', 'tests/web_responsive.cjs', 'tests/web_navigation.cjs', '.github/workflows/responsive-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: responsive-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  responsive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and check frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Install browser
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Check responsive layouts and navigation
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: |
+          cd frontend
+          npx vite preview --host 127.0.0.1 --port 4173 &
+          preview_pid=$!
+          trap 'kill "$preview_pid" 2>/dev/null || true' EXIT
+          cd ..
+          curl --fail --silent --retry 10 --retry-connrefused http://127.0.0.1:4173/ > /dev/null
+          printf '{"url":"http://127.0.0.1:4173"}' | node tests/web_responsive.cjs
+          if [ "$BROWSER" = chromium ]; then
+            printf '{"url":"http://127.0.0.1:4173"}' | node tests/web_navigation.cjs
+          fi
+      - name: Save screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responsive-${{ matrix.browser }}
+          path: /tmp/abud-*.png
+          if-no-files-found: ignore

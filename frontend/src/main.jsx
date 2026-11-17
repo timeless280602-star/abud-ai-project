@@ -2437,6 +2437,10 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [drawerLayout, setDrawerLayout] = useState(() => window.matchMedia('(max-width: 900px)').matches);
+  const [chatExpanded, setChatExpanded] = useState(true);
+  const [dashboardExpanded, setDashboardExpanded] = useState(true);
+  const [chatNavigation, setChatNavigation] = useState(null);
 
   async function loadDashboard(initial = false) {
     if (!initial) setRefreshing(true);
@@ -2464,11 +2468,38 @@ function App() {
   }
 
   useEffect(() => { loadDashboard(true); }, []);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 900px)');
+    const update = () => { setDrawerLayout(media.matches); setMobileOpen(false); };
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    if (!mobileOpen || !drawerLayout) return;
+    const previous = document.activeElement;
+    const sidebar = document.querySelector('.sidebar');
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    sidebar.querySelector('.mobile-close')?.focus();
+    function keys(event) {
+      if (event.key === 'Escape') { event.preventDefault(); setMobileOpen(false); }
+      if (event.key !== 'Tab') return;
+      const focusable = [...sidebar.querySelectorAll('button:not(:disabled), input:not(:disabled), a[href], [tabindex="0"]')]
+        .filter(element => element.getClientRects().length);
+      const first = focusable[0], last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+    document.addEventListener('keydown', keys);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener('keydown', keys);
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, [mobileOpen, drawerLayout]);
 
   const insideDashboard = active === 'overview' || dashboardModules.some(module => module.id === active);
-  const visibleModules = modules.filter(module =>
-    (insideDashboard || module.group !== 'Dashboard') && canOpenModule(user, module.id)
-  );
+  const visibleModules = workspaceModules.filter(module => canOpenModule(user, module.id));
 
   useEffect(() => {
     function followHash() {
@@ -2479,6 +2510,9 @@ function App() {
   }, []);
 
   function navigate(moduleId) {
+    if (moduleId === 'overview' || dashboardModules.some(module => module.id === moduleId)) {
+      setDashboardExpanded(true);
+    }
     setActive(moduleId);
     setMobileOpen(false);
     const url = new URL(window.location.href);
@@ -2489,6 +2523,7 @@ function App() {
   }
 
   function openChat(selection) {
+    setChatExpanded(true);
     setChatLaunch(previous => ({ ...selection, key: previous.key + 1 }));
     navigate('chat');
   }
@@ -2512,16 +2547,47 @@ function App() {
   return (
     <div className="app-shell abud-redesign">
       {mobileOpen && <button className="mobile-backdrop" onClick={() => setMobileOpen(false)} aria-label="Close menu"/>}
-      <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
-        <div className="sidebar-brand"><Brand/><button className="mobile-close" onClick={() => setMobileOpen(false)}><X size={18}/></button></div>
-        <nav>
+      <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`} inert={drawerLayout && !mobileOpen ? '' : undefined}>
+        <div className="sidebar-brand"><Brand/><button className="mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={18}/></button></div>
+        <nav aria-label="Main navigation">
           {groups.map(group => <div className="nav-group" key={group}>
             <div className="nav-label">{group}</div>
             {visibleModules.filter(m => m.group === group).map(m => {
               const Icon = m.icon;
-              return <button key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`} aria-current={active === m.id ? 'page' : undefined} onClick={() => m.id === 'chat' && active !== 'chat' ? openChat({}) : navigate(m.id)}>
-                <Icon size={17}/><span>{m.label}</span>{active === m.id && <ChevronRight size={14} className="nav-arrow"/>}
-              </button>;
+              const isChat = m.id === 'chat';
+              const isDashboard = m.id === 'overview';
+              const expanded = isChat ? active === 'chat' && chatExpanded : insideDashboard && dashboardExpanded;
+              const selected = active === m.id || (isDashboard && insideDashboard);
+              return <React.Fragment key={m.id}>
+                <button className={`nav-item ${selected ? 'active' : ''}`}
+                  aria-current={active === m.id ? 'page' : undefined}
+                  aria-expanded={isChat || isDashboard ? expanded : undefined}
+                  aria-controls={isChat ? 'chat-navigation' : isDashboard ? 'dashboard-navigation' : undefined}
+                  onClick={() => {
+                    if (isChat) {
+                      if (active === 'chat') setChatExpanded(!chatExpanded);
+                      else openChat({});
+                    } else if (isDashboard) {
+                      if (insideDashboard) setDashboardExpanded(!dashboardExpanded);
+                      else navigate('overview');
+                    } else navigate(m.id);
+                  }}>
+                  <Icon size={17}/><span>{m.label}</span>
+                  {(isChat || isDashboard) && (expanded
+                    ? <ChevronDown size={14} className="nav-arrow"/>
+                    : <ChevronRight size={14} className="nav-arrow"/>)}
+                </button>
+                {isChat && active === 'chat' && <div id="chat-navigation" className="sidebar-submenu chat-navigation-host"
+                  hidden={!chatExpanded} ref={setChatNavigation} />}
+                {isDashboard && <div id="dashboard-navigation" className="sidebar-submenu dashboard-submenu"
+                  hidden={!expanded} role="group" aria-label="Dashboard modules">
+                  {dashboardModules.filter(module => canOpenModule(user, module.id)).map(({ id, label, icon: ChildIcon }) =>
+                    <button key={id} className={`nav-item ${active === id ? 'active' : ''}`}
+                      aria-current={active === id ? 'page' : undefined} onClick={() => navigate(id)}>
+                      <ChildIcon size={16}/><span>{label}</span>
+                    </button>)}
+                </div>}
+              </React.Fragment>;
             })}
           </div>)}
         </nav>
@@ -2538,7 +2604,9 @@ function App() {
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}
         {denied ? <div className="page-content abud-workspace"><div className="abud-page-title"><h1>Access required</h1><p>Your account does not have access to this dashboard page.</p></div><button className="abud-primary" onClick={() => navigate('home')}>Back to Command Center</button></div> :
           active === 'home' ? <WorkspaceHome health={health} user={user} navigate={navigate} openChat={openChat}/> :
-          active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat key={chatLaunch.key} initialChatId={chatLaunch.id} initialDraft={chatLaunch.draft} onOpenIntegrations={() => navigate('integrations')}/></React.Suspense> :
+          active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat key={chatLaunch.key} initialChatId={chatLaunch.id} initialDraft={chatLaunch.draft} onOpenIntegrations={() => navigate('integrations')}
+            navigationTarget={chatNavigation} onOpenNavigation={() => { setChatExpanded(true); setMobileOpen(true); }}
+            onNavigateFromSidebar={() => setMobileOpen(false)}/></React.Suspense> :
           active === 'integrations' ? <Integrations/> :
           active === 'work-activity' ? <div className="page-content abud-workspace"><WorkspaceActivity openChat={openChat}/></div> :
           current.prompt ? <Studio module={current} openChat={openChat}/> :

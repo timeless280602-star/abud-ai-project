@@ -86,7 +86,8 @@ jobs:
       - name: Verify chat and voice provider routing
         run: |
           api_image=$(docker compose images -q api)
-          docker run --rm --network none \
+          docker run --rm --network none --env-file .env.staging \
+            -e ABUD_DATABASE_PATH=/tmp/abud-voice-tests.db \
             -v "$PWD/tests:/tests:ro" --entrypoint python "$api_image" \
             -m unittest discover -s /tests -p 'test_web_chat.py'
       - name: Check microphone through generated reply and playback

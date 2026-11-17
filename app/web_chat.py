@@ -534,7 +534,7 @@ async def stream_events(response):
 @router.get("/voice")
 def voice_status(request: Request):
     identity(request)
-    return {"enabled": web_voice.enabled()}
+    return {"enabled": web_voice.enabled(), "provider": web_voice.provider()}
 
 
 def require_voice():

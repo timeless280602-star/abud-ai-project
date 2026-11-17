@@ -104,6 +104,42 @@ class WebChatTests(unittest.TestCase):
         self.client.cookies.set(self.auth.SESSION_COOKIE, self.bob_token)
         self.assertEqual(self.client.post(prefix + f"/{message_ids[1]}/branch", headers=self.headers).status_code, 404)
 
+    def test_voice_router_reuses_text_provider_and_regenerates(self):
+        env = {
+            "ABUD_VOICE_LLM_PROVIDER": "router",
+            "ABUD_VOICE_WORKER_URL": "http://voice.test",
+            "NINE_ROUTER_API_KEY": "fixture",
+        }
+        async def reply(messages):
+            self.assertIn("created by Bos Bara", messages[0]["content"])
+            self.assertIn("colloquial Indonesian", messages[0]["content"])
+            yield "Aku dibuat oleh Bos Bara."
+
+        with patch.dict(os.environ, env), \
+             patch.object(self.web, "model_stream", side_effect=reply) as router:
+            self.assertEqual(self.client.get("/web/chat/voice").json(),
+                             {"enabled": True, "provider": "router"})
+            cid = self.create()
+            self.assertIn('"type": "done"', self.send(cid, message="Siapa kreator kamu?", voice=True).text)
+            self.assertIn('"type": "done"', self.send(cid, regenerate=True).text)
+            self.assertEqual(router.call_count, 2)
+            messages = self.client.get(f"/web/chat/conversations/{cid}").json()["messages"]
+            self.assertEqual([m["voice"] for m in messages], [1, 1])
+            self.assertEqual(messages[-1]["content"], "Aku dibuat oleh Bos Bara.")
+
+    def test_voice_provider_requires_its_own_configuration(self):
+        with patch.dict(os.environ, {
+            "ABUD_VOICE_WORKER_URL": "http://voice.test",
+            "ABUD_VOICE_LLM_PROVIDER": "router",
+            "NINE_ROUTER_API_KEY": "",
+        }):
+            self.assertFalse(self.web.web_voice.enabled())
+        with patch.dict(os.environ, {
+            "ABUD_VOICE_WORKER_URL": "http://voice.test",
+            "ABUD_VOICE_LLM_PROVIDER": "invalid",
+        }):
+            self.assertFalse(self.web.web_voice.enabled())
+
     def test_voice_turns_stay_on_ollama_and_playback_requires_ownership(self):
         import httpx
 
@@ -125,7 +161,7 @@ class WebChatTests(unittest.TestCase):
              patch.object(self.web.web_voice, "model_stream", side_effect=local) as ollama, \
              patch.object(self.web, "model_stream") as regular, \
              patch.object(self.web, "generate_title") as remote_title:
-            self.assertEqual(self.client.get("/web/chat/voice").json(), {"enabled": True})
+            self.assertEqual(self.client.get("/web/chat/voice").json(), {"enabled": True, "provider": "ollama"})
             forbidden = self.client.post(path + "/transcribe", content=b"audio")
             self.assertEqual(forbidden.status_code, 403)
             transcript = self.client.post(path + "/transcribe", content=b"audio", headers=headers)

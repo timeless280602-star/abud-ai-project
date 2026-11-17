@@ -60,9 +60,16 @@ if "$voice"; then
 fi
 "${compose[@]}" config --quiet
 if "$voice"; then
-  "${compose[@]}" up -d --build abud-voice ollama
-  model="$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["abud-api"]["environment"]["ABUD_VOICE_OLLAMA_MODEL"])')"
-  "${compose[@]}" exec -T ollama ollama pull "$model"
+  voice_provider="$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["abud-api"]["environment"]["ABUD_VOICE_LLM_PROVIDER"])')"
+  case "$voice_provider" in
+    ollama)
+      "${compose[@]}" up -d --build abud-voice ollama
+      model="$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["abud-api"]["environment"]["ABUD_VOICE_OLLAMA_MODEL"])')"
+      "${compose[@]}" exec -T ollama ollama pull "$model"
+      ;;
+    router) "${compose[@]}" up -d --build abud-voice ;;
+    *) echo "Unknown voice provider: $voice_provider" >&2; exit 1 ;;
+  esac
   ready=false
   for attempt in {1..90}; do
     if "${compose[@]}" exec -T abud-voice python -c \
@@ -78,7 +85,7 @@ if "$voice"; then
   fi
 fi
 "${compose[@]}" build abud-api
-if "$voice"; then
+if "$voice" && [[ "$voice_provider" == ollama ]]; then
   printf 'Warming the local voice model…\n'
   "${compose[@]}" run --rm --no-deps -T abud-api python -c \
     'import asyncio; from app.web_voice import warmup; asyncio.run(warmup())'

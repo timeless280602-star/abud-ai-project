@@ -68,6 +68,7 @@ def recognize(model, data, format_name):
     samples = np.frombuffer(decoded, dtype="<i2").astype(np.float32) / 32768.0
     segments, _ = model.transcribe(
         samples, vad_filter=True, condition_on_previous_text=False, beam_size=2, hotwords="Abud",
+        language=os.getenv("ABUD_WHISPER_LANGUAGE") or None,
     )
     return " ".join(segment.text.strip() for segment in segments).strip()
 

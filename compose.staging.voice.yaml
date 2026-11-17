@@ -5,6 +5,7 @@ services:
       - default
       - voice
     environment:
+      ABUD_VOICE_LLM_PROVIDER: ${ABUD_VOICE_LLM_PROVIDER:-ollama}
       ABUD_VOICE_WORKER_URL: http://abud-voice:8001
       ABUD_VOICE_OLLAMA_URL: http://ollama:11434
       ABUD_VOICE_OLLAMA_MODEL: ${ABUD_VOICE_OLLAMA_MODEL:-qwen2.5:1.5b}

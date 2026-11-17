@@ -653,3 +653,65 @@ body{background:#070708}
 .chat-image-preview { max-width:95vw; max-height:95vh; }
 .chat-image-preview img { display:block; max-width:85vw; max-height:75vh; object-fit:contain; }
 .chat-image-preview::backdrop { background:#000b; }
+
+/* Workspace and account navigation follow the approved Abud reference. */
+.abud-redesign {
+  --bg:#101014;
+  --panel:#17171b;
+  --panel2:#131316;
+  --line:#2b292e;
+  --red:#ff5864;
+  --red2:#d93849;
+  --muted:#aaa5af;
+  background:var(--bg);
+}
+.abud-redesign .sidebar {background:var(--panel2);border-color:var(--line);box-shadow:none}
+.abud-redesign .sidebar nav {overflow-y:auto;flex:1;padding-top:8px}
+.abud-redesign .topbar {background:var(--panel2);border-color:var(--line)}
+.abud-redesign .nav-item.active {background:#ff58641a;color:var(--red);border-color:#ff586444}
+.abud-redesign .breadcrumb,.abud-redesign .nav-label {color:#b6b2bc}
+.abud-redesign .sidebar-brand .brand-name {font:800 23px Inter,system-ui,sans-serif;letter-spacing:.08em}
+.abud-workspace {max-width:1280px;display:grid;gap:24px;padding-bottom:36px}
+.abud-page-title h1 {font-size:clamp(1.9rem,4vw,2.85rem);letter-spacing:-.045em;margin:0}
+.abud-page-title p,.abud-activity p {color:var(--muted);margin:.5rem 0 0;line-height:1.5}
+.abud-hero {display:grid;grid-template-columns:minmax(0,1.3fr) minmax(220px,1fr);align-items:center;min-height:290px;padding:clamp(20px,5vw,52px);border:1px solid var(--line);border-radius:18px;background:radial-gradient(ellipse at 80% 50%,#421821,transparent 57%),var(--panel);overflow:hidden}
+.abud-hero-copy p {color:var(--red);font-weight:700;letter-spacing:.13em;font-size:.78rem;margin:0}
+.abud-hero-copy h2 {font-size:clamp(2rem,4.8vw,3.8rem);letter-spacing:-.055em;line-height:1.05;margin:.6rem 0 1.45rem}
+.abud-hero-reactor {display:grid;place-items:center}
+.abud-actions {display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.abud-primary,.abud-secondary {display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border-radius:8px;font-weight:700}
+.abud-primary {background:#d93849;border:1px solid #d93849;color:#fff}
+.abud-secondary {background:var(--panel);color:#f3eff4;border:1px solid var(--line)}
+.abud-summary,.abud-card-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.abud-summary {grid-template-columns:repeat(2,minmax(0,1fr))}
+.abud-summary > div,.abud-card,.abud-activity {background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;color:inherit}
+.abud-summary > div {display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.abud-summary span,.abud-card span {color:var(--muted)}
+.abud-summary svg,.abud-card svg {color:var(--red)}
+.abud-summary strong {margin-inline-start:auto}
+.abud-card {display:grid;gap:8px;text-align:left;align-content:start;min-height:98px;overflow-wrap:anywhere}
+.abud-card:hover,.abud-activity-row:hover,.abud-secondary:hover {border-color:var(--red)}
+.abud-card span {font-size:.85rem;line-height:1.45}
+.abud-tools {scroll-margin-top:20px}
+.abud-tools h2,.abud-activity h2 {font-size:1.2rem;margin:0 0 12px}
+.abud-activity-row {display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:10px;width:100%;padding:12px 8px;background:transparent;color:inherit;text-align:left;border:0;border-top:1px solid var(--line)}
+.abud-activity-row span {overflow-wrap:anywhere}
+.abud-activity-row time {color:var(--muted);font-size:.75rem}
+.abud-redesign :focus-visible {outline:2px solid var(--red);outline-offset:3px}
+@media(max-width:900px) {
+  .abud-card-grid {grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:580px) {
+  .abud-hero {grid-template-columns:1fr;min-height:0}
+  .abud-hero-reactor {height:165px}
+  .abud-hero-reactor .reactor-wrap {transform:scale(.66)}
+  .abud-activity-row {grid-template-columns:auto minmax(0,1fr) auto}
+  .abud-activity-row time {grid-column:2;grid-row:2}
+  .abud-activity-row svg:last-child {grid-column:3;grid-row:1}
+}
+@media(prefers-reduced-motion:reduce) {
+  .abud-hero-reactor * {animation:none}
+}
+
+.abud-redesign .cockpit-heading h2 {font:800 clamp(1.65rem,3vw,2.4rem) Inter,system-ui,sans-serif;margin:.5rem 0}
+.abud-redesign .cockpit-heading h2 span {color:var(--red)}

@@ -233,6 +233,13 @@ def init_database():
         """)
 
         db.execute("""
+            CREATE TABLE IF NOT EXISTS canva_connections (
+                identity_id TEXT PRIMARY KEY REFERENCES auth_identities(identity_id) ON DELETE CASCADE,
+                token BLOB NOT NULL
+            )
+        """)
+
+        db.execute("""
             CREATE TABLE IF NOT EXISTS auth_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 identity_id TEXT NOT NULL,

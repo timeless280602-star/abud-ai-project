@@ -27,7 +27,7 @@ function speechLanguage(text) {
 async function api(path = "", method = "GET", body) {
   return chatApi("/conversations" + path, method, body);
 }
-export default function WebChat() {
+export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegrations } = {}) {
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState(null),
     [archived, setArchived] = useState(false),
@@ -36,7 +36,7 @@ export default function WebChat() {
   const [list, setList] = useState([]),
     [id, setId] = useState(null),
     [messages, setMessages] = useState([]);
-  const [draft, setDraft] = useState(""),
+  const [draft, setDraft] = useState(initialDraft),
     [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -49,6 +49,12 @@ export default function WebChat() {
     [speakingId, setSpeakingId] = useState(null);
   const shareCategory = !projectId || projects.some((project) => project.id === projectId && project.memory_mode === "default");
   const sending = useRef(false);
+  const [attachment, setAttachment] = useState(null);
+  const attachmentInput = useRef(null);
+  function clearAttachment() {
+    setAttachment(null);
+    if (attachmentInput.current) attachmentInput.current.value = "";
+  }
   const [imageLoading, setImageLoading] = useState(false);
   const invalidatedChoices = useRef(new Set());
   const [choicesBlocked, setChoicesBlocked] = useState(false);
@@ -89,6 +95,9 @@ export default function WebChat() {
     };
   }, []);
   useEffect(() => {
+    if (initialChatId) open(initialChatId);
+  }, [initialChatId]);
+  useEffect(() => {
     refresh().catch((e) => setError(e.message));
   }, [projectId, archived]);
   useEffect(() => {
@@ -102,6 +111,7 @@ export default function WebChat() {
     setNotice("");
     setLoading(true);
     setId(cid);
+    clearAttachment();
     setMessages([]);
     setError("");
     try {
@@ -128,6 +138,7 @@ export default function WebChat() {
     ++version.current;
     ++listVersion.current;
     stopSpeech();
+    clearAttachment();
     setId(null); setMessages([]); setList([]); setRatingId(null); setError(""); setNotice("");
     clearTimeout(titleRefresh.current);
     setArchivedChat(false); setProjectId(pid); setArchived(showArchived);
@@ -137,13 +148,15 @@ export default function WebChat() {
     if (change.project === projectId) view(null, false);
     else if (change.clear && change.conversation === id) {
       ++version.current;
+      clearAttachment();
       stopSpeech(); setId(null); setMessages([]); setRatingId(null); setArchivedChat(false);
     }
   }
   async function send(regenerate = false, choiceText, sourceId) {
     const text = (choiceText ?? draft).trim();
+    const file = !regenerate && choiceText === undefined ? attachment : null;
     if (sourceId !== undefined && (choicesBlocked || invalidatedChoices.current.has(`${id}:${sourceId}`) || sourceId !== messages.at(-1)?.id)) return;
-    if (renderedVersion !== version.current || sending.current || busy || loading || ratingBusy || archivedChat || !id || (!regenerate && (!text || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
+    if (renderedVersion !== version.current || sending.current || busy || loading || ratingBusy || archivedChat || !id || (file && text.length > 1000) || (!regenerate && ((!text && !file) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
     sending.current = true;
     setChoicesBlocked(true);
     const currentVersion = version.current;
@@ -162,14 +175,24 @@ export default function WebChat() {
     abort.current = new AbortController();
     let reader;
     try {
-      const r = await fetch(root + "/" + id + "/messages", {
+      const requestId = regenerate ? null : crypto.randomUUID();
+      let body;
+      if (file) {
+        body = new FormData();
+        body.append("attachment", file);
+        body.append("message", text);
+        body.append("request_id", requestId);
+      } else {
+        body = JSON.stringify(regenerate
+          ? { regenerate: true }
+          : { message: text, request_id: requestId });
+      }
+      const r = await fetch(root + "/" + id + (file ? "/attachment-messages" : "/messages"), {
         method: "POST",
         credentials: "same-origin",
         signal: abort.current.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          regenerate ? { regenerate: true } : { message: text, request_id: crypto.randomUUID() },
-        ),
+        headers: file ? undefined : { "Content-Type": "application/json" },
+        body,
       });
       if (!r.ok) {
         const d = await r.json();
@@ -181,9 +204,10 @@ export default function WebChat() {
         ? messages.at(-1)?.role === "assistant"
           ? messages.slice(0, -1)
           : messages
-        : [...messages, { role: "user", content: text, created_at: new Date().toISOString() }];
+        : [...messages, { role: "user", content: file ? [text, `Lampiran: ${file.name}`].filter(Boolean).join("\n\n") : text, created_at: new Date().toISOString() }];
       const created_at = new Date().toISOString();
       setDraft("");
+      if (file) clearAttachment();
       setMessages([...base, { role: "assistant", content: "", created_at }]);
       reader = r.body.getReader();
       const decoder = new TextDecoder();
@@ -313,6 +337,7 @@ export default function WebChat() {
             <div className="chat-empty">
               <h2>Talk with Abud</h2>
               <p>Create a conversation to begin. No Discord account needed.</p>
+              <button type="button" disabled={loading} onClick={create}>New chat</button>
             </div>
           )}
           {id && !messages.length && <p>How can I help you today?</p>}
@@ -342,6 +367,8 @@ export default function WebChat() {
                     setError("Clipboard unavailable. Select and copy the message.");
                   }
                 }}>Copy</button>
+                {m.role === "assistant" && onOpenIntegrations && /^\s*buat paket konten\s*:/i.test(messages[i - 1]?.content ?? "") &&
+                  <button type="button" disabled={busy} onClick={onOpenIntegrations}>Buat desain di Canva</button>}
                 {m.role === "assistant" && m.id && <>
                   <button type="button" disabled={busy || ratingBusy}
                     aria-expanded={ratingId === m.id} aria-label="Rate response"
@@ -407,7 +434,7 @@ export default function WebChat() {
               id="chat-draft"
               value={draft}
               disabled={busy}
-              maxLength={6000}
+              maxLength={attachment ? 1000 : 6000}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
@@ -418,9 +445,31 @@ export default function WebChat() {
               placeholder="Ask anything…"
             />
             <div>
+              <label htmlFor="chat-attachment">Lampiran PDF, Word, atau PowerPoint</label>
+              <input
+                id="chat-attachment"
+                ref={attachmentInput}
+                type="file"
+                accept=".pdf,.docx,.pptx"
+                disabled={busy || loading}
+                onChange={(event) => {
+                  const selected = event.target.files[0];
+                  if (selected && selected.size > 5 * 1024 * 1024) {
+                    clearAttachment();
+                    setError("Ukuran lampiran maksimal 5 MB.");
+                    return;
+                  }
+                  setError("");
+                  setAttachment(selected ?? null);
+                }}
+              />
+              {attachment && <button type="button" disabled={busy} onClick={clearAttachment}>Hapus lampiran</button>}
+              {attachment && <small>Cuplikan teks lampiran akan disimpan dalam riwayat chat.</small>}
+            </div>
+            <div>
               <button
                 disabled={
-                  busy || loading || ratingBusy || !draft.trim() || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)
+                  busy || loading || ratingBusy || (!draft.trim() && !attachment) || (attachment && draft.trim().length > 1000) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)
                 }
               >
                 Send

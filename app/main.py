@@ -17,7 +17,7 @@ from app import auth as dashboard_auth
 from app import tools as abud_tools
 from app.memory_review import review_meaning
 from app.auth import router as auth_router
-from app import improvement, research, web_chat, web_projects
+from app import improvement, research, web_canva, web_chat, web_projects
 from app.skills.engine import get_relevant_skills
 
 
@@ -40,6 +40,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(web_chat.router)
+app.include_router(web_canva.router)
 app.include_router(web_projects.router)
 app.include_router(improvement.router)
 

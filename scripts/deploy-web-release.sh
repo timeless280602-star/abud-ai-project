@@ -5,10 +5,12 @@ set -euo pipefail
 release="${1:?Provide the reviewed release commit SHA}"
 cd /opt/abud
 
-if [[ "$(git branch --show-current)" != main ]]; then
-  echo "Deploy from the production main checkout at /opt/abud." >&2
+branch="$(git branch --show-current)"
+if [[ -z "$branch" ]]; then
+  echo "The production checkout is detached. Inspect git status -sb before deploying." >&2
   exit 1
 fi
+printf 'Production checkout branch: %s\n' "$branch"
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "Tracked files have local changes. Review them before deploying." >&2
   exit 1
@@ -22,9 +24,14 @@ git merge-base --is-ancestor HEAD "$release" || {
   exit 1
 }
 
-api_container="$(docker compose -f compose.yaml ps -q abud-api)"
+api_container="$(docker compose -f compose.yaml ps --status running -q abud-api)"
 if [[ -z "$api_container" ]]; then
   echo "No running abud-api found in this Compose project." >&2
+  exit 1
+fi
+
+if [[ "$(docker inspect --format '{{.Name}}' "$api_container")" != /abud-api ]]; then
+  echo "The running API container does not match production abud-api." >&2
   exit 1
 fi
 

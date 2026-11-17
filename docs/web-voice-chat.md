@@ -30,6 +30,12 @@ docker compose -f compose.yaml -f compose.voice.yaml exec ollama ollama pull qwe
 docker compose -f compose.yaml -f compose.voice.yaml up -d --no-deps --build abud-api
 ```
 
+Compose membangun image Ollama khusus CPU untuk host Linux x86-64, memakai
+binary resmi versi 0.40.16 dengan pemeriksaan SHA-256. Image akhir berisi
+runtime CPU dan lisensi yang disertakan paket. Build pertama mengunduh arsip
+rilis sekitar 1,55 GB, mengekstrak komponen CPU, lalu menghapus arsip pada langkah
+yang sama. Model Ollama diunduh terpisah ke volume.
+
 Unduhan pertama mengisi volume cache Whisper dan Ollama. Model default adalah
 Whisper `base`, Ollama `qwen2.5:1.5b`, dan suara Piper bahasa Indonesia. Gunakan
 `ABUD_WHISPER_MODEL` atau `ABUD_VOICE_OLLAMA_MODEL` untuk mengganti model.

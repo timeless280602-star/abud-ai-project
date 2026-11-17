@@ -7,6 +7,7 @@ on:
       - 'app/**'
       - 'frontend/**'
       - 'voice_worker/**'
+      - 'ollama_cpu/**'
       - 'compose*.yaml'
       - 'tests/web_voice_staging.cjs'
       - '.github/workflows/voice-staging-smoke.yml'
@@ -25,7 +26,6 @@ jobs:
     timeout-minutes: 35
     env:
       COMPOSE_FILE: compose.staging.yaml:compose.staging.voice.yaml
-      ABUD_OLLAMA_TAG: "0.40.16"
       ABUD_BASE_URL: https://127.0.0.1:18443
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +52,10 @@ jobs:
       - name: Build staging and load real models
         run: |
           docker compose up -d --build --wait api abud-voice ollama
+          image_bytes=$(docker image inspect abud-ollama-cpu:0.40.16 --format '{{.Size}}')
+          echo "Ollama CPU image bytes: $image_bytes"
+          test "$image_bytes" -lt 524288000
+          docker compose exec -T ollama sh -c 'test ! -d /usr/lib/ollama/cuda_v12 && test ! -d /usr/lib/ollama/cuda_v13'
           docker compose exec -T ollama ollama pull qwen2.5:1.5b
           docker compose exec -T abud-voice python - > "$RUNNER_TEMP/abud-voice-input.wav" <<'PY'
           import sys

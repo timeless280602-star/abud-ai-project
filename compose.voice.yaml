@@ -23,7 +23,8 @@ services:
   ollama:
     networks:
       - voice
-    image: ollama/ollama:${ABUD_OLLAMA_TAG:-latest}
+    image: abud-ollama-cpu:0.40.16
+    build: ./ollama_cpu
     restart: unless-stopped
     environment:
       OLLAMA_NUM_PARALLEL: "1"

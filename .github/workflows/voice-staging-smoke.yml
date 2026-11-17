@@ -48,6 +48,7 @@ jobs:
             curl --fail --silent --show-error --location --retry 3 "$source_url/$name" --output "voice-models/$name"
             chmod a+r "voice-models/$name"
           done
+          chmod 0600 voice_worker/main.py
           docker compose config --quiet
       - name: Build staging and load real models
         run: |

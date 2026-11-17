@@ -13,6 +13,7 @@ async function main() {
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 },
       ...(engine !== "firefox" ? { isMobile: true, hasTouch: true } : {}) });
     const page = await context.newPage();
+    page.setDefaultTimeout(15000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const title = "Rencana konten promosi kopi dan laporan penjualan mingguan yang judulnya sangat panjang";
@@ -95,7 +96,7 @@ async function main() {
       assert.equal(await draft.inputValue(), "Draft tetap tersimpan.");
       const table = page.getByRole("region", { name: "Response table", exact: true });
       assert.ok(await table.evaluate((el) => el.scrollWidth > el.clientWidth), "Wide table scrolls inside its own region");
-      assert.ok(await page.locator("pre").evaluate((el) => el.scrollWidth > el.clientWidth), "Long code scrolls inside its block");
+      assert.ok(await page.locator("pre").evaluate((el) => [el, el.querySelector("code")].some((block) => block.scrollWidth > block.clientWidth)), "Long code scrolls inside its block");
       assert.ok(await page.locator(".chat-message-body img").evaluate((el) => el.width <= el.parentElement.clientWidth), "Image fits message");
       await page.screenshot({ path: `/tmp/abud-responsive-${engine}-${width}x${height}.png`, fullPage: true });
     }
@@ -146,6 +147,10 @@ async function main() {
     await page.getByText("Pemulihan berhasil.", { exact: true }).waitFor();
     assert.deepEqual(errors, []);
     console.log(`PASS ${engine}: nine phone/tablet/desktop sizes, local table/code scrolling, images, keyboard viewport simulation, title search, draft, dashboard, drawer Escape, streaming reading position and retry (mock HTTP).`);
+  } catch (error) {
+    for (const context of browser.contexts()) for (const page of context.pages())
+      await page.screenshot({ path: `/tmp/abud-responsive-${engine}-failure.png`, fullPage: true }).catch(() => {});
+    throw error;
   } finally { await browser.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

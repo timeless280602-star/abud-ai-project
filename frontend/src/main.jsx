@@ -6,24 +6,34 @@ import {
   Cpu, Database, Fingerprint, Gauge, Globe, HardDrive, Hexagon,
   LayoutDashboard, LockKeyhole, LogOut, Menu, Network, Radio,
   RefreshCw, Server, Settings, Shield, ShieldCheck, Terminal,
-  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
+  Image as ImageIcon, Film, Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
 } from 'lucide-react';
 import './style.css';
 const WebChat = React.lazy(() => import('./WebChat'));
 
-const modules = [
-  { id: 'chat', label: 'AI Chat', group: 'MAIN', icon: Bot },
-  { id: 'overview', label: 'Command Center', group: 'MAIN', icon: LayoutDashboard },
-  { id: 'neural', label: 'Neural Engine', group: 'INTELLIGENCE', icon: BrainCircuit },
-  { id: 'memory', label: 'Memory Matrix', group: 'INTELLIGENCE', icon: Database },
-  { id: 'network', label: 'Network Command', group: 'INFRASTRUCTURE', icon: Network },
-  { id: 'security', label: 'Security Protocol', group: 'INFRASTRUCTURE', icon: Shield },
-  { id: 'automation', label: 'Automation Engine', group: 'OPERATIONS', icon: AudioWaveform },
-  { id: 'knowledge', label: 'Knowledge Archives', group: 'OPERATIONS', icon: HardDrive },
-  { id: 'logs', label: 'Activity Logs', group: 'OPERATIONS', icon: Terminal },
-  { id: 'integrations', label: 'Integrasi', group: 'ACCOUNT', icon: Plus },
-  { id: 'settings', label: 'Core Settings', group: 'SYSTEM', icon: Settings }
+const workspaceModules = [
+  { id: 'home', label: 'Command Center', group: 'Workspace', icon: LayoutDashboard },
+  { id: 'chat', label: 'AI Chat', group: 'Workspace', icon: Bot },
+  { id: 'overview', label: 'Dashboard', group: 'Workspace', icon: Gauge },
+  { id: 'image-studio', label: 'Image Studio', group: 'Create', icon: ImageIcon, copy: 'Generate an image from a description.', prompt: 'Buat gambar ' },
+  { id: 'video-studio', label: 'Video Studio', group: 'Create', icon: Film, copy: 'Plan scenes and narration before opening Higgsfield.', prompt: 'Buat paket konten: ', link: 'https://higgsfield.ai/' },
+  { id: 'writing-studio', label: 'Writing Studio', group: 'Create', icon: Pencil, copy: 'Draft or refine writing with Abud.', prompt: 'Bantu tulis ' },
+  { id: 'work-automation', label: 'Automation Engine', group: 'Operations', icon: AudioWaveform, copy: 'Turn a brief into a workflow or checklist.', prompt: 'Bantu susun alur kerja untuk ' },
+  { id: 'work-activity', label: 'Activity Logs', group: 'Operations', icon: Activity },
+  { id: 'integrations', label: 'Integrasi', group: 'Account', icon: Plus },
 ];
+
+const dashboardModules = [
+  { id: 'neural', label: 'Neural Engine', group: 'Dashboard', icon: BrainCircuit },
+  { id: 'memory', label: 'Memory Matrix', group: 'Dashboard', icon: Database },
+  { id: 'network', label: 'Network Command', group: 'Dashboard', icon: Network },
+  { id: 'security', label: 'Security Protocol', group: 'Dashboard', icon: Shield },
+  { id: 'automation', label: 'Automation Engine', group: 'Dashboard', icon: AudioWaveform },
+  { id: 'knowledge', label: 'Knowledge Archives', group: 'Dashboard', icon: HardDrive },
+  { id: 'logs', label: 'Activity Logs', group: 'Dashboard', icon: Terminal },
+  { id: 'settings', label: 'Core Settings', group: 'Dashboard', icon: Settings },
+];
+const modules = [...workspaceModules, ...dashboardModules];
 
 const MEMORY_SOURCE_LABELS = {
   unknown: 'Unknown origin',
@@ -64,7 +74,7 @@ function hasAnyPermission(user, permission) {
 }
 
 function canOpenModule(user, moduleId) {
-  if (moduleId === 'chat' || moduleId === 'integrations') return true;
+  if (moduleId !== 'overview' && workspaceModules.some(module => module.id === moduleId)) return true;
   if (!user?.dashboard_access) return false;
   if (moduleId === 'overview') return true;
   if (user?.is_creator) return true;
@@ -387,7 +397,7 @@ function Overview({ health, guilds, refresh, refreshing, user }) {
       <div className="cockpit-heading">
         <div>
           <div className="eyebrow"><span className="pulse-dot"/> ABUD INTELLIGENCE / COMMAND INTERFACE</div>
-          <h1>Command <span>Center.</span></h1>
+          <h2>System <span>overview</span></h2>
           <p>Unified intelligence, infrastructure and operational awareness.</p>
         </div>
         <button className="outline-button" onClick={refresh} disabled={refreshing}>
@@ -2326,11 +2336,103 @@ function Integrations() {
   </section>;
 }
 
+function WorkspaceActivity({ openChat, compact = false }) {
+  const [chats, setChats] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const controller = new AbortController();
+    api('/web/chat/conversations', { signal: controller.signal })
+      .then(items => setChats([...items].sort((a, b) => b.updated_at.localeCompare(a.updated_at))))
+      .catch(err => { if (err.name !== 'AbortError') setError(err.message); });
+    return () => controller.abort();
+  }, []);
+
+  const time = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return <section className="abud-activity" aria-labelledby="workspace-activity-title">
+    <h2 id="workspace-activity-title">{compact ? 'Recent activity' : 'Activity Logs'}</h2>
+    {error && <p role="alert">{error}</p>}
+    {!chats && !error && <p role="status">Loading conversations…</p>}
+    {chats?.length === 0 && <p>No recent conversations yet.</p>}
+    {chats?.slice(0, compact ? 4 : undefined).map(chat => (
+      <button className="abud-activity-row" key={chat.id} onClick={() => openChat({ id: chat.id })}>
+        <Bot size={17}/><span>{chat.title}</span>
+        <time dateTime={chat.updated_at}>{time.format(new Date(chat.updated_at))}</time>
+        <ChevronRight size={15}/>
+      </button>
+    ))}
+  </section>;
+}
+
+function WorkspaceHome({ health, user, openChat, navigate }) {
+  const tools = workspaceModules.filter(module => module.prompt);
+  return <div className="page-content abud-workspace">
+    <div className="abud-page-title">
+      <h1>Command Center</h1>
+      <p>Welcome back, {user.display_name || 'Operator'}.</p>
+    </div>
+    <section className="abud-hero">
+      <div className="abud-hero-copy">
+        <p>ABUD AI</p>
+        <h2>What are you working on today?</h2>
+        <div className="abud-actions">
+          <button className="abud-primary" onClick={() => openChat({})}>Start a chat</button>
+          <a href="#workspace-tools" className="abud-secondary">Explore tools</a>
+        </div>
+      </div>
+      <div className="abud-hero-reactor" aria-hidden="true">
+        <CoreReactor status={health?.status === 'healthy' ? 'ONLINE' : 'STATUS UNAVAILABLE'}/>
+      </div>
+    </section>
+    <div className="abud-summary">
+      <div><Activity size={16}/><span>API</span><strong>{health?.status === 'healthy' ? 'Online' : 'Unavailable'}</strong></div>
+      <div><ShieldCheck size={16}/><span>Access</span><strong>{user.is_creator ? 'Creator' : user.dashboard_access ? 'Special access' : 'Standard user'}</strong></div>
+    </div>
+    <section id="workspace-tools" className="abud-tools" aria-labelledby="workspace-tools-title">
+      <h2 id="workspace-tools-title">Explore tools</h2>
+      <div className="abud-card-grid">
+        {tools.map(({ id, icon: Icon, label, copy }) => <button className="abud-card" key={id} onClick={() => navigate(id)}>
+          <Icon size={21}/><strong>{label}</strong><span>{copy}</span>
+        </button>)}
+      </div>
+    </section>
+    <WorkspaceActivity compact openChat={openChat}/>
+  </div>;
+}
+
+function Studio({ module, openChat }) {
+  return <div className="page-content abud-workspace">
+    <div className="abud-page-title"><h1>{module.label}</h1><p>{module.copy}</p></div>
+    <div className="abud-actions">
+      <button className="abud-primary" onClick={() => openChat({ draft: module.prompt })}>Continue in AI Chat</button>
+      {module.link && <a className="abud-secondary" href={module.link} target="_blank" rel="noopener noreferrer">Open Higgsfield</a>}
+    </div>
+  </div>;
+}
+
+function DashboardHome({ user, navigate, children }) {
+  return <>
+    <section className="page-content abud-workspace" aria-labelledby="dashboard-title">
+      <div className="abud-page-title"><h1 id="dashboard-title">Dashboard</h1><p>Manage Abud with the permissions assigned to your account.</p></div>
+      <div className="abud-card-grid">
+        {dashboardModules.filter(module => canOpenModule(user, module.id)).map(({ id, label, icon: Icon }) =>
+          <button className="abud-card" key={id} onClick={() => navigate(id)}><Icon size={20}/><strong>{label}</strong></button>)}
+      </div>
+    </section>
+    {children}
+  </>;
+}
+
+function workspaceFromUrl() {
+  if (new URLSearchParams(window.location.search).has('canva')) return 'integrations';
+  return window.location.hash === '#creator-dashboard' ? 'overview' : 'home';
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [guilds, setGuilds] = useState([]);
   const [health, setHealth] = useState(null);
-  const [active, setActive] = useState(() => new URLSearchParams(window.location.search).has('canva') ? 'integrations' : 'chat');
+  const [active, setActive] = useState(workspaceFromUrl);
+  const [chatLaunch, setChatLaunch] = useState({ key: 0 });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -2363,13 +2465,33 @@ function App() {
 
   useEffect(() => { loadDashboard(true); }, []);
 
-  const visibleModules = modules.filter(module => canOpenModule(user, module.id));
+  const insideDashboard = active === 'overview' || dashboardModules.some(module => module.id === active);
+  const visibleModules = modules.filter(module =>
+    (insideDashboard || module.group !== 'Dashboard') && canOpenModule(user, module.id)
+  );
 
   useEffect(() => {
-    if (user && visibleModules.length && !visibleModules.some(m => m.id === active)) {
-      setActive('chat');
+    function followHash() {
+      if (window.location.hash === '#creator-dashboard') setActive('overview');
     }
-  }, [user, active, visibleModules.map(m => m.id).join('|')]);
+    window.addEventListener('hashchange', followHash);
+    return () => window.removeEventListener('hashchange', followHash);
+  }, []);
+
+  function navigate(moduleId) {
+    setActive(moduleId);
+    setMobileOpen(false);
+    const url = new URL(window.location.href);
+    if (moduleId === 'overview') url.hash = 'creator-dashboard';
+    else if (url.hash === '#creator-dashboard') url.hash = '';
+    window.history.replaceState(window.history.state, '', url);
+    window.scrollTo(0, 0);
+  }
+
+  function openChat(selection) {
+    setChatLaunch(previous => ({ ...selection, key: previous.key + 1 }));
+    navigate('chat');
+  }
 
   async function logout() {
     try {
@@ -2383,21 +2505,21 @@ function App() {
   if (!user) return <Login error={error}/>;
   if (!user.profile_completed) return <ProfileSetup/>;
 
-  const current = visibleModules.find(m => m.id === active) || visibleModules[0];
+  const current = modules.find(m => m.id === active) || workspaceModules[0];
+  const denied = insideDashboard && !canOpenModule(user, active);
   const groups = [...new Set(visibleModules.map(m => m.group))];
 
   return (
-    <div className="app-shell">
+    <div className="app-shell abud-redesign">
       {mobileOpen && <button className="mobile-backdrop" onClick={() => setMobileOpen(false)} aria-label="Close menu"/>}
       <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-brand"><Brand/><button className="mobile-close" onClick={() => setMobileOpen(false)}><X size={18}/></button></div>
-        <div className="system-chip"><span className="pulse-dot"/> SYSTEM OPERATIONAL <span className="chip-version">V1.0</span></div>
         <nav>
           {groups.map(group => <div className="nav-group" key={group}>
             <div className="nav-label">{group}</div>
             {visibleModules.filter(m => m.group === group).map(m => {
               const Icon = m.icon;
-              return <button key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`} onClick={() => {setActive(m.id);setMobileOpen(false);}}>
+              return <button key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`} aria-current={active === m.id ? 'page' : undefined} onClick={() => m.id === 'chat' && active !== 'chat' ? openChat({}) : navigate(m.id)}>
                 <Icon size={17}/><span>{m.label}</span>{active === m.id && <ChevronRight size={14} className="nav-arrow"/>}
               </button>;
             })}
@@ -2405,16 +2527,22 @@ function App() {
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-user"><div className="user-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{user.display_name || 'Operator'}</strong><small>{user.is_creator ? 'ROOT AUTHORITY' : 'AUTHORIZED USER'}</small></div><button onClick={logout} title="Sign out"><LogOut size={16}/></button></div>
-          <div className="sidebar-version">ABUD CONTROL CENTER <span>BUILD 001</span></div>
+          
         </div>
       </aside>
       <main className="main-area">
         <header className="topbar">
-          <div className="topbar-left"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={19}/></button><span className="breadcrumb">ABUD <b>/</b> {current.label.toUpperCase()}</span></div>
+          <div className="topbar-left"><button className="mobile-menu" aria-label="Open menu" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu size={19}/></button><span className="breadcrumb">ABUD <b>/</b> {current.label.toUpperCase()}</span></div>
           <div className="topbar-right"><span className="top-status"><i/> API {health?.status === 'healthy' ? 'CONNECTED' : 'UNKNOWN'}</span><span className="top-clock">UTC+7 / ID</span><div className="top-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div></div>
         </header>
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}
-        {active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat onOpenIntegrations={() => setActive('integrations')}/></React.Suspense> : active === 'integrations' ? <Integrations/> : active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
+        {denied ? <div className="page-content abud-workspace"><div className="abud-page-title"><h1>Access required</h1><p>Your account does not have access to this dashboard page.</p></div><button className="abud-primary" onClick={() => navigate('home')}>Back to Command Center</button></div> :
+          active === 'home' ? <WorkspaceHome health={health} user={user} navigate={navigate} openChat={openChat}/> :
+          active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat key={chatLaunch.key} initialChatId={chatLaunch.id} initialDraft={chatLaunch.draft} onOpenIntegrations={() => navigate('integrations')}/></React.Suspense> :
+          active === 'integrations' ? <Integrations/> :
+          active === 'work-activity' ? <div className="page-content abud-workspace"><WorkspaceActivity openChat={openChat}/></div> :
+          current.prompt ? <Studio module={current} openChat={openChat}/> :
+          active === 'overview' ? <DashboardHome user={user} navigate={navigate}><Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/></DashboardHome> :
           active === 'memory' ? <MemoryMatrix user={user} guilds={guilds}/> :
           active === 'security' ? <SecurityProtocol user={user}/> :
           active === 'neural' ? <NeuralEngine user={user}/> :

@@ -3,9 +3,10 @@ import { Mic, Square } from "lucide-react";
 
 const RECORDING_LIMIT_MS = 29000;
 
-export default function VoiceRecorder({ conversation, disabled, onTranscript, onError, onActive }) {
+export default function VoiceRecorder({ conversation, disabled, onTranscript, onError, onActive, onPhaseChange }) {
   const active = useRef(null);
   const [phase, setPhase] = useState("idle");
+  useEffect(() => { onPhaseChange?.(phase); }, [phase, onPhaseChange]);
 
   useEffect(() => () => {
     const job = active.current;
@@ -16,6 +17,7 @@ export default function VoiceRecorder({ conversation, disabled, onTranscript, on
     if (job.recorder?.state === "recording") job.recorder.stop();
     job.stream?.getTracks().forEach((track) => track.stop());
     onActive(false);
+    onPhaseChange?.("idle");
   }, []);
 
   async function record() {

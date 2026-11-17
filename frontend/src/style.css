@@ -794,6 +794,36 @@ body{background:#070708}
 }
 .sidebar .chat-sidebar .chat-context-menu button { min-height: 30px; }
 .sidebar .chat-sidebar button:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.sidebar .chat-search {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 10px;
+  padding: 9px 7px;
+  border: 1px solid #51404c;
+  border-radius: 6px;
+  background: #171419;
+  color: #f3eaf0;
+  font: inherit;
+  font-size: 12px;
+}
+.sidebar .chat-search:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+@media (min-width: 701px) and (max-width: 900px) {
+  .sidebar { transform: translateX(-100%); transition: transform .25s; width: 270px; }
+  .sidebar-open { transform: translateX(0); }
+  .main-area { margin-left: 0; }
+  .mobile-backdrop { display: block; position: fixed; inset: 0; background: #000a; border: 0; z-index: 4; }
+  .mobile-close, .mobile-menu { display: grid; place-items: center; background: none; border: 0; color: #ddd; }
+  .mobile-close { margin-left: auto; }
+  .topbar { padding-inline: 15px; }
+}
+@media (max-width: 900px), (pointer: coarse) {
+  .mobile-close, .mobile-menu { min-width: 44px; min-height: 44px; }
+  .sidebar .nav-item, .sidebar .chat-sidebar button { min-height: 44px; }
+  .sidebar .chat-sidebar .chat-conversation { grid-template-columns: minmax(0, 1fr) 44px; }
+  .sidebar .chat-search { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
 .abud-redesign .chat-dialog {
   background: #211b24;
   border-color: #624351;

@@ -2437,6 +2437,7 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [drawerLayout, setDrawerLayout] = useState(() => window.matchMedia('(max-width: 900px)').matches);
   const [chatExpanded, setChatExpanded] = useState(true);
   const [dashboardExpanded, setDashboardExpanded] = useState(true);
   const [chatNavigation, setChatNavigation] = useState(null);
@@ -2467,6 +2468,35 @@ function App() {
   }
 
   useEffect(() => { loadDashboard(true); }, []);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 900px)');
+    const update = () => { setDrawerLayout(media.matches); setMobileOpen(false); };
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    if (!mobileOpen || !drawerLayout) return;
+    const previous = document.activeElement;
+    const sidebar = document.querySelector('.sidebar');
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    sidebar.querySelector('.mobile-close')?.focus();
+    function keys(event) {
+      if (event.key === 'Escape') { event.preventDefault(); setMobileOpen(false); }
+      if (event.key !== 'Tab') return;
+      const focusable = [...sidebar.querySelectorAll('button:not(:disabled), input:not(:disabled), a[href], [tabindex="0"]')]
+        .filter(element => element.getClientRects().length);
+      const first = focusable[0], last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+    document.addEventListener('keydown', keys);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener('keydown', keys);
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, [mobileOpen, drawerLayout]);
 
   const insideDashboard = active === 'overview' || dashboardModules.some(module => module.id === active);
   const visibleModules = workspaceModules.filter(module => canOpenModule(user, module.id));
@@ -2517,7 +2547,7 @@ function App() {
   return (
     <div className="app-shell abud-redesign">
       {mobileOpen && <button className="mobile-backdrop" onClick={() => setMobileOpen(false)} aria-label="Close menu"/>}
-      <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
+      <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`} inert={drawerLayout && !mobileOpen ? '' : undefined}>
         <div className="sidebar-brand"><Brand/><button className="mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={18}/></button></div>
         <nav aria-label="Main navigation">
           {groups.map(group => <div className="nav-group" key={group}>

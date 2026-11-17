@@ -4,7 +4,7 @@ const fs = require("node:fs");
 
 async function main() {
   const { url } = JSON.parse(fs.readFileSync(0, "utf8"));
-  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE_PATH, args: ["--no-sandbox"] });
   try {
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1063, height: 788 } });
     let user = { identity_id: "navigation-fixture", profile_completed: true, display_name: "Bara",

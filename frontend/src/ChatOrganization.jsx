@@ -20,6 +20,9 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
   const [menu, setMenu] = useState(null), [editor, setEditor] = useState(null),
     [saving, setSaving] = useState(false), [error, setError] = useState("");
   const menuRef = useRef(null), menuButton = useRef(null);
+  const [search, setSearch] = useState("");
+  const matchingChats = list.filter((chat) => chat.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  useEffect(() => { setSearch(""); setMenu(null); }, [projectId, archived]);
   const selected = projects.find((p) => p.id === projectId);
   useEffect(() => {
     if (!menu) return;
@@ -60,12 +63,15 @@ export default function ChatOrganization({ list, projects, projectId, archived, 
         <button disabled={busy || saving} aria-pressed={archived} onClick={() => onView(null, true)}>Archived chats</button>
       </div>
       <button disabled={busy || saving || archived} onClick={onCreate}>＋ New conversation</button>
+      <input className="chat-search" type="search" aria-label="Search chat titles" placeholder="Search chat titles…"
+        value={search} onChange={(event) => { setSearch(event.target.value); setMenu(null); }} />
       <nav aria-label="Conversations">
         {!list.length && <p className="chat-sidebar-hint">{archived ? "No archived chats." : "No conversations yet."}</p>}
-        {list.map((c, index) => <React.Fragment key={c.id}>
-          {(index === 0 || Boolean(list[index - 1].pinned) !== Boolean(c.pinned)) && <h3 className="chat-section-label">{c.pinned ? "Pinned" : "Recent"}</h3>}
+        {list.length > 0 && !matchingChats.length && <p className="chat-sidebar-hint">No matching chat titles.</p>}
+        {matchingChats.map((c, index) => <React.Fragment key={c.id}>
+          {(index === 0 || Boolean(matchingChats[index - 1].pinned) !== Boolean(c.pinned)) && <h3 className="chat-section-label">{c.pinned ? "Pinned" : "Recent"}</h3>}
           <div className="chat-conversation">
-            <button disabled={busy || saving} aria-current={id === c.id ? "page" : undefined} onClick={() => onOpen(c.id)}>
+            <button title={c.title} disabled={busy || saving} aria-current={id === c.id ? "page" : undefined} onClick={() => onOpen(c.id)}>
               {c.pinned ? "📌 " : ""}{c.title}
               {archived && c.project_name && <small className="chat-project-caption">{c.project_name}</small>}
             </button>

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
 import "highlight.js/styles/github-dark.css";
 import ChatOrganization from "./ChatOrganization";
 import ChatChoices from "./ChatChoices";
@@ -9,7 +10,7 @@ import ChatImages from "./ChatImages";
 import { imageQuotaMessage } from "./imageQuota";
 import { chatApi } from "./chatApi";
 import VoiceRecorder from "./VoiceRecorder";
-import { ArrowUp, AudioLines, Bot, Copy, FileText, GitBranch, PanelLeft, Plus, RotateCcw, Share2, Square, ThumbsUp, X } from "lucide-react";
+import { ArrowDown, ArrowUp, AudioLines, Bot, Copy, FileText, GitBranch, PanelLeft, Plus, RotateCcw, Share2, Square, ThumbsUp, X } from "lucide-react";
 import "./chatRoom.css";
 
 function ChatIcon({ label, icon: Icon, className = "", ...props }) {
@@ -17,6 +18,10 @@ function ChatIcon({ label, icon: Icon, className = "", ...props }) {
     <Icon size={17} aria-hidden="true" />
   </button>;
 }
+function ResponseTable({ node, ...props }) {
+  return <div className="chat-table-scroll" role="region" aria-label="Response table" tabIndex={0}><table {...props} /></div>;
+}
+const markdownComponents = { table: ResponseTable };
 const root = "/web/chat/conversations";
 const messageTime = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "short", day: "numeric",
@@ -63,6 +68,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   const [voiceProvider, setVoiceProvider] = useState("ollama");
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
+  const [voicePhase, setVoicePhase] = useState("idle");
   const [voiceDraft, setVoiceDraft] = useState(false);
   const piper = useRef(null);
 
@@ -138,8 +144,15 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   const [choicesBlocked, setChoicesBlocked] = useState(false);
   const version = useRef(0),
     abort = useRef(null),
-    bottom = useRef(null),
     speech = useRef(null);
+  const room = useRef(null), messagePane = useRef(null), followLatest = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
+  function scrollToLatest() {
+    followLatest.current = true;
+    setShowLatest(false);
+    const pane = messagePane.current;
+    if (pane) pane.scrollTop = pane.scrollHeight;
+  }
   const renderedVersion = version.current;
   const choiceKey = `${id}:${messages.at(-1)?.id}`;
   let choiceInvalidated = invalidatedChoices.current.has(choiceKey);
@@ -186,10 +199,39 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     refresh().catch((e) => setError(e.message));
   }, [projectId, archived]);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "nearest" });
+    if (followLatest.current) scrollToLatest();
   }, [messages]);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    let frame;
+    const resize = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const element = room.current;
+        if (!element) return;
+        // Mobile keyboards can shrink the visual viewport without changing dvh.
+        const top = Math.max(0, element.getBoundingClientRect().top - (viewport?.offsetTop || 0));
+        const height = Math.max(0, (viewport?.height || window.innerHeight) - top);
+        element.style.height = `${height}px`;
+        element.dataset.compact = String(height < 460);
+        if (followLatest.current) scrollToLatest();
+      });
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    viewport?.addEventListener("resize", resize);
+    viewport?.addEventListener("scroll", resize);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", resize);
+      viewport?.removeEventListener("resize", resize);
+      viewport?.removeEventListener("scroll", resize);
+    };
+  }, []);
   async function open(cid) {
     if (sending.current) return;
+    followLatest.current = true;
+    setShowLatest(false);
     const v = ++version.current;
     onNavigateFromSidebar?.();
     stopSpeech();
@@ -252,6 +294,8 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     if (sourceId !== undefined && (choicesBlocked || invalidatedChoices.current.has(`${id}:${sourceId}`) || sourceId !== messages.at(-1)?.id)) return;
     if (renderedVersion !== version.current || sending.current || branchRequest.current || voiceActive || busy || loading || ratingBusy || archivedChat || !id || (file && text.length > 1000) || (!regenerate && ((!text && !file) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
     sending.current = true;
+    followLatest.current = true;
+    setShowLatest(false);
     setChoicesBlocked(true);
     const currentVersion = version.current;
     if (regenerate && messages.at(-1)?.role === "assistant" && messages.at(-1)?.id) {
@@ -459,7 +503,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     next();
   }
   return (
-    <section className="web-chat abud-chat-room" aria-label="AI Chat">
+    <section ref={room} className="web-chat abud-chat-room" aria-label="AI Chat">
       <ChatOrganization list={list} projects={projects} projectId={projectId} archived={archived}
         busy={busy || ratingBusy || branching} id={id} onOpen={open} onCreate={create} onView={view}
         onRefresh={refresh} onChanged={organizationChanged} navigationTarget={navigationTarget} />
@@ -470,7 +514,14 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
           <h1>{list.find((conversation) => conversation.id === id)?.title || "AI Chat"}</h1>
           {id && <ChatIcon label="New chat" icon={Plus} disabled={busy || loading || branching} onClick={create} />}
         </header>
-        <div className="chat-messages" aria-busy={busy}>
+        <div ref={messagePane} className="chat-messages" aria-label="Conversation messages" aria-busy={busy}
+          onLoadCapture={() => { if (followLatest.current) scrollToLatest(); }}
+          onScroll={(event) => {
+            const pane = event.currentTarget;
+            const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
+            followLatest.current = nearBottom;
+            setShowLatest(!nearBottom);
+          }}>
           {!id && (
             <div className="chat-empty">
               <Bot className="chat-abud-mark" size={44} aria-hidden="true" />
@@ -489,7 +540,8 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
                 title={new Date(m.created_at).toLocaleString()}>{messageTime.format(new Date(m.created_at))}</time>}
               </div>
               <div className="chat-message-body">
-                <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}
+                  components={markdownComponents}>
                   {m.content || (m.incomplete ? "No response received." : "Thinking…")}
                 </ReactMarkdown>
                 {m.images?.length > 0 && <ChatImages images={m.images} />}
@@ -556,9 +608,13 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
               </div>}
             </article>
           ))}
-          <div ref={bottom} />
         </div>
-        <div className="chat-room-status" role="status">{busy ? (imageLoading ? "Generating image…" : "Abud is responding…") : notice}</div>
+        {showLatest && <button type="button" className="chat-latest" onClick={scrollToLatest}><ArrowDown size={15} aria-hidden="true" /> Latest message</button>}
+        <div className="chat-room-status" role="status">{voicePhase === "recording" ? "Merekam… Tekan berhenti setelah selesai."
+          : voicePhase === "transcribing" ? "Mentranskripsi rekaman…"
+          : voicePhase === "permission" ? "Menunggu izin mikrofon…"
+          : busy ? (imageLoading ? "Generating image…" : "Abud is responding…")
+          : speakingId ? "Memutar jawaban…" : loading ? "Loading conversation…" : notice}</div>
         {error && (
           <p className="chat-error" role="alert">
             {error}
@@ -629,6 +685,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
                   || messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete}
                 onTranscript={(text) => { setDraft(text); setVoiceDraft(true); }}
                 onError={setError}
+                onPhaseChange={setVoicePhase}
                 onActive={(active) => {
                   if (active) stopSpeech();
                   setVoiceActive(active);

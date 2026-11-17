@@ -61,6 +61,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   const [historyOpen, setHistoryOpen] = useState(false);
   const [branching, setBranching] = useState(false);
   const branchRequest = useRef(false);
+  const [voiceProvider, setVoiceProvider] = useState("ollama");
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceDraft, setVoiceDraft] = useState(false);
@@ -166,7 +167,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   useEffect(() => {
     let mounted = true;
     chatApi("/voice").then((response) => response.json()).then((status) => {
-      if (mounted) setVoiceEnabled(status.enabled);
+      if (mounted) { setVoiceEnabled(status.enabled); setVoiceProvider(status.provider || "ollama"); }
     }).catch(() => {});
     return () => {
       mounted = false;
@@ -642,7 +643,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
               <ChatIcon label="Regenerate response" icon={RotateCcw}
                 disabled={voiceActive || busy || loading || ratingBusy || !messages.length}
                 onClick={() => send(true)} />
-              <ChatIcon type="submit" label={voiceDraft ? "Kirim ke Ollama" : "Send"} icon={ArrowUp} className="chat-send"
+              <ChatIcon type="submit" label={voiceDraft ? (voiceProvider === "router" ? "Kirim ke Abud" : "Kirim ke Ollama") : "Send"} icon={ArrowUp} className="chat-send"
                 disabled={voiceActive || busy || loading || branching || ratingBusy || (!draft.trim() && !attachment)
                   || (attachment && draft.trim().length > 1000) || messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete} />
             </div>

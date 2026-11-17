@@ -95,3 +95,24 @@ sintetis tanpa riwayat atau data pribadi.
 Permintaan pertama setelah model dilepas dari memori atau container Ollama
 dimulai ulang masih dapat memerlukan waktu tambahan. Panjang percakapan,
 isi prompt, dan panjang jawaban juga memengaruhi waktu tunggu.
+
+
+## Model chat utama untuk percakapan suara
+
+`ABUD_VOICE_LLM_PROVIDER=router` memakai provider, kredensial, dan model 9router
+yang sudah dikonfigurasi untuk chat teks. Transkrip yang dikirim, konteks
+percakapan, dan referensi memori yang dipakai dikirim ke provider tersebut.
+Whisper memproses rekaman dan Piper membuat audio di VPS.
+Opsi `ollama` tetap menjadi nilai default untuk pemrosesan jawaban lokal.
+
+Gunakan `ABUD_WHISPER_LANGUAGE=id` untuk pengenalan bahasa Indonesia.
+Kosongkan variabel ini untuk deteksi bahasa otomatis. Ini membantu menentukan
+bahasa yang dikenali, namun ketepatan transkrip tetap perlu diperiksa sebelum
+dikirim, terutama untuk bahasa percakapan, nama, dan rekaman berisik.
+
+Dengan provider `router`, skrip rilis `--voice` menyiapkan worker suara dan API.
+Model Ollama lokal yang sudah berjalan dapat dihentikan setelah API baru siap
+jika layanan tersebut selesai digunakan. Perubahan provider adalah konfigurasi
+server untuk voice chat, termasuk regenerasi jawaban pada percakapan suara.
+Simpan pilihan provider dan bahasa di `.env` server agar dipakai pada rilis
+berikutnya. Jangan memasukkan kredensial ke Git.

@@ -27,6 +27,7 @@ jobs:
     env:
       COMPOSE_FILE: compose.staging.yaml:compose.staging.voice.yaml
       ABUD_BASE_URL: https://127.0.0.1:18443
+      ABUD_VOICE_OLLAMA_MODEL: qwen2.5:0.5b
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,7 +58,9 @@ jobs:
           echo "Ollama CPU image bytes: $image_bytes"
           test "$image_bytes" -lt 524288000
           docker compose exec -T ollama sh -c 'test ! -d /usr/lib/ollama/cuda_v12 && test ! -d /usr/lib/ollama/cuda_v13'
-          docker compose exec -T ollama ollama pull qwen2.5:1.5b
+          docker compose exec -T ollama ollama pull "$ABUD_VOICE_OLLAMA_MODEL"
+          docker compose exec -T api python -c \
+            'import asyncio; from app.web_voice import warmup; asyncio.run(warmup())'
           docker compose exec -T abud-voice python - > "$RUNNER_TEMP/abud-voice-input.wav" <<'PY'
           import sys
           import time

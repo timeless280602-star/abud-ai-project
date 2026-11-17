@@ -65,7 +65,8 @@ if "$voice"; then
   "${compose[@]}" exec -T ollama ollama pull "$model"
   ready=false
   for attempt in {1..90}; do
-    if "${compose[@]}" exec -T abud-voice python -c       'from urllib.request import urlopen; assert urlopen("http://127.0.0.1:8001/health", timeout=2).status == 200'       >/dev/null 2>&1; then
+    if "${compose[@]}" exec -T abud-voice python -c \
+      'from urllib.request import urlopen; assert urlopen("http://127.0.0.1:8001/health", timeout=2).status == 200'       >/dev/null 2>&1; then
       ready=true
       break
     fi
@@ -77,6 +78,11 @@ if "$voice"; then
   fi
 fi
 "${compose[@]}" build abud-api
+if "$voice"; then
+  printf 'Warming the local voice model…\n'
+  "${compose[@]}" run --rm --no-deps -T abud-api python -c \
+    'import asyncio; from app.web_voice import warmup; asyncio.run(warmup())'
+fi
 
 # SQLite's backup API gives a consistent snapshot even with WAL and live writers.
 docker exec -i "$api_container" python - > "$backup_dir/abud_memory.db.partial" <<'PYTHON'

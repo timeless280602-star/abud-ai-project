@@ -26,7 +26,7 @@ async def worker(path, *, content, content_type):
         return response
 
 
-async def model_stream(messages):
+async def model_stream(messages, *, max_tokens=512):
     async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=5), trust_env=False) as client:
         async with client.stream(
             "POST",
@@ -39,7 +39,8 @@ async def model_stream(messages):
                     + "\nThis reply will be read aloud. Use concise natural prose in the user's language.",
                 }, *messages[1:]],
                 "stream": True,
-                "options": {"num_predict": 512},
+                "keep_alive": "30m",
+                "options": {"num_predict": max_tokens},
             },
         ) as response:
             response.raise_for_status()
@@ -54,3 +55,16 @@ async def model_stream(messages):
                 if frame.get("done") is True:
                     return
             raise RuntimeError("Local model stream ended early")
+
+
+async def warmup():
+    """Load the model and evaluate the shared prompt before serving voice turns."""
+    from app.web_chat import compose_messages
+
+    messages = compose_messages(
+        [], "", None, "",
+        "No memory action was performed on this turn. Do not claim it was.",
+    )
+    messages.append({"role": "user", "content": "Halo"})
+    async for _ in model_stream(messages, max_tokens=1):
+        pass

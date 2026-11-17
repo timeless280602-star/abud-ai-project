@@ -82,3 +82,16 @@ Skrip lama bisa dijalankan tanpa argumen kedua untuk rilis web tanpa konfigurasi
 voice. Untuk mempertahankan voice ketika memperbarui API, gunakan `--voice`
 pada setiap rilis. Opsi ini mengunduh model Ollama yang dikonfigurasi, menunggu
 worker siap, membuat salinan database SQLite, lalu mengganti container API.
+
+
+## Waktu tunggu jawaban
+
+Setiap permintaan suara mempertahankan model Ollama di memori selama 30 menit
+setelah selesai. Model tetap menggunakan RAM selama periode itu. Skrip rilis
+dengan opsi `--voice` memuat model dan mengevaluasi prompt bersama sebelum
+mengganti API. Pemanasan menghasilkan maksimal satu token dan memakai prompt
+sintetis tanpa riwayat atau data pribadi.
+
+Permintaan pertama setelah model dilepas dari memori atau container Ollama
+dimulai ulang masih dapat memerlukan waktu tambahan. Panjang percakapan,
+isi prompt, dan panjang jawaban juga memengaruhi waktu tunggu.

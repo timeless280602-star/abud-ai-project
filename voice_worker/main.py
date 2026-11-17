@@ -35,6 +35,11 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+
 async def read_bounded(request, maximum):
     data = bytearray()
     async for chunk in request.stream():

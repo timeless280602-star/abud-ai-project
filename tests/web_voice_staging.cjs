@@ -60,7 +60,22 @@ async function main() {
     assert.equal(messages.messages.at(-2).content, prompt);
     assert.equal(messages.messages.at(-1).voice, 1);
     assert.ok(messages.messages.at(-1).content.trim());
-    console.log("Passed: Chromium recording, Whisper transcript, Ollama response, Piper WAV and saved history.");
+    const branchResponse = page.waitForResponse((response) =>
+      /\/messages\/\d+\/branch$/.test(new URL(response.url()).pathname)
+    );
+    await page.getByRole("button", { name: "Branch in new chat" }).click();
+    const branch = await branchResponse;
+    assert.equal(branch.status(), 201);
+    const { id } = await branch.json();
+    const replay = await (await context.request.get(`${url}/web/chat/conversations/${id}`)).json();
+    assert.deepEqual(replay.messages.map((message) => message.content), messages.messages.map((message) => message.content));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Open chat history" }).click();
+    await page.getByRole("navigation", { name: "Conversations" }).waitFor();
+    await page.getByRole("button", { name: "Close chat history", exact: true }).click();
+    await page.getByLabel("Add attachment", { exact: true }).click();
+    await page.getByRole("button", { name: /Upload a document/ }).waitFor();
+    console.log("Passed: Chromium recording, Whisper transcript, Ollama response, Piper WAV, saved history, branch, mobile history and attachment menu.");
   } finally {
     await browser.close();
   }

@@ -67,3 +67,12 @@ dijangkau melalui jaringan Compose. Workflow **Abud Voice Staging Smoke**
 menjalankan stack yang sama dengan database sementara, akun fixture, audio
 sintetis, dan model asli. Uji OAuth, proxy HTTPS serta mikrofon pengguna
 dilakukan saat staging telah tersedia pada server tujuan.
+
+## Rilis produksi dari PR #18
+
+Setelah menyiapkan kedua file Piper di `/opt/abud/voice-models/`, gunakan SHA
+rilis yang sudah lulus CI dengan skrip `scripts/deploy-web-release.sh SHA --voice`.
+Skrip lama bisa dijalankan tanpa argumen kedua untuk rilis web tanpa konfigurasi
+voice. Untuk mempertahankan voice ketika memperbarui API, gunakan `--voice`
+pada setiap rilis. Opsi ini mengunduh model Ollama yang dikonfigurasi, menunggu
+worker siap, membuat salinan database SQLite, lalu mengganti container API.

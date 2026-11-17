@@ -89,11 +89,14 @@ export default function VoiceRecorder({ conversation, disabled, onTranscript, on
   }
 
   if (phase === "recording") {
-    return <button type="button" onClick={() => {
+    return <button type="button" className="chat-icon chat-voice-recording" aria-label="Berhenti merekam" title="Berhenti merekam" onClick={() => {
       if (active.current?.recorder?.state === "recording") active.current.recorder.stop();
-    }}><Square size={16} aria-hidden="true" /> Berhenti merekam</button>;
+    }}><Square size={16} aria-hidden="true" /></button>;
   }
-  return <button type="button" onClick={record} disabled={disabled || phase !== "idle"}>
-    <Mic size={16} aria-hidden="true" /> {phase === "transcribing" ? "Mentranskripsi…" : phase === "permission" ? "Menunggu mikrofon…" : "Rekam suara"}
+  const label = phase === "transcribing" ? "Mentranskripsi…" : phase === "permission" ? "Menunggu mikrofon…" : "Rekam suara";
+  return <button type="button" className="chat-icon" aria-label={label} title={label}
+    onClick={record} disabled={disabled || phase !== "idle"}>
+    <Mic size={16} aria-hidden="true" />
+    {phase !== "idle" && <span role="status" className="chat-visually-hidden">{label}</span>}
   </button>;
 }

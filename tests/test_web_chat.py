@@ -83,6 +83,27 @@ class WebChatTests(unittest.TestCase):
             headers=self.headers,
         )
 
+    def test_branch_copies_only_history_through_selected_answer(self):
+        cid = self.create()
+        turns = [("user", "Halo", 1), ("assistant", "Hai", 1), ("user", "Later", 0)]
+        with self.db.get_connection() as db:
+            message_ids = [
+                db.execute(
+                    "INSERT INTO web_messages(conversation_id,role,content,created_at,voice) VALUES (?,?,?,?,?)",
+                    (cid, role, text, self.db.utc_now(), voice),
+                ).lastrowid
+                for role, text, voice in turns
+            ]
+        prefix = f"/web/chat/conversations/{cid}/messages"
+        self.assertEqual(self.client.post(prefix + f"/{message_ids[0]}/branch", headers=self.headers).status_code, 404)
+        result = self.client.post(prefix + f"/{message_ids[1]}/branch", headers=self.headers)
+        self.assertEqual(result.status_code, 201)
+        branch = self.client.get("/web/chat/conversations/" + result.json()["id"]).json()
+        self.assertEqual([(m["role"], m["content"], m["voice"]) for m in branch["messages"]], turns[:2])
+        self.assertTrue(set(message_ids).isdisjoint(m["id"] for m in branch["messages"]))
+        self.client.cookies.set(self.auth.SESSION_COOKIE, self.bob_token)
+        self.assertEqual(self.client.post(prefix + f"/{message_ids[1]}/branch", headers=self.headers).status_code, 404)
+
     def test_voice_turns_stay_on_ollama_and_playback_requires_ownership(self):
         import httpx
 

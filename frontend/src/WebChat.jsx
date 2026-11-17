@@ -9,6 +9,14 @@ import ChatImages from "./ChatImages";
 import { imageQuotaMessage } from "./imageQuota";
 import { chatApi } from "./chatApi";
 import VoiceRecorder from "./VoiceRecorder";
+import { ArrowUp, AudioLines, Bot, Copy, FileText, GitBranch, PanelLeft, Plus, RotateCcw, Share2, Square, ThumbsUp, X } from "lucide-react";
+import "./chatRoom.css";
+
+function ChatIcon({ label, icon: Icon, className = "", ...props }) {
+  return <button type="button" className={`chat-icon ${className}`} aria-label={label} title={label} {...props}>
+    <Icon size={17} aria-hidden="true" />
+  </button>;
+}
 const root = "/web/chat/conversations";
 const messageTime = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "short", day: "numeric",
@@ -50,6 +58,9 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     [speakingId, setSpeakingId] = useState(null);
   const shareCategory = !projectId || projects.some((project) => project.id === projectId && project.memory_mode === "default");
   const sending = useRef(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [branching, setBranching] = useState(false);
+  const branchRequest = useRef(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceDraft, setVoiceDraft] = useState(false);
@@ -180,6 +191,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
   async function open(cid) {
     if (sending.current) return;
     const v = ++version.current;
+    setHistoryOpen(false);
     stopSpeech();
     setRatingId(null);
     setNotice("");
@@ -237,7 +249,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     const voice = !regenerate && choiceText === undefined && voiceDraft;
     const file = !regenerate && choiceText === undefined ? attachment : null;
     if (sourceId !== undefined && (choicesBlocked || invalidatedChoices.current.has(`${id}:${sourceId}`) || sourceId !== messages.at(-1)?.id)) return;
-    if (renderedVersion !== version.current || sending.current || voiceActive || busy || loading || ratingBusy || archivedChat || !id || (file && text.length > 1000) || (!regenerate && ((!text && !file) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
+    if (renderedVersion !== version.current || sending.current || branchRequest.current || voiceActive || busy || loading || ratingBusy || archivedChat || !id || (file && text.length > 1000) || (!regenerate && ((!text && !file) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)))) return;
     sending.current = true;
     setChoicesBlocked(true);
     const currentVersion = version.current;
@@ -370,6 +382,42 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
       setRatingBusy(false);
     }
   }
+  async function branch(message) {
+    if (branchRequest.current || sending.current || loading || voiceActive) return;
+    branchRequest.current = true;
+    setBranching(true);
+    setError("");
+    const currentVersion = version.current;
+    try {
+      const response = await api(`/${id}/messages/${message.id}/branch`, "POST");
+      const result = await response.json();
+      if (currentVersion !== version.current) return;
+      if (!archived && projectId === result.project_id) await refresh();
+      if (currentVersion !== version.current) return;
+      setArchived(false);
+      setProjectId(result.project_id);
+      await open(result.id);
+    } catch (error) {
+      if (currentVersion === version.current) setError(error.message);
+    } finally {
+      branchRequest.current = false;
+      setBranching(false);
+    }
+  }
+
+  async function share(message) {
+    try {
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ text: message.content }))) {
+        await navigator.share({ text: message.content });
+      } else {
+        await navigator.clipboard.writeText(message.content);
+        setNotice("Response copied for sharing.");
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") setError("Sharing is unavailable. Use Copy to save the response.");
+    }
+  }
+
   function readAloud(message, element) {
     if (speakingId === message.id) { stopSpeech(); return; }
     if (message.voice && voiceEnabled) { playPiper(id, message.id); return; }
@@ -410,25 +458,36 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
     next();
   }
   return (
-    <section className="web-chat" aria-label="AI Chat">
+    <section className={`web-chat abud-chat-room ${historyOpen ? "history-open" : ""}`} aria-label="AI Chat">
+      {historyOpen && <button type="button" className="chat-history-scrim" aria-label="Close chat history" onClick={() => setHistoryOpen(false)} />}
       <ChatOrganization list={list} projects={projects} projectId={projectId} archived={archived}
-        busy={busy || ratingBusy} id={id} onOpen={open} onCreate={create} onView={view}
+        busy={busy || ratingBusy || branching} id={id} onOpen={open} onCreate={create} onView={view}
         onRefresh={refresh} onChanged={organizationChanged} />
       <div className="chat-main">
+        <header className="chat-room-heading">
+          <ChatIcon label={historyOpen ? "Close history" : "Open chat history"} icon={historyOpen ? X : PanelLeft}
+            className="chat-history-toggle" aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)} />
+          <h1>{list.find((conversation) => conversation.id === id)?.title || "AI Chat"}</h1>
+          {id && <ChatIcon label="New chat" icon={Plus} disabled={busy || loading || branching} onClick={create} />}
+        </header>
         <div className="chat-messages" aria-busy={busy}>
           {!id && (
             <div className="chat-empty">
+              <Bot className="chat-abud-mark" size={44} aria-hidden="true" />
               <h2>Talk with Abud</h2>
               <p>Create a conversation to begin. No Discord account needed.</p>
               <button type="button" disabled={loading} onClick={create}>New chat</button>
             </div>
           )}
-          {id && !messages.length && <p>How can I help you today?</p>}
+          {id && !messages.length && <div className="chat-empty"><Bot className="chat-abud-mark" size={44} aria-hidden="true" /><h2>How can I help you today?</h2></div>}
           {messages.map((m, i) => (
             <article className={"chat-message " + m.role} key={m.id || i}>
+              <div className="chat-message-label">
+              {m.role === "assistant" && <Bot className="chat-abud-mark" size={25} aria-hidden="true" />}
               <strong>{m.role === "user" ? "You" : "Abud"}</strong>
               {m.created_at && <time className="chat-time" dateTime={m.created_at}
                 title={new Date(m.created_at).toLocaleString()}>{messageTime.format(new Date(m.created_at))}</time>}
+              </div>
               <div className="chat-message-body">
                 <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
                   {m.content || (m.incomplete ? "No response received." : "Thinking…")}
@@ -441,30 +500,32 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
                   group={choices}
                   disabled={busy || ratingBusy || choicesBlocked}
                   onSend={(text) => send(false, text, m.id)} />}
-              <div className="chat-message-actions">
-                <button type="button" onClick={async () => {
+              <div className="chat-message-actions chat-response-tools">
+                <ChatIcon label="Copy" icon={Copy} onClick={async () => {
                   try {
                     await navigator.clipboard.writeText(m.content);
                     setNotice("Message copied.");
                   } catch {
                     setError("Clipboard unavailable. Select and copy the message.");
                   }
-                }}>Copy</button>
+                }} />
                 {m.role === "assistant" && onOpenIntegrations && /^\s*buat paket konten\s*:/i.test(messages[i - 1]?.content ?? "") &&
                   <button type="button" disabled={busy} onClick={onOpenIntegrations}>Buat desain di Canva</button>}
                 {m.role === "assistant" && m.id && <>
-                  <button type="button" disabled={busy || ratingBusy}
-                    aria-expanded={ratingId === m.id} aria-label="Rate response"
+                  <ChatIcon label="Rate response" icon={ThumbsUp} disabled={busy || ratingBusy}
+                    aria-expanded={ratingId === m.id} aria-pressed={Boolean(m.rating)}
                     onClick={() => {
                       setRatingId(ratingId === m.id ? null : m.id);
                       setBadRating(false);
                       setReason(m.feedback_reason || "");
                       setFeedbackCategory(m.feedback_category || "");
-                    }}>Rate response{m.rating ? ` · ${m.rating === "good" ? "Good" : "Bad"}` : ""}</button>
-                  <button type="button" aria-pressed={speakingId === m.id}
-                    onClick={(e) => readAloud(m, e.currentTarget)}>
-                    {speakingId === m.id ? "Stop reading" : "Read aloud"}
-                  </button>
+                    }} />
+                  <ChatIcon label={speakingId === m.id ? "Stop reading" : "Read aloud"}
+                    icon={speakingId === m.id ? Square : AudioLines} aria-pressed={speakingId === m.id}
+                    onClick={(e) => readAloud(m, e.currentTarget)} />
+                  <ChatIcon label="Share response" icon={Share2} onClick={() => share(m)} />
+                  <ChatIcon label="Branch in new chat" icon={GitBranch} disabled={busy || branching || loading || voiceActive}
+                    onClick={() => branch(m)} />
                 </>}
               </div>
               {ratingId === m.id && <div className="chat-feedback" aria-label="Response feedback">
@@ -497,7 +558,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
           ))}
           <div ref={bottom} />
         </div>
-        <div role="status">{busy ? (imageLoading ? "Generating image…" : "Abud is responding…") : notice}</div>
+        <div className="chat-room-status" role="status">{busy ? (imageLoading ? "Generating image…" : "Abud is responding…") : notice}</div>
         {error && (
           <p className="chat-error" role="alert">
             {error}
@@ -512,7 +573,7 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
               send();
             }}
           >
-            <label htmlFor="chat-draft">Message Abud</label>
+            <label className="chat-visually-hidden" htmlFor="chat-draft">Message Abud</label>
             <textarea
               id="chat-draft"
               value={draft}
@@ -527,9 +588,8 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
               }}
               placeholder="Ask anything…"
             />
-            <div>
-              <label htmlFor="chat-attachment">Lampiran PDF, Word, atau PowerPoint</label>
-              <input
+            <div className="chat-attachment-slot">
+              <input hidden aria-label="Lampiran PDF, Word, atau PowerPoint"
                 id="chat-attachment"
                 ref={attachmentInput}
                 type="file"
@@ -546,10 +606,22 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
                   setAttachment(selected ?? null);
                 }}
               />
-              {attachment && <button type="button" disabled={busy} onClick={clearAttachment}>Hapus lampiran</button>}
-              {attachment && <small>Cuplikan teks lampiran akan disimpan dalam riwayat chat.</small>}
+              {attachment && <span className="chat-file-pill"><FileText size={15} /><span>{attachment.name}</span>
+                <ChatIcon label="Hapus lampiran" icon={X} disabled={busy} onClick={clearAttachment} />
+              </span>}
             </div>
-            <div>
+            <div className="chat-composer-controls">
+              <details className="chat-upload-menu">
+                <summary className="chat-icon" aria-label="Add attachment" title="Add attachment"><Plus size={19} aria-hidden="true" /></summary>
+                <div className="chat-upload-popup">
+                  <button type="button" disabled={busy || loading || voiceActive || voiceDraft} onClick={(event) => {
+                    event.currentTarget.closest("details").open = false;
+                    attachmentInput.current?.click();
+                  }}><FileText size={16} aria-hidden="true" /> Upload a document
+                    <small>PDF, Word, PowerPoint</small>
+                  </button>
+                </div>
+              </details>
               {voiceEnabled && <VoiceRecorder
                 key={id}
                 conversation={id}
@@ -564,28 +636,14 @@ export default function WebChat({ initialChatId, initialDraft = "", onOpenIntegr
               />}
               {voiceDraft && <button type="button" disabled={busy}
                 onClick={() => { setDraft(""); setVoiceDraft(false); }}>Hapus transkrip</button>}
-              <button
-                disabled={
-                  voiceActive || busy || loading || ratingBusy || (!draft.trim() && !attachment) || (attachment && draft.trim().length > 1000) || (messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete)
-                }
-              >
-                {voiceDraft ? "Kirim ke Ollama" : "Send"}
-              </button>
-              <button
-                type="button"
+              <span className="chat-composer-spacer" />
+              <ChatIcon label="Regenerate response" icon={RotateCcw}
                 disabled={voiceActive || busy || loading || ratingBusy || !messages.length}
-                onClick={() => send(true)}
-              >
-                Regenerate response
-              </button>
+                onClick={() => send(true)} />
+              <ChatIcon type="submit" label={voiceDraft ? "Kirim ke Ollama" : "Send"} icon={ArrowUp} className="chat-send"
+                disabled={voiceActive || busy || loading || branching || ratingBusy || (!draft.trim() && !attachment)
+                  || (attachment && draft.trim().length > 1000) || messages.at(-1)?.role === "user" || messages.at(-1)?.incomplete} />
             </div>
-            <small>
-              Enter to send · Shift+Enter for a new line. Times use your device's time zone.
-            </small>
-            <small>
-              AI can make mistakes. Explicit remember requests save personal
-              memory separately from Discord. In Project-Only mode, saved memories and feedback stay inside that project.
-            </small>
           </form>
         )}
       </div>

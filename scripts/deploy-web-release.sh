@@ -3,6 +3,13 @@
 set -euo pipefail
 
 release="${1:?Provide the reviewed release commit SHA}"
+compose=(docker compose -f compose.yaml)
+voice=false
+case "${2:-}" in
+  --voice) voice=true ;;
+  "") ;;
+  *) echo "Usage: deploy-web-release.sh RELEASE_SHA [--voice]" >&2; exit 1 ;;
+esac
 cd /opt/abud
 
 branch="$(git branch --show-current)"
@@ -48,8 +55,28 @@ printf '%s\n' "$previous_image" > "$backup_dir/previous-image-tag.txt"
 
 # Build the new API before stopping the running container.
 git merge --ff-only "$release"
-docker compose -f compose.yaml config --quiet
-docker compose -f compose.yaml build abud-api
+if "$voice"; then
+  compose+=(-f compose.voice.yaml)
+fi
+"${compose[@]}" config --quiet
+if "$voice"; then
+  "${compose[@]}" up -d --build abud-voice ollama
+  model="$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["abud-api"]["environment"]["ABUD_VOICE_OLLAMA_MODEL"])')"
+  "${compose[@]}" exec -T ollama ollama pull "$model"
+  ready=false
+  for attempt in {1..90}; do
+    if "${compose[@]}" exec -T abud-voice python -c       'from urllib.request import urlopen; assert urlopen("http://127.0.0.1:8001/health", timeout=2).status == 200'       >/dev/null 2>&1; then
+      ready=true
+      break
+    fi
+    sleep 2
+  done
+  if ! "$ready"; then
+    echo "Voice worker did not become ready. The running API was left in place." >&2
+    exit 1
+  fi
+fi
+"${compose[@]}" build abud-api
 
 # SQLite's backup API gives a consistent snapshot even with WAL and live writers.
 docker exec -i "$api_container" python - > "$backup_dir/abud_memory.db.partial" <<'PYTHON'
@@ -73,7 +100,7 @@ PYTHON
 mv "$backup_dir/abud_memory.db.partial" "$backup_dir/abud_memory.db"
 printf 'Backup: %s\n' "$backup_dir"
 
-docker compose -f compose.yaml up -d --no-deps --no-build abud-api
+"${compose[@]}" up -d --no-deps --no-build abud-api
 for attempt in {1..20}; do
   if curl --fail --silent --max-time 2 http://127.0.0.1:8000/health >/dev/null; then
     printf 'API healthy. Release: %s\n' "$release"

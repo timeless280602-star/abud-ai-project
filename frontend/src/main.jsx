@@ -21,6 +21,7 @@ const modules = [
   { id: 'automation', label: 'Automation Engine', group: 'OPERATIONS', icon: AudioWaveform },
   { id: 'knowledge', label: 'Knowledge Archives', group: 'OPERATIONS', icon: HardDrive },
   { id: 'logs', label: 'Activity Logs', group: 'OPERATIONS', icon: Terminal },
+  { id: 'integrations', label: 'Integrasi', group: 'ACCOUNT', icon: Plus },
   { id: 'settings', label: 'Core Settings', group: 'SYSTEM', icon: Settings }
 ];
 
@@ -63,7 +64,7 @@ function hasAnyPermission(user, permission) {
 }
 
 function canOpenModule(user, moduleId) {
-  if (moduleId === 'chat') return true;
+  if (moduleId === 'chat' || moduleId === 'integrations') return true;
   if (!user?.dashboard_access) return false;
   if (moduleId === 'overview') return true;
   if (user?.is_creator) return true;
@@ -2249,11 +2250,87 @@ function ModulePlaceholder({ module }) {
   );
 }
 
+function Integrations() {
+  const path = '/web/chat/integrations/canva';
+  const [canva, setCanva] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [title, setTitle] = useState('');
+  const [editor, setEditor] = useState('');
+  const [error, setError] = useState('');
+  const [notice] = useState(() => {
+    const result = new URLSearchParams(window.location.search).get('canva');
+    if (result === 'connected') return 'Akun Canva terhubung.';
+    if (result === 'failed') return 'Canva belum terhubung. Coba lagi.';
+    return '';
+  });
+
+  useEffect(() => {
+    api(path).then(setCanva).catch(err => setError(err.message));
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('canva')) {
+      url.searchParams.delete('canva');
+      window.history.replaceState(window.history.state, '', url);
+    }
+  }, []);
+
+  async function change(action) {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (action === 'connect') {
+        const result = await api(path + '/connect', { method: 'POST' });
+        window.location.assign(result.url);
+      } else if (action === 'disconnect') {
+        const result = await api(path, { method: 'DELETE' });
+        setCanva(previous => ({ ...previous, ...result }));
+        setEditor('');
+      } else {
+        setEditor('');
+        const result = await api(path + '/designs', {
+          method: 'POST', body: JSON.stringify({ title: title.trim() }),
+        });
+        setEditor(result.url);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section className="page-content">
+    <div className="page-heading"><div><h1>Integrasi</h1><p>Hubungkan layanan untuk akun Abud lo.</p></div></div>
+    <section className="placeholder-panel" aria-labelledby="canva-heading">
+      <h2 id="canva-heading">Canva</h2>
+      <p>Buat desain kosong untuk konten lo, lalu lanjutkan di editor Canva.</p>
+      {notice && <p role="status">{notice}</p>}
+      {error && <p role="alert">{error}</p>}
+      {canva && !canva.available && <p>Integrasi Canva belum tersedia.</p>}
+      {canva?.available && <button type="button" disabled={busy} onClick={() => change('connect')}>
+        {canva.connected ? 'Hubungkan ulang Canva' : 'Hubungkan Canva'}
+      </button>}
+      {canva?.connected && <button type="button" disabled={busy} onClick={() => change('disconnect')}>Putuskan koneksi</button>}
+      {canva?.available && canva.connected && <form onSubmit={event => { event.preventDefault(); change('create'); }}>
+        <label htmlFor="canva-title">Judul desain</label>
+        <input id="canva-title" value={title} onChange={event => setTitle(event.target.value)} required maxLength={100} disabled={busy}/>
+        <button disabled={busy || !title.trim()}>Buat desain 1080 × 1080</button>
+      </form>}
+      {editor && <a href={editor} target="_blank" rel="noopener noreferrer">Buka editor Canva</a>}
+    </section>
+    <section className="placeholder-panel" aria-labelledby="external-tools-heading">
+      <h2 id="external-tools-heading">Layanan eksternal</h2>
+      <p><a href="https://higgsfield.ai/" target="_blank" rel="noopener noreferrer">Buka Higgsfield</a></p>
+      <p><a href="https://claude.ai/" target="_blank" rel="noopener noreferrer">Buka Claude</a></p>
+    </section>
+  </section>;
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [guilds, setGuilds] = useState([]);
   const [health, setHealth] = useState(null);
-  const [active, setActive] = useState('chat');
+  const [active, setActive] = useState(() => new URLSearchParams(window.location.search).has('canva') ? 'integrations' : 'chat');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -2337,7 +2414,7 @@ function App() {
           <div className="topbar-right"><span className="top-status"><i/> API {health?.status === 'healthy' ? 'CONNECTED' : 'UNKNOWN'}</span><span className="top-clock">UTC+7 / ID</span><div className="top-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div></div>
         </header>
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}
-        {active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat/></React.Suspense> : active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
+        {active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat onOpenIntegrations={() => setActive('integrations')}/></React.Suspense> : active === 'integrations' ? <Integrations/> : active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
           active === 'memory' ? <MemoryMatrix user={user} guilds={guilds}/> :
           active === 'security' ? <SecurityProtocol user={user}/> :
           active === 'neural' ? <NeuralEngine user={user}/> :

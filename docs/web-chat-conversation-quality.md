@@ -1,5 +1,28 @@
 # Web Chat conversation quality and streaming audit
 
+## Follow-up: broad build requests and unsolicited introductions
+
+The Web Chat prompt now explicitly confines creator attribution and profile links to
+questions about the creator. Ordinary requests start with the requested help, including
+when earlier assistant turns repeatedly introduced Abud. A broad request to build an
+agent first establishes its intended job with one useful question; an already specified
+goal or explicit code request proceeds without restarting discovery. Programming
+answers must distinguish executable behavior from illustrative scaffolding: displaying
+a function-call name does not execute the function or complete an agent's task.
+
+The style guidance explicitly covers unsolicited `ponytail:` code comments and
+`skipped:` / `add when:` footers. Legitimate discussion of these terms remains allowed.
+This is prompt guidance, not an output filter: it does not rewrite or censor code, add
+model calls, change streaming, or guarantee a provider's wording. Text and voice use
+the same composition function. There is no frontend, database or provider-config change.
+
+Manual acceptance after deployment: start a new conversation with “bisa bantu gw bikin
+ai agent?”, then specify its job and platform, then explicitly request runnable code.
+Check that the first answer establishes the missing goal without promotions or a
+generic snippet; later answers use the supplied context and describe implemented code
+honestly. Also ask who created Abud and confirm the correct attribution and profiles.
+Automated composition/stream tests do not substitute for this live model check.
+
 Repository: `timeless280602-star/abud-ai-project`.
 Base: latest `origin/dev`, verified as `5389fce3f96430bcf21894ed51c675b00a115bbb`.
 Branch: `fix/web-chat-conversation-quality`.

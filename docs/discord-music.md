@@ -7,7 +7,33 @@ VPS deployment is performed by creating this draft.
 
 ## User experience
 
-Join a normal voice channel, then use `/music play query:judul lagu`. Abud connects
+Join a normal voice channel, then use `/play query:judul lagu` or
+`/play query:https://www.youtube.com/watch?v=VIDEO_ID`. `/music play` remains available.
+
+Text chat is integrated into the same music player. Examples:
+
+- `Abud, coba putar Separuh Aku - NOAH`
+- `coba putar Separuh Aku - NOAH`
+- `@Abud putar lagu Jangan Menyerah - D'MASIV`
+- `Abud putar https://youtu.be/VIDEO_ID`
+
+Explicit music requests execute through the same search/queue/access checks as both
+slash commands. The bot acknowledges the actual queue result and lets the panel show
+playback state; it does not claim sound was heard merely because a request was parsed.
+Unaddressed text requires an explicit music request such as `coba putar ...` or
+`putar lagu ...`, so a normal `play valorant` conversation is not treated as music.
+Quoted/code examples, explanations and negated commands fall through to ordinary chat
+(the existing mention/name gate still applies for AI replies). Missing titles prompt
+for a song; DMs explain that music requires a guild voice channel. No model output can
+supply user/guild identity or bypass permissions: identity comes from the Discord event.
+This integration handles explicit text requests, not arbitrary LLM-inferred actions or
+voice-spoken requests while music is playing.
+
+Search-by-title uses the configured source and preserves the title/artist query.
+A direct YouTube URL remains a direct YouTube request regardless of the default search
+source; it still needs the optional YouTube plugin and real playback acceptance.
+
+ Abud connects
 in music mode and shows one shared Now Playing panel with a clickable song title,
 artwork (when supplied by the source), artist, elapsed/total time, requester, upcoming
 count, volume and repeat mode. Panel buttons: Pause/Resume, Skip, Shuffle, Stop, Queue.
@@ -16,7 +42,7 @@ progress bar. Source metadata can omit artwork. Messages never mass-mention user
 
 | Command | Behavior |
 | --- | --- |
-| `/music play query source` | First search result or supported URL/playlist; auto-join |
+| `/play query source`, `/music play query source` | First search result or supported URL/playlist; auto-join |
 | `/music search query source` | Private picker with five results, expires in 60 seconds |
 | `/music queue page` | Numbered upcoming queue, ten tracks per page |
 | `/music nowplaying` | Current track and playback state |

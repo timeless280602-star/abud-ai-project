@@ -57,4 +57,4 @@ jobs:
       - name: Verify slash command registration without a Discord login
         run: |
           docker run --rm --network none -e DISCORD_TOKEN=offline -e ABUD_INTERNAL_API_KEY=offline --entrypoint python abud-discord-voice:test -c \
-            'import asyncio; from app.bot import tree, client; assert len(tree.get_command("music").commands) == 17; asyncio.run(client.close())'
+            'import asyncio; from app.bot import tree, client; assert len(tree.get_command("music").commands) == 17; assert tree.get_command("play"); asyncio.run(client.close())'

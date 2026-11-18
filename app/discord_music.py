@@ -168,6 +168,21 @@ class Music:
             )
         return result
 
+    async def play_query(self, context, query, source=None):
+        """Execute a real user request; text chat and slash commands share this path."""
+        self.require()
+        self.user_channel(context)
+        if context.guild_id in self.sessions:
+            self.active(context)
+        elif context.guild_id in self.voice.sessions or context.guild.voice_client:
+            raise MusicError(
+                "Abud sedang di mode voice lain. Tutup sesi AI dengan /leave sebelum mulai musik."
+            )
+        result = await self.search(query, source)
+        tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
+        await self.enqueue(context, tracks)
+        return tracks
+
     def user_channel(self, interaction):
         channel = getattr(getattr(interaction.user, "voice", None), "channel", None)
         if not interaction.guild or not isinstance(channel, discord.VoiceChannel):

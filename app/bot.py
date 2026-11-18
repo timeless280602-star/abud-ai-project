@@ -14,6 +14,7 @@ from app.discord_voice import DiscordVoice, install_voice_commands
 from app.discord_notifications import Notifications, install_notification_commands
 from app.discord_music import Music
 from app.music_commands import install_music_commands
+from app.music_chat import handle_music_message
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -995,6 +996,11 @@ async def on_wavelink_node_disconnected(payload):
 @client.event
 async def on_message(message):
     if message.author.bot:
+        return
+
+    if await handle_music_message(
+        message, music_manager, bot_id=client.user.id if client.user else None
+    ):
         return
 
     is_dm = isinstance(message.channel, discord.DMChannel)

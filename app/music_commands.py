@@ -103,6 +103,14 @@ def install_music_commands(tree, manager):
             text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
         )
 
+    async def play_request(interaction, query, source):
+        await defer(interaction)
+        tracks = await manager.play_query(interaction, query, source)
+        await confirm(
+            interaction,
+            f"🎶 {len(tracks)} lagu ditambahkan. Panel pemutar tersedia di channel sesi musik.",
+        )
+
     @group.command(
         name="play",
         description="Putar judul/link lagu atau playlist; otomatis masuk voice kamu",
@@ -111,14 +119,18 @@ def install_music_commands(tree, manager):
     async def play(
         interaction: discord.Interaction, query: str, source: str | None = None
     ):
-        await defer(interaction)
-        result = await manager.search(query, source)
-        tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
-        await manager.enqueue(interaction, tracks)
-        await confirm(
-            interaction,
-            f"🎶 {len(tracks)} lagu ditambahkan. Panel pemutar tersedia di channel ini.",
-        )
+        await play_request(interaction, query, source)
+
+    @tree.command(
+        name="play",
+        description="Putar judul lagu atau link YouTube/SoundCloud di voice kamu",
+    )
+    @app_commands.guild_only()
+    @app_commands.choices(source=SOURCES)
+    async def quick_play(
+        interaction: discord.Interaction, query: str, source: str | None = None
+    ):
+        await play_request(interaction, query, source)
 
     @group.command(
         name="search",
@@ -271,4 +283,5 @@ def install_music_commands(tree, manager):
                 text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
             )
 
+    quick_play.error(on_error)
     tree.add_command(group)

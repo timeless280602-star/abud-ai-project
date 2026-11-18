@@ -20,6 +20,14 @@ channel in the same guild. Abud needs View Channel, Send Messages, Embed Links, 
 Mention Everyone if `here` or `everyone` is selected. Ordinary user/role pings from
 creator titles are suppressed. No message is sent on registration.
 
+Notifications show the actual live/video title as the clickable embed heading, a large
+thumbnail below it, and a **Watch Live** link button (**Watch Video** for uploads).
+The heading and button share the same canonical destination. YouTube thumbnails come
+from the video's API metadata at the best available resolution, falling back to the
+video's standard thumbnail URL if needed. Link buttons need no running interaction
+handler. TikTok thumbnails require the external provider to include the optional
+`thumbnail` HTTPS URL; without it, the notification still has its title and button.
+
 YouTube accepts `/@handle`, `/channel/UC…`, `/user/…`, a bare channel ID or `@handle`.
 Legacy `/c/…` and video links are rejected with guidance rather than guessed.
 Posts mean public **videos and Shorts**, not text/image Community posts. Upcoming
@@ -93,6 +101,8 @@ The exact raw UTF-8 JSON body:
 - `occurred_at`: Unix seconds at publication/live start (not observation time), within
   the last 24 hours and no more than 60 seconds in the future.
 - `account`: TikTok handle without `@` (case insensitive).
+- `thumbnail` (optional): HTTPS image URL, at most 2,048 characters. Include the actual
+  live/video thumbnail; this adapter does not invent a TikTok cover image.
 - `X-Abud-Timestamp`: current Unix seconds, accepted within five minutes.
 - `X-Abud-Signature`: lowercase hex HMAC-SHA256(secret, timestamp + `.` + exact raw body).
 
@@ -108,7 +118,8 @@ outside Discord. Authentication failures return 401; malformed events return 400
 Local contract tests use provider and Discord doubles, never real pings or accounts.
 Before deploy, validate Compose and writable volume permissions in the built image.
 In an isolated guild, register a channel, run preview, then publish a public video/Short
-and start a scheduled and an unscheduled live. Measure detection latency and verify the
+and start a scheduled and an unscheduled live. Verify the actual thumbnail, clickable title and Watch Live button all reference the
+correct broadcast. Check an upload uses Watch Video. Measure detection latency and verify the
 channel exposes each active stream in the uploads API. Confirm upcoming and ended
 streams do not produce upload alerts. Repeat with no ping, here and everyone; check a
 missing Mention Everyone permission blocks configuration. Restart the bot to check

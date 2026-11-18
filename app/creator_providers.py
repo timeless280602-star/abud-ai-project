@@ -85,6 +85,15 @@ class YouTube:
                 live = item.get("liveStreamingDetails", {})
                 state = snippet.get("liveBroadcastContent", "none")
                 video, title = item["id"], snippet["title"]
+                thumbnails = snippet.get("thumbnails", {})
+                thumbnail = next(
+                    (
+                        thumbnails[size]["url"]
+                        for size in ("maxres", "standard", "high", "medium", "default")
+                        if thumbnails.get(size, {}).get("url")
+                    ),
+                    "",
+                )
                 if state == "upcoming" or (
                     live.get("actualStartTime") and not live.get("actualEndTime")
                 ):
@@ -105,6 +114,7 @@ class YouTube:
                             "live",
                             title,
                             timestamp(live["actualStartTime"]),
+                            thumbnail,
                         )
                     )
                 elif not live and state == "none":
@@ -116,6 +126,7 @@ class YouTube:
                             "post",
                             title,
                             timestamp(snippet["publishedAt"]),
+                            thumbnail,
                         )
                     )
         return sorted(events, key=lambda event: event.occurred)

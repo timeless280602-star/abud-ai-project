@@ -76,6 +76,7 @@ class Event:
     kind: str
     title: str
     occurred: float
+    thumbnail: str = ""
 
     @property
     def url(self):

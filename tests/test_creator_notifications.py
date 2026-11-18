@@ -168,6 +168,10 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
                 "title": ident,
                 "liveBroadcastContent": state,
                 "publishedAt": "2026-11-18T12:00:00Z",
+                "thumbnails": {
+                    "default": {"url": f"https://i.ytimg.com/vi/{ident}/default.jpg"},
+                    "high": {"url": f"https://i.ytimg.com/vi/{ident}/hqdefault.jpg"},
+                },
             },
         }
         if live is not None:
@@ -216,6 +220,9 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         events = await self.provider.poll(self.creator)
         self.assertEqual(events[0].kind, "live")
+        self.assertEqual(
+            events[0].thumbnail, "https://i.ytimg.com/vi/scheduled/hqdefault.jpg"
+        )
         self.assertEqual(self.provider.request.call_args.kwargs["id"], "scheduled")
 
     async def test_batches_video_ids_and_uses_fixed_resolution(self):
@@ -339,12 +346,61 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["content"], "@everyone")
         self.assertFalse(kwargs["allowed_mentions"].users)
         self.assertFalse(kwargs["allowed_mentions"].roles)
+        self.assertEqual(kwargs["view"].children[0].label, "Watch Video")
+        self.assertEqual(kwargs["view"].children[0].url, event.url)
         await self.manager.send(row, event, test=True)
         kwargs = channel.send.call_args.kwargs
         self.assertIsNone(kwargs["content"])
         self.assertFalse(kwargs["allowed_mentions"].everyone)
         self.manager.destination.assert_called_with(1, 10, "none")
         self.assertEqual(kwargs["embed"].url, "https://www.tiktok.com/@creator")
+
+    async def test_live_embed_uses_actual_title_large_thumbnail_and_watch_button(self):
+        channel = Mock(send=AsyncMock())
+        self.manager.destination = Mock(return_value=channel)
+        event = Event(
+            "youtube",
+            ACCOUNT,
+            "abcDEF123_-",
+            "live",
+            "Live Main Bareng Bos Bara",
+            time.time(),
+            "https://i.ytimg.com/vi/abcDEF123_-/maxresdefault.jpg",
+        )
+        row = self.manager.store.get(1, self.ident)
+        await self.manager.send(row, event)
+        message = channel.send.call_args.kwargs
+        embed = message["embed"].to_dict()
+        self.assertEqual(embed["title"], event.title)
+        self.assertEqual(embed["url"], event.url)
+        self.assertEqual(embed["image"]["url"], event.thumbnail)
+        button = message["view"].to_components()[0]["components"][0]
+        self.assertEqual(button["label"], "Watch Live")
+        self.assertEqual(button["url"], event.url)
+        self.assertEqual(button["style"], discord.ButtonStyle.link.value)
+        self.assertNotIn("custom_id", button)
+        self.assertIsNone(message["view"].timeout)
+
+    async def test_youtube_thumbnail_fallback_and_tiktok_provider_thumbnail(self):
+        channel = Mock(send=AsyncMock())
+        self.manager.destination = Mock(return_value=channel)
+        row = self.manager.store.get(1, self.ident)
+        youtube = Event("youtube", ACCOUNT, "abcDEF123_-", "live", "Live", time.time())
+        await self.manager.send(row, youtube)
+        self.assertEqual(
+            channel.send.call_args.kwargs["embed"].image.url,
+            "https://i.ytimg.com/vi/abcDEF123_-/hqdefault.jpg",
+        )
+        self.manager.send = AsyncMock()
+        payload = {
+            **self.payload(),
+            "kind": "live",
+            "thumbnail": "https://cdn.example.com/actual-cover.jpg",
+        }
+        await self.manager.webhook(self.request(payload))
+        self.assertEqual(
+            self.manager.send.call_args.args[1].thumbnail, payload["thumbnail"]
+        )
 
     def test_target_permissions_and_cross_guild(self):
         guild = Mock()

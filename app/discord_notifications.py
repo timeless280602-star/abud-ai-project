@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlsplit
 
 import discord
 from aiohttp import web
@@ -141,8 +142,11 @@ class Notifications:
         )
         label = "🔴 Sedang live" if event.kind == "live" else "🎬 Video baru"
         embed = discord.Embed(
-            title=("UJI NOTIFIKASI — " if test else "") + label,
-            description=discord.utils.escape_mentions(event.title)[:4000],
+            title=(
+                ("UJI NOTIFIKASI — " if test else "")
+                + discord.utils.escape_mentions(event.title)
+            )[:256],
+            description=label,
             url=(
                 ("https://www.youtube.com/channel/" + row["account"])
                 if event.platform == "youtube"
@@ -153,13 +157,35 @@ class Notifications:
             color=0xEF4444 if event.kind == "live" else 0x2563EB,
         )
         embed.set_author(name=discord.utils.escape_mentions(row["title"])[:256])
-        embed.add_field(name="Tonton", value=embed.url)
+        thumbnail = event.thumbnail
+        if (
+            not thumbnail
+            and event.platform == "youtube"
+            and re.fullmatch(r"[A-Za-z0-9_-]{11}", event.video)
+        ):
+            thumbnail = f"https://i.ytimg.com/vi/{event.video}/hqdefault.jpg"
+        if thumbnail:
+            try:
+                image = urlsplit(thumbnail)
+                if image.scheme == "https" and image.hostname and not image.username:
+                    embed.set_image(url=thumbnail)
+            except ValueError:
+                pass  # A malformed optional image must not block the notification.
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label="Watch Live" if event.kind == "live" else "Watch Video",
+                style=discord.ButtonStyle.link,
+                url=embed.url,
+            )
+        )
         embed.set_footer(text=f"Abud • {event.platform} • langganan #{row['id']}")
         # Tests never ping. Only the explicitly selected literal is in message content.
         ping = row["ping"] if not test else "none"
         await channel.send(
             content="@" + ping if ping != "none" else None,
             embed=embed,
+            view=view,
             allowed_mentions=discord.AllowedMentions(
                 everyone=ping != "none", users=False, roles=False, replied_user=False
             ),
@@ -209,7 +235,12 @@ class Notifications:
                 or len(data["title"]) > 4000
             ):
                 raise ValueError()
-            event = Event("tiktok", account, video, kind, data["title"], occurred)
+            thumbnail = data.get("thumbnail", "")
+            if not isinstance(thumbnail, str) or len(thumbnail) > 2048:
+                raise ValueError()
+            event = Event(
+                "tiktok", account, video, kind, data["title"], occurred, thumbnail
+            )
         except (ValueError, TypeError, KeyError, AttributeError):
             raise web.HTTPBadRequest(text="Invalid event") from None
         try:

@@ -12,6 +12,8 @@ from aiohttp import web
 
 from app.discord_voice import DiscordVoice, install_voice_commands
 from app.discord_notifications import Notifications, install_notification_commands
+from app.discord_music import Music
+from app.music_commands import install_music_commands
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -47,7 +49,10 @@ class AbudClient(discord.Client):
             try:
                 await notification_manager.close()
             finally:
-                await voice_manager.close()
+                try:
+                    await music_manager.close()
+                finally:
+                    await voice_manager.close()
         finally:
             try:
                 runner = getattr(self, "_verification_gateway_runner", None)
@@ -63,6 +68,8 @@ voice_manager = DiscordVoice(client, API_URL, INTERNAL_API_KEY)
 install_voice_commands(tree, voice_manager)
 notification_manager = Notifications(client)
 install_notification_commands(tree, notification_manager)
+music_manager = Music(client, voice_manager)
+install_music_commands(tree, music_manager)
 
 
 
@@ -922,6 +929,7 @@ async def on_ready():
             print(f"Slash Command sync error: {error}")
 
     await notification_manager.start()
+    await music_manager.start()
     await sync_all_guilds_to_api()
 
     print("Personal / Guild / Global Memory aktif.")
@@ -941,6 +949,7 @@ async def on_guild_join(guild):
 
 @client.event
 async def on_guild_remove(guild):
+    await music_manager.leave(guild.id)
     await voice_manager.leave(guild.id)
     try:
         await asyncio.to_thread(sync_guild_to_api, guild, False)
@@ -955,6 +964,32 @@ async def on_guild_remove(guild):
 @client.event
 async def on_voice_state_update(member, before, after):
     await voice_manager.voice_state_update(member, before, after)
+    await music_manager.voice_state_update(member, before, after)
+
+
+@client.event
+async def on_wavelink_track_end(payload):
+    await music_manager.track_end(payload)
+
+
+@client.event
+async def on_wavelink_track_exception(payload):
+    await music_manager.track_error(payload)
+
+
+@client.event
+async def on_wavelink_track_stuck(payload):
+    await music_manager.track_error(payload)
+
+
+@client.event
+async def on_wavelink_websocket_closed(payload):
+    await music_manager.connection_lost(payload.player)
+
+
+@client.event
+async def on_wavelink_node_disconnected(payload):
+    await music_manager.node_lost(payload)
 
 
 @client.event

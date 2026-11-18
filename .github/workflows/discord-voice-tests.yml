@@ -9,9 +9,11 @@ on:
       - 'Dockerfile.bot'
       - 'compose.voice.yaml'
       - 'compose.yaml'
+      - 'compose.music*.yaml'
+      - 'music/**'
       - '.github/workflows/discord-voice-tests.yml'
   push:
-    branches: [feat/discord-voice-channel, feat/discord-creator-notifications]
+    branches: [feat/discord-voice-channel, feat/discord-creator-notifications, feat/discord-music]
   workflow_dispatch:
 
 permissions:
@@ -42,12 +44,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg libopus0
           python -m pip install -r requirements.txt -r requirements-bot.txt
-      - name: Run backend, voice and creator notification tests
+      - name: Run backend and Discord integration tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build bot image and verify the voice runtime without a Discord login
         run: |
           cp .env.example .env
           ABUD_INTERNAL_API_KEY=ci-config-only docker compose -f compose.yaml -f compose.voice.yaml config --quiet
+          ABUD_INTERNAL_API_KEY=ci-config-only ABUD_LAVALINK_PASSWORD=ci-music-only docker compose -f compose.yaml -f compose.voice.yaml -f compose.music.yaml -f compose.music.youtube.yaml config --quiet
           docker build -f Dockerfile.bot -t abud-discord-voice:test .
           docker run --rm --network none --entrypoint python abud-discord-voice:test -c \
-            'import discord, davey; from discord.ext import voice_recv; from discord.opus import Decoder; Decoder(); print(discord.__version__, davey.__version__, voice_recv.__version__)'
+            'import discord, davey, wavelink; from discord.ext import voice_recv; from discord.opus import Decoder; Decoder(); print(discord.__version__, davey.__version__, voice_recv.__version__)'
+      - name: Verify slash command registration without a Discord login
+        run: |
+          docker run --rm --network none -e DISCORD_TOKEN=offline -e ABUD_INTERNAL_API_KEY=offline --entrypoint python abud-discord-voice:test -c \
+            'import asyncio; from app.bot import tree, client; assert len(tree.get_command("music").commands) == 17; asyncio.run(client.close())'

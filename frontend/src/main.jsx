@@ -6,23 +6,42 @@ import {
   Cpu, Database, Fingerprint, Gauge, Globe, HardDrive, Hexagon,
   LayoutDashboard, LockKeyhole, LogOut, Menu, Network, Radio,
   RefreshCw, Server, Settings, Shield, ShieldCheck, Terminal,
-  Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2,
-  Send, Mic, Square
+  Image as ImageIcon, Film, Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
 } from 'lucide-react';
 import './style.css';
+const WebChat = React.lazy(() => import('./WebChat'));
 
-const modules = [
-  { id: 'overview', label: 'Command Center', group: 'MAIN', icon: LayoutDashboard },
-  { id: 'chat', label: 'Chat Abud', group: 'MAIN', icon: Bot },
-  { id: 'neural', label: 'Neural Engine', group: 'INTELLIGENCE', icon: BrainCircuit },
-  { id: 'memory', label: 'Memory Matrix', group: 'INTELLIGENCE', icon: Database },
-  { id: 'network', label: 'Network Command', group: 'INFRASTRUCTURE', icon: Network },
-  { id: 'security', label: 'Security Protocol', group: 'INFRASTRUCTURE', icon: Shield },
-  { id: 'automation', label: 'Automation Engine', group: 'OPERATIONS', icon: AudioWaveform },
-  { id: 'knowledge', label: 'Knowledge Archives', group: 'OPERATIONS', icon: HardDrive },
-  { id: 'logs', label: 'Activity Logs', group: 'OPERATIONS', icon: Terminal },
-  { id: 'settings', label: 'Core Settings', group: 'SYSTEM', icon: Settings }
+const workspaceModules = [
+  { id: 'home', label: 'Command Center', group: 'Workspace', icon: LayoutDashboard },
+  { id: 'chat', label: 'AI Chat', group: 'Workspace', icon: Bot },
+  { id: 'overview', label: 'Dashboard', group: 'Workspace', icon: Gauge },
+  { id: 'image-studio', label: 'Image Studio', group: 'Create', icon: ImageIcon, copy: 'Generate an image from a description.', prompt: 'Buat gambar ' },
+  { id: 'video-studio', label: 'Video Studio', group: 'Create', icon: Film, copy: 'Plan scenes and narration before opening Higgsfield.', prompt: 'Buat paket konten: ', link: 'https://higgsfield.ai/' },
+  { id: 'writing-studio', label: 'Writing Studio', group: 'Create', icon: Pencil, copy: 'Draft or refine writing with Abud.', prompt: 'Bantu tulis ' },
+  { id: 'work-automation', label: 'Automation Engine', group: 'Operations', icon: AudioWaveform, copy: 'Turn a brief into a workflow or checklist.', prompt: 'Bantu susun alur kerja untuk ' },
+  { id: 'work-activity', label: 'Activity Logs', group: 'Operations', icon: Activity },
+  { id: 'integrations', label: 'Integrasi', group: 'Account', icon: Plus },
 ];
+
+const dashboardModules = [
+  { id: 'neural', label: 'Neural Engine', group: 'Dashboard', icon: BrainCircuit },
+  { id: 'memory', label: 'Memory Matrix', group: 'Dashboard', icon: Database },
+  { id: 'network', label: 'Network Command', group: 'Dashboard', icon: Network },
+  { id: 'security', label: 'Security Protocol', group: 'Dashboard', icon: Shield },
+  { id: 'automation', label: 'Automation Engine', group: 'Dashboard', icon: AudioWaveform },
+  { id: 'knowledge', label: 'Knowledge Archives', group: 'Dashboard', icon: HardDrive },
+  { id: 'logs', label: 'Activity Logs', group: 'Dashboard', icon: Terminal },
+  { id: 'settings', label: 'Core Settings', group: 'Dashboard', icon: Settings },
+];
+const modules = [...workspaceModules, ...dashboardModules];
+
+const MEMORY_SOURCE_LABELS = {
+  unknown: 'Unknown origin',
+  direct: 'Direct request',
+  tool: 'Assistant tool',
+  auto: 'Auto-saved',
+  dashboard: 'Dashboard'
+};
 
 const MANAGE_IMPLIES_VIEW = {
   'memory.personal.manage': 'memory.personal.view',
@@ -55,11 +74,12 @@ function hasAnyPermission(user, permission) {
 }
 
 function canOpenModule(user, moduleId) {
+  if (moduleId !== 'overview' && workspaceModules.some(module => module.id === moduleId)) return true;
+  if (!user?.dashboard_access) return false;
   if (moduleId === 'overview') return true;
   if (user?.is_creator) return true;
 
   const requirements = {
-    chat: 'ai_config.view',
     neural: 'ai_config.view',
     memory: 'memory.personal.view',
     network: 'server.view',
@@ -377,7 +397,7 @@ function Overview({ health, guilds, refresh, refreshing, user }) {
       <div className="cockpit-heading">
         <div>
           <div className="eyebrow"><span className="pulse-dot"/> ABUD INTELLIGENCE / COMMAND INTERFACE</div>
-          <h1>Command <span>Center.</span></h1>
+          <h2>System <span>overview</span></h2>
           <p>Unified intelligence, infrastructure and operational awareness.</p>
         </div>
         <button className="outline-button" onClick={refresh} disabled={refreshing}>
@@ -461,6 +481,7 @@ function MemoryMatrix({ user, guilds }) {
   );
   const [items, setItems] = useState([]);
   const [query, setQuery] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
   const [draft, setDraft] = useState('');
   const [category, setCategory] = useState('general');
   const [editingId, setEditingId] = useState(null);
@@ -468,6 +489,10 @@ function MemoryMatrix({ user, guilds }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [review, setReview] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const reviewKey = JSON.stringify([scope, selectedGuild, draft, category, editingId, showArchived]);
+  const currentReview = review?.key === reviewKey ? review.data : null;
 
   const activeGuild = accessibleGuilds.find(
     g => String(g.guild_id) === String(selectedGuild)
@@ -504,7 +529,7 @@ function MemoryMatrix({ user, guilds }) {
     }
 
     let alive = true;
-    const params = new URLSearchParams({ scope, q: query });
+    const params = new URLSearchParams({ scope, q: query, archived: String(showArchived) });
     if (scope === 'guild') params.set('guild_id', selectedGuild);
 
     setBusy(true);
@@ -525,10 +550,12 @@ function MemoryMatrix({ user, guilds }) {
       });
 
     return () => { alive = false; };
-  }, [scope, selectedGuild, query, reload, canView]);
+  }, [scope, selectedGuild, query, reload, canView, showArchived]);
 
   function changeScope(next) {
     setScope(next);
+    setItems([]);
+    setReview(null);
     setDraft('');
     setEditingId(null);
     setNotice('');
@@ -566,6 +593,35 @@ function MemoryMatrix({ user, guilds }) {
     }
   }
 
+  async function checkSimilar(useAI) {
+    const key = reviewKey;
+    setReviewBusy(true);
+    setError('');
+    try {
+      const data = await api('/dashboard/memory/similar', {
+        method: 'POST',
+        body: JSON.stringify({
+          scope, guild_id: scope === 'guild' ? selectedGuild : null,
+          content: draft.trim(), category,
+          exclude_memory_id: editingId, use_ai: useAI
+        })
+      });
+      setReview({ key, data });
+    } catch (e) {
+      setReview({ key, data: { items: [], error: e.message || 'Review unavailable.' } });
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  function useCandidate(item, combine) {
+    setEditingId(item.id);
+    setDraft(combine ? `${item.content}\n${draft}` : draft);
+    setCategory(item.category || 'general');
+    setNotice('Review the draft, then save to update this record. No record has been changed or deleted.');
+    setReview(null);
+  }
+
   function startEdit(item) {
     setEditingId(item.id);
     setDraft(item.content || '');
@@ -573,6 +629,31 @@ function MemoryMatrix({ user, guilds }) {
     setNotice('');
     setError('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function changeArchive(item) {
+    const archive = !showArchived;
+    if (archive && !window.confirm('Archive this memory? It will leave active memory and can be restored from the archive.')) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await api('/dashboard/memory/archive', {
+        method: 'POST',
+        body: JSON.stringify({ scope, guild_id: scope === 'guild' ? selectedGuild : null,
+          memory_id: item.id, archived: archive })
+      });
+      setItems([]);
+      setDraft('');
+      setEditingId(null);
+      setReview(null);
+      setNotice(archive ? 'Memory archived. Restore it from the archive when needed.' : 'Memory restored to active memory.');
+      setReload(v => v + 1);
+    } catch (e) {
+      setError(e.message || 'Unable to change archive status.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function deleteMemory(item) {
@@ -650,7 +731,7 @@ function MemoryMatrix({ user, guilds }) {
           {scope === 'guild' && (
             <label className="memory-field guild-select-field">
               <span>DISCORD SERVER</span>
-              <select value={selectedGuild} onChange={e => { setSelectedGuild(e.target.value); setEditingId(null); setDraft(''); }}>
+              <select value={selectedGuild} onChange={e => { setSelectedGuild(e.target.value); setItems([]); setEditingId(null); setDraft(''); setReview(null); }}>
                 {!accessibleGuilds.length && <option value="">No authorized servers</option>}
                 {accessibleGuilds.map(g => (
                   <option key={g.guild_id} value={g.guild_id}>{g.guild_name || g.guild_id}</option>
@@ -658,6 +739,12 @@ function MemoryMatrix({ user, guilds }) {
               </select>
             </label>
           )}
+          <label className="memory-archive-toggle">
+            <input type="checkbox" checked={showArchived} disabled={busy} onChange={e => {
+              setShowArchived(e.target.checked);setItems([]);setDraft('');setEditingId(null);setReview(null);setNotice('');
+            }}/>
+            Show archived memories
+          </label>
           <label className="memory-search">
             <Search size={15}/>
             <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search stored memories..."/>
@@ -682,7 +769,7 @@ function MemoryMatrix({ user, guilds }) {
         </div>
       )}
 
-      {canManage && (
+      {canManage && !showArchived && (
         <form className="memory-editor data-panel" onSubmit={submitMemory}>
           <div className="panel-title">
             <span><Plus size={15}/>{editingId ? 'EDIT MEMORY RECORD' : 'CREATE MEMORY RECORD'}</span>
@@ -700,12 +787,43 @@ function MemoryMatrix({ user, guilds }) {
             <small>{draft.length}/1000 CHARACTERS</small>
           </label>
           <div className="memory-editor-actions">
+            <button type="button" className="outline-button" onClick={() => checkSimilar(false)} disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000}>
+              CHECK SIMILAR WORDING
+            </button>
+            <button type="button" className="outline-button" onClick={() => checkSimilar(true)} disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000}>
+              {reviewBusy ? 'REVIEWING...' : 'REVIEW MEANING WITH AI'}
+            </button>
+          </div>
+          <small className="memory-review-disclosure">AI review sends this draft and up to five memories from this scope to your configured AI service. Suggestions never change records.</small>
+          {draft.length > 1000 && <p className="memory-error">Shorten the combined draft to 1000 characters before saving.</p>}
+          {currentReview && (
+            <section className="memory-review" aria-label="Similar memory suggestions" aria-live="polite">
+              <h3>REVIEW SIMILAR MEMORIES</h3>
+              {currentReview.error && <p>{currentReview.error}</p>}
+              {['not_configured', 'unavailable'].includes(currentReview.ai_status) && <p>AI review unavailable. Wording matches are shown below.</p>}
+              {!currentReview.error && !currentReview.items.length && <p>No candidates found by this review. Other memories may still describe the same fact.</p>}
+              {currentReview.items.map(item => (
+                <article className="memory-review-candidate" key={item.id}>
+                  <strong>RECORD #{item.id}</strong>
+                  <p>{item.content}</p>
+                  <small>{item.reason}</small>
+                  {item.ai_relation && <p>AI suggestion: {item.ai_relation} — {item.ai_reason}</p>}
+                  <div className="memory-editor-actions">
+                    <button type="button" className="outline-button" onClick={() => useCandidate(item, false)} disabled={busy}>UPDATE THIS RECORD</button>
+                    <button type="button" className="outline-button" onClick={() => useCandidate(item, true)} disabled={busy}>COMBINE INTO DRAFT</button>
+                  </div>
+                </article>
+              ))}
+              <button type="button" className="outline-button" disabled={busy} onClick={() => {setEditingId(null);setReview(null);setNotice('Kept as a separate draft. Save when ready; identical text still uses existing deduplication.');}}>KEEP AS SEPARATE DRAFT</button>
+            </section>
+          )}
+          <div className="memory-editor-actions">
             {editingId && (
               <button type="button" className="outline-button" onClick={() => {setEditingId(null);setDraft('');}}>
                 <X size={14}/> CANCEL
               </button>
             )}
-            <button type="submit" className="memory-primary-button" disabled={busy || !draft.trim() || (scope === 'guild' && !selectedGuild)}>
+            <button type="submit" className="memory-primary-button" disabled={busy || reviewBusy || !draft.trim() || draft.length > 1000 || (scope === 'guild' && !selectedGuild)}>
               <Save size={14}/> {busy ? 'PROCESSING...' : editingId ? 'UPDATE MEMORY' : 'SAVE MEMORY'}
             </button>
           </div>
@@ -733,14 +851,23 @@ function MemoryMatrix({ user, guilds }) {
                   <div className="memory-record-meta">
                     <span>RECORD #{item.id}</span>
                     {item.category && <span className="memory-category">{item.category}</span>}
+                    <span>{MEMORY_SOURCE_LABELS[item.source] || 'Unknown origin'}</span>
+                    {item.revision > 0 && <span>REVISION {item.revision}</span>}
                   </div>
                   <p>{item.content}</p>
-                  <small>UPDATED {item.updated_at || item.created_at || 'UNKNOWN'}</small>
+                  <small>{showArchived ? `ARCHIVED ${item.archived_at}` : `UPDATED ${item.updated_at || item.created_at || 'UNKNOWN'}`}</small>
                 </div>
                 {canManage && (
                   <div className="memory-record-actions">
-                    <button title="Edit memory" onClick={() => startEdit(item)} disabled={busy}><Pencil size={14}/></button>
-                    <button title="Delete memory" onClick={() => deleteMemory(item)} disabled={busy}><Trash2 size={14}/></button>
+                    {showArchived ? (
+                      <button title="Restore memory" onClick={() => changeArchive(item)} disabled={busy}><ArchiveRestore size={14}/></button>
+                    ) : (
+                      <>
+                        <button title="Edit memory" onClick={() => startEdit(item)} disabled={busy}><Pencil size={14}/></button>
+                        <button title="Archive memory" onClick={() => changeArchive(item)} disabled={busy}><Archive size={14}/></button>
+                        <button title="Delete memory" onClick={() => deleteMemory(item)} disabled={busy}><Trash2 size={14}/></button>
+                      </>
+                    )}
                   </div>
                 )}
               </article>
@@ -1074,7 +1201,103 @@ function SecurityProtocol({ user }) {
 }
 
 
-function NeuralEngine() {
+const improvementHints = {
+  accuracy: ['Accuracy', 'Distinguish supported facts from assumptions. Say what is uncertain.'],
+  missing_context: ['Missing context', 'State the relevant assumptions and address each constraint in the request.'],
+  instructions: ['Did not follow instructions', 'Check that the answer follows the user’s requested format and constraints.'],
+  clarity: ['Clarity', 'Lead with the answer and use short, concrete explanations.'],
+};
+
+function ImprovementPanel() {
+  const [categories, setCategories] = useState([]);
+  const [question, setQuestion] = useState('');
+  const [candidate, setCandidate] = useState('');
+  const [expected, setExpected] = useState('');
+  const [result, setResult] = useState(null);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [error, setError] = useState('');
+  const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api('/dashboard/improvement')
+      .then((data) => { if (active) setCategories(data.categories); })
+      .catch((e) => { if (active) setFeedbackError(e.message); });
+    return () => { active = false; };
+  }, []);
+
+  async function evaluate(event) {
+    event.preventDefault();
+    if (running) return;
+    setRunning(true);
+    setError('');
+    setResult(null);
+    try {
+      setResult(await api('/dashboard/improvement', {
+        method: 'POST',
+        body: JSON.stringify({
+          question, candidate_instruction: candidate, expected_text: expected,
+        }),
+      }));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <section className="data-panel security-panel" aria-label="ABUD Improvement">
+      <h2>ABUD Improvement</h2>
+      <p>Voluntary issue counts and a side-by-side test of a proposed Web Chat instruction.</p>
+      {feedbackError && <p role="alert">{feedbackError}</p>}
+      {categories.length > 0 && <ul>
+        {categories.map(({ category, count }) => (
+          <li key={category}>
+            {improvementHints[category]?.[0] || category}: {count}
+            {improvementHints[category] && <button type="button" className="outline-button"
+              disabled={running} onClick={() => setCandidate(improvementHints[category][1])}>
+              Use suggested instruction
+            </button>}
+          </li>
+        ))}
+      </ul>}
+      <form onSubmit={evaluate}>
+        <fieldset disabled={running}>
+          <legend>Compare baseline and candidate</legend>
+          <p>Use a synthetic question. Each run sends two requests to the active 9Router model.</p>
+          <label>Test question <textarea required maxLength={1500} value={question}
+            onChange={(event) => setQuestion(event.target.value)} /></label>
+          <label>Candidate instruction <textarea required maxLength={1200} value={candidate}
+            onChange={(event) => setCandidate(event.target.value)} /></label>
+          <label>Expected phrase <input required maxLength={240} value={expected}
+            onChange={(event) => setExpected(event.target.value)} /></label>
+          <button type="submit" className="outline-button"
+            disabled={!question.trim() || !candidate.trim() || !expected.trim()}>
+            {running ? 'Running comparison…' : 'Run comparison'}
+          </button>
+        </fieldset>
+      </form>
+      {error && <p role="alert">{error}</p>}
+      {result && <div aria-live="polite">
+        <p>{result.model} · {result.recommendation === 'review_candidate'
+          ? 'Candidate met the phrase check. Review both answers before applying any change.'
+          : result.recommendation === 'incomplete'
+            ? 'Comparison incomplete. A truncated answer was not scored. Run the comparison again.'
+            : 'This comparison needs more evidence.'}</p>
+        <p>The phrase check measures text matching only.</p>
+        {[['Baseline', result.baseline], ['Candidate', result.candidate]].map(([label, entry]) => (
+          <div key={label}>
+            <h3>{label} · {entry.truncated ? 'Truncated · Not scored' : entry.matched ? 'Phrase found' : 'Phrase missing'}</h3>
+            <p style={{ whiteSpace: 'pre-wrap' }}>{entry.answer}</p>
+          </div>
+        ))}
+      </div>}
+    </section>
+  );
+}
+
+function NeuralEngine({ user }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1194,6 +1417,8 @@ function NeuralEngine() {
           <span>{error}</span>
         </div>
       )}
+
+      {user.is_creator && <ImprovementPanel/>}
 
       <div className="neural-status-banner">
         <div className="neural-status-main">
@@ -2035,214 +2260,186 @@ function ModulePlaceholder({ module }) {
   );
 }
 
-function ChatAbud({ user }) {
-  const [messages, setMessages] = useState([]);
-  const [history, setHistory] = useState([]);
-  const [query, setQuery] = useState('');
-  const [draft, setDraft] = useState('');
-  const [status, setStatus] = useState('idle');
+function Integrations() {
+  const path = '/web/chat/integrations/canva';
+  const [canva, setCanva] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [title, setTitle] = useState('');
+  const [editor, setEditor] = useState('');
   const [error, setError] = useState('');
-  const [lastMessage, setLastMessage] = useState('');
-  const [recording, setRecording] = useState(false);
-  const recognitionRef = React.useRef(null);
-
-  async function loadHistory(search = '') {
-    try {
-      const data = await api(`/dashboard/chat/history?q=${encodeURIComponent(search)}&limit=100`);
-      setHistory(Array.isArray(data.items) ? data.items : []);
-    } catch (e) {
-      setError(e.message || 'Riwayat chat gagal dimuat.');
-    }
-  }
+  const [notice] = useState(() => {
+    const result = new URLSearchParams(window.location.search).get('canva');
+    if (result === 'connected') return 'Akun Canva terhubung.';
+    if (result === 'failed') return 'Canva belum terhubung. Coba lagi.';
+    return '';
+  });
 
   useEffect(() => {
-    loadHistory();
+    api(path).then(setCanva).catch(err => setError(err.message));
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('canva')) {
+      url.searchParams.delete('canva');
+      window.history.replaceState(window.history.state, '', url);
+    }
   }, []);
 
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      document.querySelector('.chat-log')?.scrollTo({
-        top: document.querySelector('.chat-log')?.scrollHeight || 0,
-        behavior: 'smooth'
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [messages, status]);
-
-  async function sendMessage(messageText = draft) {
-    const message = messageText.trim();
-    if (!message || status === 'processing') return;
+  async function change(action) {
+    if (busy) return;
+    setBusy(true);
     setError('');
-    setStatus('processing');
-    setLastMessage(message);
-    setMessages(current => [...current, { role: 'user', content: message }]);
-    setDraft('');
     try {
-      const data = await api('/dashboard/chat', {
-        method: 'POST',
-        body: JSON.stringify({ message })
-      });
-      setMessages(current => [...current, {
-        role: 'assistant',
-        content: data.answer || data.message || 'Abud tidak memberikan respons.'
-      }]);
-      await loadHistory(query);
-    } catch (e) {
-      setError(e.message || 'Abud gagal memproses pesan.');
-      setStatus('error');
-      return;
+      if (action === 'connect') {
+        const result = await api(path + '/connect', { method: 'POST' });
+        window.location.assign(result.url);
+      } else if (action === 'disconnect') {
+        const result = await api(path, { method: 'DELETE' });
+        setCanva(previous => ({ ...previous, ...result }));
+        setEditor('');
+      } else {
+        setEditor('');
+        const result = await api(path + '/designs', {
+          method: 'POST', body: JSON.stringify({ title: title.trim() }),
+        });
+        setEditor(result.url);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
     }
-    setStatus('idle');
   }
 
-  function toggleRecording() {
-    if (recording) {
-      recognitionRef.current?.stop();
-      setRecording(false);
-      setStatus('idle');
-      return;
-    }
+  return <section className="page-content">
+    <div className="page-heading"><div><h1>Integrasi</h1><p>Hubungkan layanan untuk akun Abud lo.</p></div></div>
+    <section className="placeholder-panel" aria-labelledby="canva-heading">
+      <h2 id="canva-heading">Canva</h2>
+      <p>Buat desain kosong untuk konten lo, lalu lanjutkan di editor Canva.</p>
+      {notice && <p role="status">{notice}</p>}
+      {error && <p role="alert">{error}</p>}
+      {canva && !canva.available && <p>Integrasi Canva belum tersedia.</p>}
+      {canva?.available && <button type="button" disabled={busy} onClick={() => change('connect')}>
+        {canva.connected ? 'Hubungkan ulang Canva' : 'Hubungkan Canva'}
+      </button>}
+      {canva?.connected && <button type="button" disabled={busy} onClick={() => change('disconnect')}>Putuskan koneksi</button>}
+      {canva?.available && canva.connected && <form onSubmit={event => { event.preventDefault(); change('create'); }}>
+        <label htmlFor="canva-title">Judul desain</label>
+        <input id="canva-title" value={title} onChange={event => setTitle(event.target.value)} required maxLength={100} disabled={busy}/>
+        <button disabled={busy || !title.trim()}>Buat desain 1080 × 1080</button>
+      </form>}
+      {editor && <a href={editor} target="_blank" rel="noopener noreferrer">Buka editor Canva</a>}
+    </section>
+    <section className="placeholder-panel" aria-labelledby="external-tools-heading">
+      <h2 id="external-tools-heading">Layanan eksternal</h2>
+      <p><a href="https://higgsfield.ai/" target="_blank" rel="noopener noreferrer">Buka Higgsfield</a></p>
+      <p><a href="https://claude.ai/" target="_blank" rel="noopener noreferrer">Buka Claude</a></p>
+    </section>
+  </section>;
+}
 
-    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Recognition) {
-      setError('Perekaman suara tidak didukung oleh browser ini.');
-      setStatus('error');
-      return;
-    }
-    const recognition = new Recognition();
-    recognition.lang = 'id-ID';
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    recognition.onresult = event => {
-      const transcript = Array.from(event.results)
-        .map(result => result[0].transcript)
-        .join('');
-      setDraft(transcript);
-    };
-    recognition.onerror = event => {
-      setRecording(false);
-      setStatus('error');
-      setError(event.error === 'no-speech' ? 'Tidak ada suara yang terdeteksi.' : 'Perekaman suara gagal.');
-    };
-    recognition.onend = () => {
-      setRecording(false);
-      setStatus('idle');
-    };
-    recognitionRef.current = recognition;
-    recognition.start();
-    setRecording(true);
-    setStatus('recording');
-  }
+function WorkspaceActivity({ openChat, compact = false }) {
+  const [chats, setChats] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const controller = new AbortController();
+    api('/web/chat/conversations', { signal: controller.signal })
+      .then(items => setChats([...items].sort((a, b) => b.updated_at.localeCompare(a.updated_at))))
+      .catch(err => { if (err.name !== 'AbortError') setError(err.message); });
+    return () => controller.abort();
+  }, []);
 
-  return (
-    <div className="chat-page">
-      <aside className="chat-history">
-        <div className="chat-history-heading">
-          <div>
-            <div className="eyebrow">CONVERSATION INDEX</div>
-            <h2>RIWAYAT <span>CHAT</span></h2>
-          </div>
-          <button className="chat-new-button" onClick={() => { setMessages([]); setError(''); setStatus('idle'); }} title="Chat baru">
-            <Plus size={16}/>
-          </button>
-        </div>
-        <label className="chat-search">
-          <Search size={15}/>
-          <input
-            value={query}
-            onChange={e => {
-              setQuery(e.target.value);
-              loadHistory(e.target.value);
-            }}
-            placeholder="Cari percakapan..."
-          />
-        </label>
-        <div className="chat-history-list">
-          {history.map(item => (
-            <button
-              key={item.id}
-              className="chat-history-item"
-              title={item.title}
-              onClick={() => setMessages(item.messages || [])}
-            >
-              <strong>{item.title}</strong>
-              <small>{item.preview}</small>
-              <time>{item.created_at}</time>
-            </button>
-          ))}
-          {!history.length && <div className="chat-history-empty">Tidak ada riwayat yang cocok.</div>}
-        </div>
-      </aside>
+  const time = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return <section className="abud-activity" aria-labelledby="workspace-activity-title">
+    <h2 id="workspace-activity-title">{compact ? 'Recent activity' : 'Activity Logs'}</h2>
+    {error && <p role="alert">{error}</p>}
+    {!chats && !error && <p role="status">Loading conversations…</p>}
+    {chats?.length === 0 && <p>No recent conversations yet.</p>}
+    {chats?.slice(0, compact ? 4 : undefined).map(chat => (
+      <button className="abud-activity-row" key={chat.id} onClick={() => openChat({ id: chat.id })}>
+        <Bot size={17}/><span>{chat.title}</span>
+        <time dateTime={chat.updated_at}>{time.format(new Date(chat.updated_at))}</time>
+        <ChevronRight size={15}/>
+      </button>
+    ))}
+  </section>;
+}
 
-      <section className="chat-workspace">
-        <div className="chat-statusbar" aria-live="polite">
-          {status === 'processing' && <><span className="pulse-dot"/> Abud sedang memproses...</>}
-          {status === 'recording' && <><span className="pulse-dot"/> Merekam suara...</>}
-          {status === 'error' && <><AlertTriangle size={14}/> {error}</>}
-          {status === 'idle' && !error && <><CircleDot size={14}/> Siap menerima pesan</>}
-        </div>
-        {error && status !== 'error' && (
-          <div className="chat-error">
-            <span><AlertTriangle size={14}/>{error}</span>
-            {lastMessage && <button onClick={() => sendMessage(lastMessage)}>Coba lagi</button>}
-          </div>
-        )}
-        {status === 'error' && lastMessage && (
-          <button className="chat-retry" onClick={() => sendMessage(lastMessage)}>Coba lagi</button>
-        )}
-
-        <div className="chat-log" aria-label="Pesan percakapan">
-          {!messages.length && (
-            <div className="chat-empty">
-              <Bot size={34}/>
-              <h3>Mulai percakapan dengan Abud</h3>
-              <p>Tulis pesan atau gunakan mikrofon jika browser mendukung.</p>
-            </div>
-          )}
-          {messages.map((message, index) => (
-            <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}>
-              <div className="chat-message-role">{message.role === 'assistant' ? 'ABUD' : (user?.display_name || 'ANDA')}</div>
-              <div className="chat-message-content">{message.content}</div>
-            </article>
-          ))}
-        </div>
-
-        <form className="chat-composer" onSubmit={event => { event.preventDefault(); sendMessage(); }}>
-          <textarea
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
-            }}
-            rows={1}
-            maxLength={6000}
-            placeholder="Tulis pesan..."
-            aria-label="Pesan untuk Abud"
-          />
-          <button type="button" className={`chat-mic ${recording ? 'is-recording' : ''}`} onClick={toggleRecording} aria-label={recording ? 'Hentikan perekaman' : 'Mulai perekaman'}>
-            {recording ? <Square size={16}/> : <Mic size={16}/>}
-          </button>
-          <button type="submit" className="chat-send" disabled={!draft.trim() || status === 'processing'} aria-label="Kirim pesan">
-            <Send size={17}/>
-          </button>
-        </form>
-      </section>
+function WorkspaceHome({ health, user, openChat, navigate }) {
+  const tools = workspaceModules.filter(module => module.prompt);
+  return <div className="page-content abud-workspace">
+    <div className="abud-page-title">
+      <h1>Command Center</h1>
+      <p>Welcome back, {user.display_name || 'Operator'}.</p>
     </div>
-  );
+    <section className="abud-hero">
+      <div className="abud-hero-copy">
+        <p>ABUD AI</p>
+        <h2>What are you working on today?</h2>
+        <div className="abud-actions">
+          <button className="abud-primary" onClick={() => openChat({})}>Start a chat</button>
+          <a href="#workspace-tools" className="abud-secondary">Explore tools</a>
+        </div>
+      </div>
+      <div className="abud-hero-reactor" aria-hidden="true">
+        <CoreReactor status={health?.status === 'healthy' ? 'ONLINE' : 'STATUS UNAVAILABLE'}/>
+      </div>
+    </section>
+    <div className="abud-summary">
+      <div><Activity size={16}/><span>API</span><strong>{health?.status === 'healthy' ? 'Online' : 'Unavailable'}</strong></div>
+      <div><ShieldCheck size={16}/><span>Access</span><strong>{user.is_creator ? 'Creator' : user.dashboard_access ? 'Special access' : 'Standard user'}</strong></div>
+    </div>
+    <section id="workspace-tools" className="abud-tools" aria-labelledby="workspace-tools-title">
+      <h2 id="workspace-tools-title">Explore tools</h2>
+      <div className="abud-card-grid">
+        {tools.map(({ id, icon: Icon, label, copy }) => <button className="abud-card" key={id} onClick={() => navigate(id)}>
+          <Icon size={21}/><strong>{label}</strong><span>{copy}</span>
+        </button>)}
+      </div>
+    </section>
+    <WorkspaceActivity compact openChat={openChat}/>
+  </div>;
+}
+
+function Studio({ module, openChat }) {
+  return <div className="page-content abud-workspace">
+    <div className="abud-page-title"><h1>{module.label}</h1><p>{module.copy}</p></div>
+    <div className="abud-actions">
+      <button className="abud-primary" onClick={() => openChat({ draft: module.prompt })}>Continue in AI Chat</button>
+      {module.link && <a className="abud-secondary" href={module.link} target="_blank" rel="noopener noreferrer">Open Higgsfield</a>}
+    </div>
+  </div>;
+}
+
+function DashboardHome({ user, navigate, children }) {
+  return <>
+    <section className="page-content abud-workspace" aria-labelledby="dashboard-title">
+      <div className="abud-page-title"><h1 id="dashboard-title">Dashboard</h1><p>Manage Abud with the permissions assigned to your account.</p></div>
+      <div className="abud-card-grid">
+        {dashboardModules.filter(module => canOpenModule(user, module.id)).map(({ id, label, icon: Icon }) =>
+          <button className="abud-card" key={id} onClick={() => navigate(id)}><Icon size={20}/><strong>{label}</strong></button>)}
+      </div>
+    </section>
+    {children}
+  </>;
+}
+
+function workspaceFromUrl() {
+  if (new URLSearchParams(window.location.search).has('canva')) return 'integrations';
+  return window.location.hash === '#creator-dashboard' ? 'overview' : 'home';
 }
 
 function App() {
   const [user, setUser] = useState(null);
   const [guilds, setGuilds] = useState([]);
   const [health, setHealth] = useState(null);
-  const [active, setActive] = useState('overview');
+  const [active, setActive] = useState(workspaceFromUrl);
+  const [chatLaunch, setChatLaunch] = useState({ key: 0 });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [chatExpanded, setChatExpanded] = useState(true);
+  const [dashboardExpanded, setDashboardExpanded] = useState(true);
+  const [chatNavigation, setChatNavigation] = useState(null);
 
   async function loadDashboard(initial = false) {
     if (!initial) setRefreshing(true);
@@ -2271,36 +2468,35 @@ function App() {
 
   useEffect(() => { loadDashboard(true); }, []);
 
-  useEffect(() => {
-    const viewport = window.visualViewport;
-    const syncViewport = () => {
-      const height = viewport?.height || window.innerHeight;
-      document.documentElement.style.setProperty('--visual-viewport-height', `${height}px`);
-    };
-    syncViewport();
-    window.addEventListener('resize', syncViewport);
-    viewport?.addEventListener('resize', syncViewport);
-    return () => {
-      window.removeEventListener('resize', syncViewport);
-      viewport?.removeEventListener('resize', syncViewport);
-    };
-  }, []);
+  const insideDashboard = active === 'overview' || dashboardModules.some(module => module.id === active);
+  const visibleModules = workspaceModules.filter(module => canOpenModule(user, module.id));
 
   useEffect(() => {
-    const closeOnEscape = event => {
-      if (event.key === 'Escape') setMobileOpen(false);
-    };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, []);
-
-  const visibleModules = modules.filter(module => canOpenModule(user, module.id));
-
-  useEffect(() => {
-    if (user && visibleModules.length && !visibleModules.some(m => m.id === active)) {
-      setActive('overview');
+    function followHash() {
+      if (window.location.hash === '#creator-dashboard') setActive('overview');
     }
-  }, [user, active, visibleModules.map(m => m.id).join('|')]);
+    window.addEventListener('hashchange', followHash);
+    return () => window.removeEventListener('hashchange', followHash);
+  }, []);
+
+  function navigate(moduleId) {
+    if (moduleId === 'overview' || dashboardModules.some(module => module.id === moduleId)) {
+      setDashboardExpanded(true);
+    }
+    setActive(moduleId);
+    setMobileOpen(false);
+    const url = new URL(window.location.href);
+    if (moduleId === 'overview') url.hash = 'creator-dashboard';
+    else if (url.hash === '#creator-dashboard') url.hash = '';
+    window.history.replaceState(window.history.state, '', url);
+    window.scrollTo(0, 0);
+  }
+
+  function openChat(selection) {
+    setChatExpanded(true);
+    setChatLaunch(previous => ({ ...selection, key: previous.key + 1 }));
+    navigate('chat');
+  }
 
   async function logout() {
     try {
@@ -2313,46 +2509,81 @@ function App() {
   if (loading) return <div className="boot-screen"><CoreReactor status="INITIALIZING"/><span>ESTABLISHING SECURE CONNECTION</span></div>;
   if (!user) return <Login error={error}/>;
   if (!user.profile_completed) return <ProfileSetup/>;
-  if (!user.dashboard_access) return (
-    <main className="denied-screen"><Brand/><Shield size={42}/><div className="eyebrow">ACCESS CONTROL / 403</div><h1>ACCESS <span>RESTRICTED.</span></h1><p>This identity is authenticated, but no dashboard permission has been assigned.</p><button className="outline-button" onClick={logout}><LogOut size={15}/> SIGN OUT</button></main>
-  );
 
-  const current = visibleModules.find(m => m.id === active) || visibleModules[0];
+  const current = modules.find(m => m.id === active) || workspaceModules[0];
+  const denied = insideDashboard && !canOpenModule(user, active);
   const groups = [...new Set(visibleModules.map(m => m.group))];
 
   return (
-    <div className="app-shell">
+    <div className="app-shell abud-redesign">
       {mobileOpen && <button className="mobile-backdrop" onClick={() => setMobileOpen(false)} aria-label="Close menu"/>}
       <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
-        <div className="sidebar-brand"><Brand/><button className="mobile-close" onClick={() => setMobileOpen(false)}><X size={18}/></button></div>
-        <div className="system-chip"><span className="pulse-dot"/> SYSTEM OPERATIONAL <span className="chip-version">V1.0</span></div>
-        <nav>
+        <div className="sidebar-brand"><Brand/><button className="mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={18}/></button></div>
+        <nav aria-label="Main navigation">
           {groups.map(group => <div className="nav-group" key={group}>
             <div className="nav-label">{group}</div>
             {visibleModules.filter(m => m.group === group).map(m => {
               const Icon = m.icon;
-              return <button key={m.id} className={`nav-item ${active === m.id ? 'active' : ''}`} aria-current={active === m.id ? 'page' : undefined} onClick={() => {setActive(m.id);setMobileOpen(false);}}>
-                <Icon size={17}/><span>{m.label}</span>{active === m.id && <ChevronRight size={14} className="nav-arrow"/>}
-              </button>;
+              const isChat = m.id === 'chat';
+              const isDashboard = m.id === 'overview';
+              const expanded = isChat ? active === 'chat' && chatExpanded : insideDashboard && dashboardExpanded;
+              const selected = active === m.id || (isDashboard && insideDashboard);
+              return <React.Fragment key={m.id}>
+                <button className={`nav-item ${selected ? 'active' : ''}`}
+                  aria-current={active === m.id ? 'page' : undefined}
+                  aria-expanded={isChat || isDashboard ? expanded : undefined}
+                  aria-controls={isChat ? 'chat-navigation' : isDashboard ? 'dashboard-navigation' : undefined}
+                  onClick={() => {
+                    if (isChat) {
+                      if (active === 'chat') setChatExpanded(!chatExpanded);
+                      else openChat({});
+                    } else if (isDashboard) {
+                      if (insideDashboard) setDashboardExpanded(!dashboardExpanded);
+                      else navigate('overview');
+                    } else navigate(m.id);
+                  }}>
+                  <Icon size={17}/><span>{m.label}</span>
+                  {(isChat || isDashboard) && (expanded
+                    ? <ChevronDown size={14} className="nav-arrow"/>
+                    : <ChevronRight size={14} className="nav-arrow"/>)}
+                </button>
+                {isChat && active === 'chat' && <div id="chat-navigation" className="sidebar-submenu chat-navigation-host"
+                  hidden={!chatExpanded} ref={setChatNavigation} />}
+                {isDashboard && <div id="dashboard-navigation" className="sidebar-submenu dashboard-submenu"
+                  hidden={!expanded} role="group" aria-label="Dashboard modules">
+                  {dashboardModules.filter(module => canOpenModule(user, module.id)).map(({ id, label, icon: ChildIcon }) =>
+                    <button key={id} className={`nav-item ${active === id ? 'active' : ''}`}
+                      aria-current={active === id ? 'page' : undefined} onClick={() => navigate(id)}>
+                      <ChildIcon size={16}/><span>{label}</span>
+                    </button>)}
+                </div>}
+              </React.Fragment>;
             })}
           </div>)}
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-user"><div className="user-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{user.display_name || 'Operator'}</strong><small>{user.is_creator ? 'ROOT AUTHORITY' : 'AUTHORIZED USER'}</small></div><button onClick={logout} title="Sign out"><LogOut size={16}/></button></div>
-          <div className="sidebar-version">ABUD CONTROL CENTER <span>BUILD 001</span></div>
+          
         </div>
       </aside>
       <main className="main-area">
         <header className="topbar">
-          <div className="topbar-left"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={19}/></button><span className="breadcrumb">ABUD <b>/</b> {current.label.toUpperCase()}</span></div>
+          <div className="topbar-left"><button className="mobile-menu" aria-label="Open menu" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu size={19}/></button><span className="breadcrumb">ABUD <b>/</b> {current.label.toUpperCase()}</span></div>
           <div className="topbar-right"><span className="top-status"><i/> API {health?.status === 'healthy' ? 'CONNECTED' : 'UNKNOWN'}</span><span className="top-clock">UTC+7 / ID</span><div className="top-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div></div>
         </header>
         {error && <div className="global-error"><AlertTriangle size={15}/>{error}</div>}
-        {active === 'overview' ? <Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/> :
-          active === 'chat' ? <ChatAbud user={user}/> :
+        {denied ? <div className="page-content abud-workspace"><div className="abud-page-title"><h1>Access required</h1><p>Your account does not have access to this dashboard page.</p></div><button className="abud-primary" onClick={() => navigate('home')}>Back to Command Center</button></div> :
+          active === 'home' ? <WorkspaceHome health={health} user={user} navigate={navigate} openChat={openChat}/> :
+          active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat key={chatLaunch.key} initialChatId={chatLaunch.id} initialDraft={chatLaunch.draft} onOpenIntegrations={() => navigate('integrations')}
+            navigationTarget={chatNavigation} onOpenNavigation={() => { setChatExpanded(true); setMobileOpen(true); }}
+            onNavigateFromSidebar={() => setMobileOpen(false)}/></React.Suspense> :
+          active === 'integrations' ? <Integrations/> :
+          active === 'work-activity' ? <div className="page-content abud-workspace"><WorkspaceActivity openChat={openChat}/></div> :
+          current.prompt ? <Studio module={current} openChat={openChat}/> :
+          active === 'overview' ? <DashboardHome user={user} navigate={navigate}><Overview health={health} guilds={guilds} refresh={() => loadDashboard()} refreshing={refreshing} user={user}/></DashboardHome> :
           active === 'memory' ? <MemoryMatrix user={user} guilds={guilds}/> :
           active === 'security' ? <SecurityProtocol user={user}/> :
-          active === 'neural' ? <NeuralEngine/> :
+          active === 'neural' ? <NeuralEngine user={user}/> :
           active === 'logs' ? <ActivityLogs/> :
           active === 'network' ? <NetworkCommand/> :
           <ModulePlaceholder module={current}/>}

@@ -308,7 +308,9 @@ def search_memory(scope, query, context):
                 "message": "Identitas pengguna tidak tersedia."
             }
 
-        memories = database.get_memories(user_id, limit=100)
+        memories = database.search_memories(
+            scope, query, user_id=user_id, limit=5
+        )
 
     elif scope == "guild":
         if context_type != "guild" or not guild_id:
@@ -318,25 +320,17 @@ def search_memory(scope, query, context):
                 "message": "Guild Memory hanya tersedia di dalam server."
             }
 
-        memories = database.get_guild_memories(guild_id, limit=100)
+        memories = database.search_memories(
+            scope, query, guild_id=guild_id, limit=5
+        )
 
     else:
         raise ValueError("Scope Memory tidak diperbolehkan.")
 
-    keyword = query.casefold()
-    matches = []
-
-    for item in memories:
-        content = str(item.get("content", ""))
-
-        if keyword in content.casefold():
-            matches.append({
-                "id": item["id"],
-                "content": content[:500]
-            })
-
-        if len(matches) >= 5:
-            break
+    matches = [
+        {"id": item["id"], "content": item["content"][:500]}
+        for item in memories
+    ]
 
     return {
         "scope": scope,
@@ -383,7 +377,7 @@ def validate_memory_scope(scope, context, write=False):
     raise ValueError("Scope Memory tidak valid.")
 
 
-def save_memory_tool(scope, content, context, category="general"):
+def save_memory_tool(scope, content, context, category="general", *, source="tool"):
     validate_memory_scope(scope, context, write=True)
 
     if not isinstance(content, str):
@@ -398,13 +392,14 @@ def save_memory_tool(scope, content, context, category="general"):
     guild_id = context.get("guild_id")
 
     if scope == "personal":
-        memory_id = database.save_memory(user_id, content)
+        memory_id = database.save_memory(user_id, content, source=source)
 
     elif scope == "guild":
         memory_id = database.save_guild_memory(
             guild_id,
             content,
-            created_by_user_id=user_id
+            created_by_user_id=user_id,
+            source=source
         )
 
     else:
@@ -412,7 +407,8 @@ def save_memory_tool(scope, content, context, category="general"):
         memory_id = database.save_global_memory(
             content,
             category=category,
-            created_by_user_id=user_id
+            created_by_user_id=user_id,
+            source=source
         )
 
     return {

@@ -13,7 +13,7 @@ on:
       - 'music/**'
       - '.github/workflows/discord-voice-tests.yml'
   push:
-    branches: [feat/discord-voice-channel, feat/discord-creator-notifications, feat/discord-music, feat/discord-leveling, feat/discord-welcome-reaction-roles]
+    branches: [feat/discord-voice-channel, feat/discord-creator-notifications, feat/discord-music, feat/discord-leveling, feat/discord-welcome-reaction-roles, feat/discord-ticket-support]
   workflow_dispatch:
 
 permissions:
@@ -57,4 +57,4 @@ jobs:
       - name: Verify slash command registration without a Discord login
         run: |
           docker run --rm --network none -e DISCORD_TOKEN=offline -e ABUD_INTERNAL_API_KEY=offline --entrypoint python abud-discord-voice:test -c \
-            'import asyncio; from app.bot import tree, client; assert len(tree.get_command("music").commands) == 17; assert tree.get_command("play"); assert tree.get_command("rank") and tree.get_command("leaderboard") and tree.get_command("leveling"); assert tree.get_command("welcome") and tree.get_command("reactionrole"); asyncio.run(client.close())'
+            'import asyncio; from app.bot import tree, client; assert len(tree.get_command("music").commands) == 17; assert tree.get_command("play"); assert tree.get_command("rank") and tree.get_command("leaderboard") and tree.get_command("leveling"); assert tree.get_command("welcome") and tree.get_command("reactionrole"); assert tree.get_command("ticket"); asyncio.run(client.close())'

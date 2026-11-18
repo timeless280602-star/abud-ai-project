@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 
 from app.discord_onboarding import panel_embed, welcome_embed
-from app.onboarding import OnboardingError, parse_emoji, validate_role
+from app.onboarding import OnboardingError, parse_emoji
 
 
 def install_onboarding_commands(tree, manager):
@@ -152,7 +152,7 @@ def install_onboarding_commands(tree, manager):
     ):
         await guard(interaction)
         async with manager.lock:
-            validate_role(interaction.guild, role, interaction.user)
+            manager.check_role(interaction.guild, role, interaction.user)
             key, display = parse_emoji(emoji, interaction.guild)
             manager.store.bind(interaction.guild_id, panel, key, display, role.id)
         await confirm(

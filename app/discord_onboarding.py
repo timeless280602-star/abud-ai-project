@@ -77,6 +77,7 @@ class Onboarding:
         self.lock = asyncio.Lock()
         self.welcome_lock = asyncio.Lock()
         self.last_error = None
+        self.role_reserved = lambda guild, role: False
 
     async def start(self):
         if self.enabled and self.store is None:
@@ -84,6 +85,23 @@ class Onboarding:
                 self.store = OnboardingStore(self.path)
             except (OSError, sqlite3.Error) as error:
                 self.failure(error)
+
+    def check_role(self, guild, role, actor=None):
+        if role and self.role_reserved(guild.id, role.id):
+            raise OnboardingError(
+                "Role support Ticket tidak boleh menjadi pilihan reaction role publik."
+            )
+        return validate_role(guild, role, actor)
+
+    def has_role_binding(self, guild, role):
+        if self.store is None:
+            return False
+        return bool(
+            self.store.db.execute(
+                "SELECT 1 FROM mappings JOIN panels ON panels.id=mappings.panel WHERE panels.guild=? AND mappings.role=? LIMIT 1",
+                (guild, role),
+            ).fetchone()
+        )
 
     def require(self, guild=None):
         if not self.enabled or self.store is None:
@@ -176,7 +194,7 @@ class Onboarding:
                     "Tambahkan minimal satu pasangan emoji–role sebelum publish."
                 )
             for item in mappings:
-                validate_role(guild, guild.get_role(item["role"]), actor)
+                self.check_role(guild, guild.get_role(item["role"]), actor)
                 parse_emoji(item["display"], guild)
             message = None
             self.store.disable(guild.id, ident)
@@ -230,7 +248,7 @@ class Onboarding:
         owned = self.store.owned(guild.id, member.id, claim["role"])
         last = self.store.references(guild.id, member.id, claim["role"]) <= 1
         if owned and last and role and any(r.id == role.id for r in member.roles):
-            validate_role(guild, role)
+            self.check_role(guild, role)
             await member.remove_roles(
                 role, reason="Abud: reaction role withdrawn", atomic=True
             )
@@ -279,7 +297,7 @@ class Onboarding:
                     reactions=True,
                     single=panel["mode"] == "single",
                 )
-                role = validate_role(guild, guild.get_role(mapping["role"]))
+                role = self.check_role(guild, guild.get_role(mapping["role"]))
                 old_claims = (
                     [c for c in claims if c["emoji"] != key]
                     if panel["mode"] == "single"
@@ -291,7 +309,7 @@ class Onboarding:
                 ) + old_claims:
                     old_role = guild.get_role(claim["role"])
                     if old_role and self.store.owned(guild.id, member.id, old_role.id):
-                        validate_role(guild, old_role)
+                        self.check_role(guild, old_role)
                 owned = not any(r.id == role.id for r in member.roles)
                 if owned:
                     await member.add_roles(

@@ -11,6 +11,7 @@ from discord import app_commands
 from aiohttp import web
 
 from app.discord_voice import DiscordVoice, install_voice_commands
+from app.discord_notifications import Notifications, install_notification_commands
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -43,7 +44,10 @@ intents.voice_states = True
 class AbudClient(discord.Client):
     async def close(self):
         try:
-            await voice_manager.close()
+            try:
+                await notification_manager.close()
+            finally:
+                await voice_manager.close()
         finally:
             try:
                 runner = getattr(self, "_verification_gateway_runner", None)
@@ -57,6 +61,8 @@ client = AbudClient(intents=intents)
 tree = app_commands.CommandTree(client)
 voice_manager = DiscordVoice(client, API_URL, INTERNAL_API_KEY)
 install_voice_commands(tree, voice_manager)
+notification_manager = Notifications(client)
+install_notification_commands(tree, notification_manager)
 
 
 
@@ -817,6 +823,8 @@ async def start_verification_gateway():
         verify_guild_member
     )
 
+    app.router.add_post("/internal/notifications/tiktok", notification_manager.webhook)
+
     runner = web.AppRunner(app)
     await runner.setup()
 
@@ -913,6 +921,7 @@ async def on_ready():
         except Exception as error:
             print(f"Slash Command sync error: {error}")
 
+    await notification_manager.start()
     await sync_all_guilds_to_api()
 
     print("Personal / Guild / Global Memory aktif.")

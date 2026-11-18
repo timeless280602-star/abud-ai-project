@@ -34,6 +34,9 @@ services:
       ABUD_INTERNAL_API_KEY: ${ABUD_INTERNAL_API_KEY}
       ABUD_BOT_VERIFY_HOST: 0.0.0.0
       ABUD_BOT_VERIFY_PORT: 8765
+      ABUD_NOTIFICATIONS_DB: /app/notifications/creators.db
+    volumes:
+      - abud-notifications:/app/notifications
     networks:
       - default
     mem_limit: 256m
@@ -42,3 +45,6 @@ networks:
   nine_router:
     external: true
     name: 9router_default
+
+volumes:
+  abud-notifications:

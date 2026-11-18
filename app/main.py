@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 from app import database
 from app import auth as dashboard_auth
 from app import tools as abud_tools
+from app.memory_review import review_meaning
 from app.auth import router as auth_router
+from app import improvement, research, web_canva, web_chat, web_projects
 from app.skills.engine import get_relevant_skills
 
 
@@ -37,6 +39,15 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(web_chat.router)
+app.include_router(web_canva.router)
+app.include_router(web_projects.router)
+app.include_router(improvement.router)
+
+@app.exception_handler(database.ArchivedMemoryError)
+async def archived_memory_conflict(request, error):
+    return JSONResponse(status_code=409, content={"detail": str(error)})
+
 
 
 # Endpoint internal hanya boleh diakses oleh layanan terpercaya.
@@ -56,17 +67,19 @@ async def require_internal_api_key(request: Request, call_next):
         "/auth/admin/permissions/grant",
         "/auth/admin/permissions/revoke",
         "/dashboard/memory",
+        "/dashboard/memory/similar",
+        "/dashboard/memory/archive",
         "/dashboard/neural-engine",
+        "/dashboard/improvement",
         "/dashboard/neural-engine/test-inference",
         "/dashboard/neural-engine/history",
-        "/dashboard/chat",
-        "/dashboard/chat/history",
         "/dashboard/activity-logs",
         "/dashboard/network-command",
     }
 
     if (
-        request.url.path.startswith("/profile-avatars/")
+        request.url.path.startswith("/web/chat/")
+        or request.url.path.startswith("/profile-avatars/")
         or request.url.path in ("/", "/health", "/favicon.svg")
         or request.url.path.startswith("/assets/")
         or request.url.path in public_auth_paths
@@ -435,6 +448,7 @@ def internal_guild_sync(payload: InternalGuildSyncRequest):
 @app.on_event("startup")
 async def startup():
     database.init_database()
+    web_chat.init_schema()
     print("Abud Multi-Scope Memory Database initialized.")
 
 
@@ -640,7 +654,8 @@ def build_memory_commands(
         memory_id = database.save_guild_memory(
             guild_id,
             content,
-            created_by_user_id=user_id
+            created_by_user_id=user_id,
+            source="direct"
         )
 
         return (
@@ -720,7 +735,8 @@ def build_memory_commands(
             memory_id = database.save_global_memory(
                 content,
                 category=category,
-                created_by_user_id=user_id
+                created_by_user_id=user_id,
+                source="direct"
             )
 
             return (
@@ -829,7 +845,7 @@ def build_memory_commands(
         if not content:
             return "Apa yang ingin kamu minta aku ingat?"
 
-        memory_id = database.save_memory(user_id, content)
+        memory_id = database.save_memory(user_id, content, source="direct")
 
         return (
             f"Siap, aku sudah menyimpan informasi tersebut "
@@ -1085,7 +1101,8 @@ PESAN PENGGUNA:
                     scope,
                     content,
                     context,
-                    category
+                    category,
+                    source="auto"
                 )
 
                 if saved.get("event") == "memory_saved":
@@ -1149,6 +1166,13 @@ def chat(request: ChatRequest):
             request.guild_name,
             request.guild_owner_id
         )
+
+    research_request = research.request_from(request.message)
+    if research_request is not None:
+        answer = research.reply(*research_request)
+        if user_id:
+            save_conversation(request, user_id, request.message, answer)
+        return {"status": "success", "model": model, "reply": answer, "memory_events": []}
 
     messages = [
         {
@@ -1469,7 +1493,8 @@ def chat(request: ChatRequest):
                         saved = abud_tools.save_memory_tool(
                             "personal",
                             explicit_memory_content,
-                            tool_context
+                            tool_context,
+                            source="direct"
                         )
 
                         if saved.get("event") == "memory_saved":
@@ -1771,102 +1796,6 @@ def _dashboard_has_permission(
     )
 
 
-class DashboardChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=6000)
-
-
-@app.post("/dashboard/chat")
-def dashboard_chat(request: Request, payload: DashboardChatRequest):
-    identity, discord_user_id = _memory_dashboard_identity(request)
-    if not _dashboard_has_permission(identity, "ai_config.view"):
-        raise HTTPException(
-            status_code=403,
-            detail="Permission Chat Abud belum diberikan.",
-        )
-
-    user_id = discord_user_id or str(identity["identity_id"])
-    result = chat(ChatRequest(
-        message=payload.message,
-        user_id=user_id,
-        username=identity.get("display_name"),
-        context_type="dm",
-    ))
-    return {
-        "status": result.get("status", "success"),
-        "answer": result.get("reply") or result.get("answer") or "",
-        "model": result.get("model"),
-    }
-
-
-@app.get("/dashboard/chat/history")
-def dashboard_chat_history(request: Request, q: str = "", limit: int = 100):
-    identity, discord_user_id = _memory_dashboard_identity(request)
-    if not _dashboard_has_permission(identity, "ai_config.view"):
-        raise HTTPException(
-            status_code=403,
-            detail="Permission Chat Abud belum diberikan.",
-        )
-
-    limit = max(1, min(limit, 100))
-    user_id = discord_user_id or str(identity["identity_id"])
-    search = (q or "").strip()
-
-    with database.get_connection() as db:
-        params = [user_id, "dm"]
-        sql = """
-            SELECT id, role, content, created_at
-            FROM conversations
-            WHERE user_id = ?
-              AND context_type = 'dm'
-        """
-        if search:
-            sql += " AND LOWER(content) LIKE LOWER(?)"
-            params.append(f"%{search}%")
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit * 8)
-        rows = [dict(row) for row in db.execute(sql, params).fetchall()]
-
-    items = []
-    seen = set()
-    for row in rows:
-        if row["role"] != "user":
-            continue
-        if row["id"] in seen:
-            continue
-        seen.add(row["id"])
-
-        title = str(row["content"]).strip().replace("\n", " ")
-        if len(title) > 64:
-            title = title[:61].rstrip() + "..."
-
-        preview = ""
-        for candidate in rows:
-            if candidate["role"] == "assistant" and candidate["id"] > row["id"]:
-                preview = str(candidate["content"]).strip().replace("\n", " ")
-                break
-        if len(preview) > 90:
-            preview = preview[:87].rstrip() + "..."
-
-        items.append({
-            "id": row["id"],
-            "title": title or "Percakapan",
-            "preview": preview or "Pesan tanpa respons",
-            "created_at": row["created_at"],
-            "messages": [
-                {"role": "user", "content": row["content"]},
-                *([
-                    {"role": "assistant", "content": candidate["content"]}
-                    for candidate in rows
-                    if candidate["role"] == "assistant" and candidate["id"] > row["id"]
-                ][-1:] if rows else [])
-            ],
-        })
-        if len(items) >= limit:
-            break
-
-    return {"items": items}
-
-
 def _memory_has_personal_permission(identity, permission):
     return _dashboard_has_permission(
         identity, permission, "global", "*"
@@ -1933,16 +1862,42 @@ def _memory_audit(identity, discord_user_id, action, scope, guild_id=None, memor
         )
 
 
-def _memory_filter(items, query):
-    query = (query or "").strip().casefold()
-    if not query:
-        return items
+async def _memory_authorize_scope(request, scope, guild_id, write=False):
+    identity, discord_user_id = _memory_dashboard_identity(request)
 
-    return [
-        item for item in items
-        if query in str(item.get("content", "")).casefold()
-        or query in str(item.get("category", "")).casefold()
-    ]
+    if scope == "personal":
+        if not discord_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Personal Memory membutuhkan akun Discord yang terhubung.",
+            )
+        if not _memory_has_personal_permission(identity, "memory.personal.manage" if write else "memory.personal.view"):
+            raise HTTPException(
+                status_code=403,
+                detail="Permission Personal Memory belum diberikan.",
+            )
+
+    elif scope == "guild":
+        if not _dashboard_has_permission(
+            identity, "memory.guild.manage" if write else "memory.guild.view", "guild", str(guild_id or "")
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Permission Guild Memory untuk server ini belum diberikan.",
+            )
+        await _memory_verify_guild(guild_id, discord_user_id)
+
+    elif scope == "global":
+        if discord_user_id != dashboard_auth.CREATOR_DISCORD_ID:
+            raise HTTPException(
+                status_code=403,
+                detail="Global Memory hanya dapat diakses Bos Bara.",
+            )
+
+    else:
+        raise HTTPException(status_code=400, detail="Scope Memory tidak valid.")
+
+    return identity, discord_user_id
 
 
 @app.get("/dashboard/memory")
@@ -1951,52 +1906,66 @@ async def dashboard_memory_list(
     scope: str = "personal",
     guild_id: str | None = None,
     q: str = "",
+    archived: bool = False,
 ):
-    identity, discord_user_id = _memory_dashboard_identity(request)
-
+    _, discord_user_id = await _memory_authorize_scope(request, scope, guild_id)
     if len(q) > 200:
         raise HTTPException(status_code=400, detail="Pencarian terlalu panjang.")
+    items = database.search_memories(scope, q, user_id=discord_user_id, guild_id=guild_id, limit=100, archived=archived)
+    return {"scope": scope, "items": items, "count": len(items)}
 
-    if scope == "personal":
-        if not discord_user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Personal Memory membutuhkan akun Discord yang terhubung.",
-            )
-        if not _memory_has_personal_permission(identity, "memory.personal.view"):
-            raise HTTPException(
-                status_code=403,
-                detail="Permission Personal Memory belum diberikan.",
-            )
-        items = database.get_memories(discord_user_id, limit=100)
 
-    elif scope == "guild":
-        if not _dashboard_has_permission(
-            identity, "memory.guild.view", "guild", str(guild_id or "")
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Permission Guild Memory untuk server ini belum diberikan.",
-            )
-        await _memory_verify_guild(guild_id, discord_user_id)
-        items = database.get_guild_memories(str(guild_id), limit=100)
+class DashboardMemoryReview(BaseModel):
+    scope: str = Field(min_length=1, max_length=16)
+    guild_id: str | None = Field(default=None, max_length=32)
+    content: str = Field(min_length=1, max_length=1000)
+    category: str = Field(default="general", max_length=64)
+    exclude_memory_id: int | None = Field(default=None, ge=1)
+    use_ai: bool = False
 
-    elif scope == "global":
-        if discord_user_id != dashboard_auth.CREATOR_DISCORD_ID:
-            raise HTTPException(
-                status_code=403,
-                detail="Global Memory hanya dapat diakses Bos Bara.",
-            )
-        items = database.get_global_memories(limit=100)
 
-    else:
-        raise HTTPException(status_code=400, detail="Scope Memory tidak valid.")
+@app.post("/dashboard/memory/similar")
+async def dashboard_memory_similar(payload: DashboardMemoryReview, request: Request):
+    dashboard_auth.require_same_origin(request)
+    _, discord_user_id = await _memory_authorize_scope(request, payload.scope, payload.guild_id)
+    if not payload.content.strip():
+        raise HTTPException(status_code=400, detail="Isi Memory wajib diisi.")
+    candidates = database.find_similar_memories(
+        payload.scope, payload.content, user_id=discord_user_id, guild_id=payload.guild_id,
+        category=payload.category, exclude_memory_id=payload.exclude_memory_id, limit=5,
+        include_unmatched=payload.use_ai,
+    )
+    status = "not_requested"
+    if payload.use_ai:
+        candidates, status = await review_meaning(payload.content, candidates)
+        if status != 'complete':
+            candidates = [row for row in candidates if row['similarity'] > 0]
+    return {"scope": payload.scope, "items": candidates, "ai_status": status}
 
-    return {
-        "scope": scope,
-        "items": _memory_filter(items, q),
-        "count": len(_memory_filter(items, q)),
-    }
+
+class DashboardMemoryArchive(BaseModel):
+    scope: str = Field(min_length=1, max_length=16)
+    guild_id: str | None = Field(default=None, max_length=32)
+    memory_id: int = Field(ge=1, strict=True)
+    archived: bool = Field(strict=True)
+
+
+@app.post("/dashboard/memory/archive")
+async def dashboard_memory_archive(payload: DashboardMemoryArchive, request: Request):
+    dashboard_auth.require_same_origin(request)
+    identity, discord_user_id = await _memory_authorize_scope(
+        request, payload.scope, payload.guild_id, write=True
+    )
+    changed = database.set_memory_archived(
+        payload.scope, payload.memory_id, payload.archived,
+        user_id=discord_user_id, guild_id=payload.guild_id,
+    )
+    if not changed:
+        raise HTTPException(status_code=404, detail="Memory tidak ditemukan atau statusnya sudah berubah.")
+    _memory_audit(identity, discord_user_id,
+                  "memory.archive" if payload.archived else "memory.restore",
+                  payload.scope, payload.guild_id, payload.memory_id)
+    return {"success": True, "archived": payload.archived}
 
 
 @app.post("/dashboard/memory")
@@ -2019,7 +1988,7 @@ async def dashboard_memory_create(
             )
         if not _memory_has_personal_permission(identity, "memory.personal.manage"):
             raise HTTPException(status_code=403, detail="Tidak memiliki akses mengelola Personal Memory.")
-        memory_id = database.save_memory(discord_user_id, content)
+        memory_id = database.save_memory(discord_user_id, content, source="dashboard")
 
     elif payload.scope == "guild":
         if not _dashboard_has_permission(
@@ -2031,7 +2000,8 @@ async def dashboard_memory_create(
             )
         await _memory_verify_guild(payload.guild_id, discord_user_id)
         memory_id = database.save_guild_memory(
-            str(payload.guild_id), content, created_by_user_id=discord_user_id
+            str(payload.guild_id), content, created_by_user_id=discord_user_id,
+            source="dashboard"
         )
 
     elif payload.scope == "global":
@@ -2041,6 +2011,7 @@ async def dashboard_memory_create(
             content,
             category=payload.category.strip() or "general",
             created_by_user_id=discord_user_id,
+            source="dashboard",
         )
 
     else:

@@ -1,0 +1,43 @@
+# Optional overlay for compose.yaml. Voice services have no published ports.
+services:
+  abud-api:
+    networks:
+      - voice
+    environment:
+      ABUD_VOICE_LLM_PROVIDER: ${ABUD_VOICE_LLM_PROVIDER:-ollama}
+      ABUD_VOICE_WORKER_URL: http://abud-voice:8001
+      ABUD_VOICE_OLLAMA_URL: http://ollama:11434
+      ABUD_VOICE_OLLAMA_MODEL: ${ABUD_VOICE_OLLAMA_MODEL:-qwen2.5:1.5b}
+
+  abud-voice:
+    networks:
+      - voice
+    build: ./voice_worker
+    restart: unless-stopped
+    environment:
+      ABUD_WHISPER_LANGUAGE: ${ABUD_WHISPER_LANGUAGE:-}
+      ABUD_WHISPER_MODEL: ${ABUD_WHISPER_MODEL:-base}
+      ABUD_PIPER_MODEL: /voices/${ABUD_PIPER_MODEL:-id_ID-news_tts-medium.onnx}
+    volumes:
+      - whisper-cache:/cache
+      - ${ABUD_PIPER_VOICES_DIR:-./voice-models}:/voices:ro
+
+  ollama:
+    networks:
+      - voice
+    image: abud-ollama-cpu:0.40.16
+    build: ./ollama_cpu
+    restart: unless-stopped
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_QUEUE: "4"
+      OLLAMA_NO_CLOUD: "1"
+    volumes:
+      - ollama-models:/root/.ollama
+
+networks:
+  voice:
+
+volumes:
+  whisper-cache:
+  ollama-models:

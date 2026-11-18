@@ -1,9 +1,13 @@
 
 import os
+import re
+import unicodedata
 import sqlite3
 from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timezone
+
+from app.memory_review import wording_match
 
 DATABASE_PATH = Path(
     os.getenv("ABUD_DATABASE_PATH", "/app/data/abud_memory.db")
@@ -196,6 +200,23 @@ def init_database():
         """)
 
 
+        # Additive migration: legacy provenance and revision history are unknown.
+        for table in ("memories", "guild_memories", "global_memories"):
+            columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            if "source" not in columns:
+                db.execute(f"""
+                    ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL
+                    DEFAULT 'unknown' CHECK(source IN ('unknown', 'direct', 'tool', 'auto', 'dashboard'))
+                """)
+            if "revision" not in columns:
+                db.execute(f"""
+                    ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL
+                    DEFAULT 0 CHECK(revision >= 0)
+                """)
+
+            if "archived_at" not in columns:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN archived_at TEXT")
+
         # ==========================================
         # DASHBOARD AUTHENTICATION
         # ==========================================
@@ -208,6 +229,13 @@ def init_database():
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 disabled_at TEXT
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS canva_connections (
+                identity_id TEXT PRIMARY KEY REFERENCES auth_identities(identity_id) ON DELETE CASCADE,
+                token BLOB NOT NULL
             )
         """)
 
@@ -668,10 +696,141 @@ def get_recent_messages(
 
 
 # ==============================================
+# RANKED MEMORY SEARCH
+# ==============================================
+
+class ArchivedMemoryError(ValueError):
+    """A write would bypass an explicit archive/restore decision."""
+
+
+def _memory_search_scope(scope, user_id, guild_id, archived=False):
+    if type(archived) is not bool:
+        raise ValueError("Status arsip tidak valid.")
+    if scope == "personal":
+        if not user_id:
+            return None
+        table, where, params = "memories", "user_id = ?", (str(user_id),)
+        columns = "id, content, created_at, updated_at, source, revision"
+    elif scope == "guild":
+        if not guild_id:
+            return None
+        table, where, params = "guild_memories", "guild_id = ?", (str(guild_id),)
+        columns = "id, guild_id, content, created_by_user_id, created_at, updated_at, source, revision"
+    elif scope == "global":
+        table, where, params = "global_memories", "1 = 1", ()
+        columns = "id, category, content, created_by_user_id, created_at, updated_at, source, revision"
+    else:
+        raise ValueError("Scope Memory tidak valid.")
+
+    where += " AND archived_at IS NOT NULL" if archived else " AND archived_at IS NULL"
+    return table, where, params, columns + ", archived_at"
+
+
+def search_memories(scope, query, *, user_id=None, guild_id=None, limit=5, archived=False):
+    """Search one scope; callers must authorize the supplied identity first.
+
+    Rank contiguous token phrases above word overlap, then newest ID.
+    Empty queries list newest records (dashboard); punctuation alone matches none.
+    """
+    if not isinstance(query, str) or len(query.strip()) > 200:
+        raise ValueError("Query pencarian harus berupa teks maksimal 200 karakter.")
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError("Limit pencarian harus berupa bilangan bulat.")
+    limit = max(1, min(limit, 100))
+
+    selection = _memory_search_scope(scope, user_id, guild_id, archived=archived)
+    if selection is None:
+        return []
+    table, where, params, columns = selection
+
+    def tokens(text):
+        return re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
+
+    query = query.strip()
+    words = tokens(query)
+    terms = set(words)
+    phrase = " " + " ".join(words) + " "
+    if query and not words:
+        return []
+
+    def score(text):
+        content_words = tokens(text)
+        hits = len(terms.intersection(content_words))
+        if not hits:
+            return 0
+        # Query length bounds overlap below 1000, so phrase matches always lead.
+        return 1000 * (phrase in " " + " ".join(content_words) + " ") + hits
+
+    with get_connection() as db:
+        # ponytail: scan the authorized scope; add an FTS index when measured latency warrants it.
+        db.create_function("memory_score", 1, score, deterministic=True)
+        ranking = "memory_score(content)"
+        if scope == "global":
+            ranking = "MAX(memory_score(content), memory_score(category))"
+        if query:
+            rows = db.execute(f"""
+                SELECT {columns} FROM {table}
+                WHERE {where} AND {ranking} > 0
+                ORDER BY {ranking} DESC, id DESC LIMIT ?
+            """, (*params, limit)).fetchall()
+        else:
+            rows = db.execute(f"""
+                SELECT {columns} FROM {table}
+                WHERE {where} ORDER BY id DESC LIMIT ?
+            """, (*params, limit)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def find_similar_memories(scope, content, *, user_id=None, guild_id=None,
+                          category="general", exclude_memory_id=None, limit=5, include_unmatched=False):
+    """Rank wording candidates across one authorized scope before limiting results."""
+    if not isinstance(content, str) or not 1 <= len(content.strip()) <= 1000:
+        raise ValueError("Isi Memory harus berisi 1 sampai 1000 karakter.")
+    if type(limit) is not int or type(include_unmatched) is not bool:
+        raise ValueError("Limit atau mode pencarian tidak valid.")
+    if exclude_memory_id is not None and (type(exclude_memory_id) is not int or exclude_memory_id < 1):
+        raise ValueError("Memory ID tidak valid.")
+    selection = _memory_search_scope(scope, user_id, guild_id)
+    if selection is None:
+        return []
+    table, where, params, columns = selection
+    if scope == "global":
+        where += " AND category = ?"
+        params += (str(category).strip() or "general",)
+    if exclude_memory_id is not None:
+        where += " AND id != ?"
+        params += (exclude_memory_id,)
+
+    def similarity(existing):
+        result = wording_match(content, existing)
+        return round(result['similarity'] * 1000) if result else 0
+
+    if not include_unmatched:
+        where += " AND memory_similarity(content) > 0"
+    with get_connection() as db:
+        # ponytail: scan one scope; consider an index when measured latency warrants it.
+        db.create_function("memory_similarity", 1, similarity, deterministic=True)
+        rows = db.execute(f"""
+            SELECT {columns} FROM {table}
+            WHERE {where}
+            ORDER BY memory_similarity(content) DESC, id DESC LIMIT ?
+        """, (*params, max(1, min(limit, 10)))).fetchall()
+    return [{**dict(row), **(wording_match(content, row['content']) or {
+        'similarity': 0, 'relation': 'unmatched',
+        'reason': 'Tidak ada kemiripan kata; kandidat terbaru untuk tinjauan makna.',
+    })} for row in rows]
+
+
+# ==============================================
 # PERSONAL MEMORY
 # ==============================================
 
-def save_memory(user_id, content):
+def _validate_memory_source(source):
+    if source not in ("unknown", "direct", "tool", "auto", "dashboard"):
+        raise ValueError("Sumber Memory tidak valid.")
+
+
+def save_memory(user_id, content, *, source="unknown"):
     if not user_id:
         raise ValueError("User ID wajib tersedia.")
 
@@ -679,10 +838,12 @@ def save_memory(user_id, content):
     if not content:
         raise ValueError("Isi memori tidak boleh kosong.")
 
+    _validate_memory_source(source)
     now = utc_now()
     user_id = str(user_id)
 
     with get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("""
             INSERT OR IGNORE INTO users (
                 user_id, username, created_at, updated_at
@@ -691,25 +852,27 @@ def save_memory(user_id, content):
         """, (user_id, now, now))
 
         existing = db.execute("""
-            SELECT id FROM memories
+            SELECT id, archived_at FROM memories
             WHERE user_id = ? AND content = ?
-            LIMIT 1
+            ORDER BY archived_at IS NOT NULL, id DESC LIMIT 1
         """, (user_id, content)).fetchone()
 
         if existing:
+            if existing["archived_at"] is not None:
+                raise ArchivedMemoryError("Memory ini diarsipkan. Pulihkan melalui dashboard sebelum menyimpan ulang.")
             db.execute("""
                 UPDATE memories
                 SET updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (now, existing["id"]))
             return existing["id"]
 
         cursor = db.execute("""
             INSERT INTO memories (
-                user_id, content, created_at, updated_at
+                user_id, content, created_at, updated_at, source, revision
             )
-            VALUES (?, ?, ?, ?)
-        """, (user_id, content, now, now))
+            VALUES (?, ?, ?, ?, ?, 1)
+        """, (user_id, content, now, now, source))
 
         return cursor.lastrowid
 
@@ -720,9 +883,9 @@ def get_memories(user_id, limit=50):
 
     with get_connection() as db:
         rows = db.execute("""
-            SELECT id, content, created_at, updated_at
+            SELECT id, content, created_at, updated_at, source, revision, archived_at
             FROM memories
-            WHERE user_id = ?
+            WHERE user_id = ? AND archived_at IS NULL
             ORDER BY id DESC
             LIMIT ?
         """, (str(user_id), limit)).fetchall()
@@ -737,7 +900,7 @@ def delete_memory(user_id, memory_id):
     with get_connection() as db:
         cursor = db.execute("""
             DELETE FROM memories
-            WHERE id = ? AND user_id = ?
+            WHERE id = ? AND user_id = ? AND archived_at IS NULL
         """, (int(memory_id), str(user_id)))
 
     return cursor.rowcount > 0
@@ -756,8 +919,8 @@ def update_memory(user_id, memory_id, content):
     with get_connection() as db:
         cursor = db.execute("""
             UPDATE memories
-            SET content = ?, updated_at = ?
-            WHERE id = ? AND user_id = ?
+            SET content = ?, updated_at = ?, revision = revision + 1
+            WHERE id = ? AND user_id = ? AND archived_at IS NULL
         """, (content, now, int(memory_id), str(user_id)))
 
     return cursor.rowcount > 0
@@ -767,7 +930,7 @@ def update_memory(user_id, memory_id, content):
 # GUILD MEMORY
 # ==============================================
 
-def save_guild_memory(guild_id, content, created_by_user_id=None):
+def save_guild_memory(guild_id, content, created_by_user_id=None, *, source="unknown"):
     if not guild_id:
         raise ValueError("Guild ID wajib tersedia.")
 
@@ -776,9 +939,11 @@ def save_guild_memory(guild_id, content, created_by_user_id=None):
         raise ValueError("Isi guild memory tidak boleh kosong.")
 
     guild_id = str(guild_id)
+    _validate_memory_source(source)
     now = utc_now()
 
     with get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("""
             INSERT OR IGNORE INTO guilds (
                 guild_id, guild_name, owner_id,
@@ -788,31 +953,34 @@ def save_guild_memory(guild_id, content, created_by_user_id=None):
         """, (guild_id, now, now))
 
         existing = db.execute("""
-            SELECT id FROM guild_memories
+            SELECT id, archived_at FROM guild_memories
             WHERE guild_id = ? AND content = ?
-            LIMIT 1
+            ORDER BY archived_at IS NOT NULL, id DESC LIMIT 1
         """, (guild_id, content)).fetchone()
 
         if existing:
+            if existing["archived_at"] is not None:
+                raise ArchivedMemoryError("Memory ini diarsipkan. Pulihkan melalui dashboard sebelum menyimpan ulang.")
             db.execute("""
                 UPDATE guild_memories
                 SET updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (now, existing["id"]))
             return existing["id"]
 
         cursor = db.execute("""
             INSERT INTO guild_memories (
                 guild_id, content, created_by_user_id,
-                created_at, updated_at
+                created_at, updated_at, source, revision
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (
             guild_id,
             content,
             str(created_by_user_id) if created_by_user_id else None,
             now,
-            now
+            now,
+            source
         ))
 
         return cursor.lastrowid
@@ -825,9 +993,9 @@ def get_guild_memories(guild_id, limit=50):
     with get_connection() as db:
         rows = db.execute("""
             SELECT id, guild_id, content, created_by_user_id,
-                   created_at, updated_at
+                   created_at, updated_at, source, revision, archived_at
             FROM guild_memories
-            WHERE guild_id = ?
+            WHERE guild_id = ? AND archived_at IS NULL
             ORDER BY id DESC
             LIMIT ?
         """, (str(guild_id), limit)).fetchall()
@@ -849,8 +1017,8 @@ def update_guild_memory(guild_id, memory_id, content):
     with get_connection() as db:
         cursor = db.execute("""
             UPDATE guild_memories
-            SET content = ?, updated_at = ?
-            WHERE id = ? AND guild_id = ?
+            SET content = ?, updated_at = ?, revision = revision + 1
+            WHERE id = ? AND guild_id = ? AND archived_at IS NULL
         """, (
             content,
             now,
@@ -868,7 +1036,7 @@ def delete_guild_memory(guild_id, memory_id):
     with get_connection() as db:
         cursor = db.execute("""
             DELETE FROM guild_memories
-            WHERE id = ? AND guild_id = ?
+            WHERE id = ? AND guild_id = ? AND archived_at IS NULL
         """, (int(memory_id), str(guild_id)))
 
     return cursor.rowcount > 0
@@ -881,7 +1049,8 @@ def delete_guild_memory(guild_id, memory_id):
 def save_global_memory(
     content,
     category="general",
-    created_by_user_id=None
+    created_by_user_id=None,
+    *, source="unknown"
 ):
     content = str(content).strip()
     category = str(category).strip() or "general"
@@ -889,35 +1058,40 @@ def save_global_memory(
     if not content:
         raise ValueError("Isi global memory tidak boleh kosong.")
 
+    _validate_memory_source(source)
     now = utc_now()
 
     with get_connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         existing = db.execute("""
-            SELECT id FROM global_memories
+            SELECT id, archived_at FROM global_memories
             WHERE category = ? AND content = ?
-            LIMIT 1
+            ORDER BY archived_at IS NOT NULL, id DESC LIMIT 1
         """, (category, content)).fetchone()
 
         if existing:
+            if existing["archived_at"] is not None:
+                raise ArchivedMemoryError("Memory ini diarsipkan. Pulihkan melalui dashboard sebelum menyimpan ulang.")
             db.execute("""
                 UPDATE global_memories
                 SET updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND archived_at IS NULL
             """, (now, existing["id"]))
             return existing["id"]
 
         cursor = db.execute("""
             INSERT INTO global_memories (
                 category, content, created_by_user_id,
-                created_at, updated_at
+                created_at, updated_at, source, revision
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
         """, (
             category,
             content,
             str(created_by_user_id) if created_by_user_id else None,
             now,
-            now
+            now,
+            source
         ))
 
         return cursor.lastrowid
@@ -928,17 +1102,18 @@ def get_global_memories(category=None, limit=100):
         if category:
             rows = db.execute("""
                 SELECT id, category, content, created_by_user_id,
-                       created_at, updated_at
+                       created_at, updated_at, source, revision, archived_at
                 FROM global_memories
-                WHERE category = ?
+                WHERE category = ? AND archived_at IS NULL
                 ORDER BY id DESC
                 LIMIT ?
             """, (category, limit)).fetchall()
         else:
             rows = db.execute("""
                 SELECT id, category, content, created_by_user_id,
-                       created_at, updated_at
+                       created_at, updated_at, source, revision, archived_at
                 FROM global_memories
+                WHERE archived_at IS NULL
                 ORDER BY id DESC
                 LIMIT ?
             """, (limit,)).fetchall()
@@ -949,7 +1124,7 @@ def get_global_memories(category=None, limit=100):
 def delete_global_memory(memory_id):
     with get_connection() as db:
         cursor = db.execute("""
-            DELETE FROM global_memories WHERE id = ?
+            DELETE FROM global_memories WHERE id = ? AND archived_at IS NULL
         """, (int(memory_id),))
 
     return cursor.rowcount > 0
@@ -968,17 +1143,45 @@ def update_global_memory(memory_id, content, category=None):
         if category is None:
             cursor = db.execute("""
                 UPDATE global_memories
-                SET content = ?, updated_at = ?
-                WHERE id = ?
+                SET content = ?, updated_at = ?, revision = revision + 1
+                WHERE id = ? AND archived_at IS NULL
             """, (content, now, int(memory_id)))
         else:
             cursor = db.execute("""
                 UPDATE global_memories
-                SET content = ?, category = ?, updated_at = ?
-                WHERE id = ?
+                SET content = ?, category = ?, updated_at = ?, revision = revision + 1
+                WHERE id = ? AND archived_at IS NULL
             """, (content, str(category).strip() or "general",
                   now, int(memory_id)))
 
+    return cursor.rowcount > 0
+
+
+def set_memory_archived(scope, memory_id, archived, *, user_id=None, guild_id=None):
+    """Transition exactly one authorized record without changing its content metadata."""
+    if type(memory_id) is not int or memory_id < 1 or type(archived) is not bool:
+        raise ValueError("Memory ID atau status arsip tidak valid.")
+    selection = _memory_search_scope(scope, user_id, guild_id, archived=not archived)
+    if selection is None:
+        return False
+    table, where, params, columns = selection
+    with get_connection() as db:
+        # Serialize conflict check and restore with other SQLite writers.
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(f"SELECT {columns} FROM {table} WHERE {where} AND id = ?", (*params, memory_id)).fetchone()
+        if row is None:
+            return False
+        if not archived:
+            _, active_where, active_params, _ = _memory_search_scope(scope, user_id, guild_id)
+            active_where += " AND content = ?"
+            active_params += (row['content'],)
+            if scope == 'global':
+                active_where += " AND category = ?"
+                active_params += (row['category'],)
+            if db.execute(f"SELECT id FROM {table} WHERE {active_where} LIMIT 1", active_params).fetchone():
+                raise ArchivedMemoryError("Sudah ada Memory aktif dengan isi yang sama. Arsip tetap disimpan.")
+        cursor = db.execute(f"UPDATE {table} SET archived_at = ? WHERE {where} AND id = ?",
+                            (utc_now() if archived else None, *params, memory_id))
     return cursor.rowcount > 0
 
 

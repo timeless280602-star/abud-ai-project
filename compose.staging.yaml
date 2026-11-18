@@ -1,0 +1,26 @@
+# Standalone staging stack. Do not combine with production compose.yaml.
+name: abud-web-chat-staging
+services:
+  api:
+    build: .
+    image: abud-web-chat-staging:local
+    restart: unless-stopped
+    env_file:
+      - ${ABUD_STAGING_ENV_FILE:-.env.staging}
+    environment:
+      ABUD_DATABASE_PATH: /app/data/abud_staging.db
+      # No Discord gateway or production bot is attached to this stack.
+      ABUD_BOT_VERIFY_URL: http://127.0.0.1:9/disabled
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - staging-data:/app/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+volumes:
+  staging-data:

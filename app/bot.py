@@ -20,6 +20,7 @@ from app.discord_onboarding import Onboarding
 from app.onboarding_commands import install_onboarding_commands
 from app.discord_tickets import Tickets
 from app.ticket_commands import install_ticket_commands
+from app.discord_dashboard import install_dashboard_gateway
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -872,6 +873,8 @@ async def start_verification_gateway():
     )
 
     app.router.add_post("/internal/notifications/tiktok", notification_manager.webhook)
+    install_dashboard_gateway(app, client, INTERNAL_API_KEY, leveling_manager, onboarding_manager,
+                              ticket_manager, notification_manager, voice_manager, music_manager)
 
     runner = web.AppRunner(app)
     await runner.setup()

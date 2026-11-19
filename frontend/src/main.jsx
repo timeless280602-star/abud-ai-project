@@ -9,12 +9,14 @@ import {
   Image as ImageIcon, Film, Users, Wifi, X, Zap, Search, Plus, Pencil, Trash2, Save, Globe2, Archive, ArchiveRestore
 } from 'lucide-react';
 import './style.css';
+const DiscordDashboard = React.lazy(() => import('./DiscordDashboard'));
 const WebChat = React.lazy(() => import('./WebChat'));
 
 const workspaceModules = [
   { id: 'home', label: 'Command Center', group: 'Workspace', icon: LayoutDashboard },
   { id: 'chat', label: 'AI Chat', group: 'Workspace', icon: Bot },
   { id: 'overview', label: 'Dashboard', group: 'Workspace', icon: Gauge },
+  { id: 'discord-bot', label: 'Discord Bot', group: 'Komunitas', icon: Bot },
   { id: 'image-studio', label: 'Image Studio', group: 'Create', icon: ImageIcon, copy: 'Generate an image from a description.', prompt: 'Buat gambar ' },
   { id: 'video-studio', label: 'Video Studio', group: 'Create', icon: Film, copy: 'Plan scenes and narration before opening Higgsfield.', prompt: 'Buat paket konten: ', link: 'https://higgsfield.ai/' },
   { id: 'writing-studio', label: 'Writing Studio', group: 'Create', icon: Pencil, copy: 'Draft or refine writing with Abud.', prompt: 'Bantu tulis ' },
@@ -212,6 +214,7 @@ function Login({ error }) {
             <button className="auth-switch" onClick={() => setMode('oauth')}>KEMBALI KE LOGIN DISCORD / GOOGLE</button>
           </>}
           <label className="remember-row"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)}/> <span>Ingat saya di perangkat ini</span></label>
+          <a className="login-button discord" href="/discord/invite" target="_blank" rel="noopener noreferrer"><Bot size={20}/><span>Invite ABUD to your server</span><ArrowUpRight size={16}/></a>
           <div className="login-foot"><ShieldCheck size={13}/> Identity verification enabled <span>•</span> Session protected</div>
         </div>
       </div>
@@ -2377,6 +2380,7 @@ function WorkspaceHome({ health, user, openChat, navigate }) {
         <div className="abud-actions">
           <button className="abud-primary" onClick={() => openChat({})}>Start a chat</button>
           <a href="#workspace-tools" className="abud-secondary">Explore tools</a>
+          <a href="/discord/invite" target="_blank" rel="noopener noreferrer" className="abud-secondary"><Bot size={16}/> Invite ABUD to your server</a>
         </div>
       </div>
       <div className="abud-hero-reactor" aria-hidden="true">
@@ -2424,7 +2428,7 @@ function DashboardHome({ user, navigate, children }) {
 
 function workspaceFromUrl() {
   if (new URLSearchParams(window.location.search).has('canva')) return 'integrations';
-  return window.location.hash === '#creator-dashboard' ? 'overview' : 'home';
+  return window.location.hash === '#discord-bot' ? 'discord-bot' : window.location.hash === '#creator-dashboard' ? 'overview' : 'home';
 }
 
 function App() {
@@ -2474,6 +2478,7 @@ function App() {
   useEffect(() => {
     function followHash() {
       if (window.location.hash === '#creator-dashboard') setActive('overview');
+      if (window.location.hash === '#discord-bot') setActive('discord-bot');
     }
     window.addEventListener('hashchange', followHash);
     return () => window.removeEventListener('hashchange', followHash);
@@ -2487,7 +2492,8 @@ function App() {
     setMobileOpen(false);
     const url = new URL(window.location.href);
     if (moduleId === 'overview') url.hash = 'creator-dashboard';
-    else if (url.hash === '#creator-dashboard') url.hash = '';
+    else if (moduleId === 'discord-bot') url.hash = 'discord-bot';
+    else if (['#creator-dashboard','#discord-bot'].includes(url.hash)) url.hash = '';
     window.history.replaceState(window.history.state, '', url);
     window.scrollTo(0, 0);
   }
@@ -2577,6 +2583,7 @@ function App() {
           active === 'chat' ? <React.Suspense fallback={<p>Loading AI Chat…</p>}><WebChat key={chatLaunch.key} initialChatId={chatLaunch.id} initialDraft={chatLaunch.draft} onOpenIntegrations={() => navigate('integrations')}
             navigationTarget={chatNavigation} onOpenNavigation={() => { setChatExpanded(true); setMobileOpen(true); }}
             onNavigateFromSidebar={() => setMobileOpen(false)}/></React.Suspense> :
+          active === 'discord-bot' ? <React.Suspense fallback={<p>Memuat Discord Bot…</p>}><DiscordDashboard/></React.Suspense> :
           active === 'integrations' ? <Integrations/> :
           active === 'work-activity' ? <div className="page-content abud-workspace"><WorkspaceActivity openChat={openChat}/></div> :
           current.prompt ? <Studio module={current} openChat={openChat}/> :

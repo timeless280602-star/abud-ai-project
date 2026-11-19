@@ -260,8 +260,8 @@ class Music:
             q = normalized(query)
             exact = [t for t in result if q in (normalized(t.title),
                      normalized(t.title + ' ' + t.author), normalized(t.author + ' ' + t.title))]
-            if not exact:
-                raise MusicError("Tidak ada judul/artis yang cocok persis. Gunakan /music search untuk memilih hasil.")
+            if len(exact) != 1:
+                raise MusicError("Hasil tidak unik atau belum cocok persis. Gunakan /music search untuk memilih lagu.")
             result = exact
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
         allow_fallback = (not self.audius_probe.enabled and self.playback_fallback and source is None

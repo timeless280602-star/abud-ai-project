@@ -406,13 +406,15 @@ class Music:
             interaction, control=True, action=action, expected=expected
         )
         if action == "leave":
-            await self.leave(interaction.guild_id)
+            await self.leave(interaction.guild_id, expected=session)
         else:
             await session.control(action, value)
             await self.panel(session)
 
-    async def leave(self, guild_id):
+    async def leave(self, guild_id, *, expected=None):
         async with self.voice.lock:
+            if expected is not None and self.sessions.get(guild_id) is not expected:
+                raise MusicError("Sesi musik sudah berubah. Coba lagi.")
             session = self.sessions.pop(guild_id, None)
             if not session:
                 return

@@ -189,11 +189,13 @@ class NativePlayer:
         for _ in range(80):
             if not self.connected:
                 raise MusicError("Voice channel terputus.")
-            version = getattr(state, "dave_protocol_version", 0)
+            version = getattr(state, "dave_protocol_version", None)
             ready = getattr(state, "can_encrypt", False)
-            if not isinstance(version, int) or version == 0 or ready is True:
+            if type(version) is not int or version < 0:
+                raise MusicError("Status enkripsi voice tidak dapat diperiksa.")
+            if version == 0 or ready is True:
                 log.info("Native voice ready: dave_version=%s encrypted_ready=%s",
-                         version if isinstance(version, int) else "unknown", ready is True)
+                         version, ready is True)
                 return
             await asyncio.sleep(0.1)
         log.warning("Native voice not ready: DAVE negotiation timed out")

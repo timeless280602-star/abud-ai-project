@@ -6,11 +6,9 @@ from discord import app_commands
 
 from app.discord_music import now_embed, queue_embed
 from app.music_session import MusicError, duration
+from app.music_providers import NAMES, PREFIXES
 
-SOURCES = [
-    app_commands.Choice(name="SoundCloud", value="soundcloud"),
-    app_commands.Choice(name="YouTube", value="youtube"),
-]
+SOURCES = [app_commands.Choice(name=NAMES[p], value=p) for p in PREFIXES]
 MODES = [
     app_commands.Choice(name=name, value=mode)
     for name, mode in [
@@ -123,7 +121,7 @@ def install_music_commands(tree, manager):
 
     @tree.command(
         name="play",
-        description="Putar judul lagu atau link YouTube/SoundCloud di voice kamu",
+        description="Putar judul atau link provider musik aktif di voice kamu",
     )
     @app_commands.guild_only()
     @app_commands.choices(source=SOURCES)

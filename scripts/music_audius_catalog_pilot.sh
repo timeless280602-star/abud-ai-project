@@ -7,8 +7,8 @@ cd /opt/abud
 
 BASE=(docker compose -p abud -f compose.yaml -f compose.voice.yaml -f compose.music.yaml -f compose.music.youtube.yaml)
 OLD=sha256:26585b1ea6b7ec70d5b0279be816c164e209210d1825f7a616fecadfd1d0f1e7
-IMAGE=abud-staging-bot:music-v2-35e5323
-EXPECTED=sha256:355ef9327a5e15dec8456f4e10dd11ecaa37c2f5c7c59877c85d74f85eae8f20
+IMAGE=abud-staging-bot:music-v2-a3de1ca
+EXPECTED=sha256:aabf441ed3b0183f19a5b27e4a7db0ed394fef33ea883c811bf397b13c097255
 ROOT=/var/lib/abud-audius-pilot
 UNIT=abud-audius-pilot-rollback
 [[ $EUID == 0 ]]

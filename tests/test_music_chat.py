@@ -166,6 +166,17 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(tree.get_command("play").on_error)
         await client.close()
 
+    async def test_private_pilot_rejects_other_guild_before_search(self):
+        with patch.dict(os.environ, {"ABUD_MUSIC_PILOT_GUILD": "1451206070717386885"}):
+            manager = Music(Mock(), SimpleNamespace(lock=asyncio.Lock(), sessions={}))
+        manager.enabled = True
+        manager.search = AsyncMock()
+        context = ChatMusicContext(SimpleNamespace(id=10, voice_client=None),
+                                   SimpleNamespace(voice=None), Mock())
+        with self.assertRaisesRegex(MusicError, "pengujian terbatas"):
+            await manager.play_query(context, "NOAH")
+        manager.search.assert_not_awaited()
+
     async def test_shared_player_rejects_missing_voice_before_search(self):
         manager = Music(Mock(), SimpleNamespace(lock=asyncio.Lock(), sessions={}))
         manager.enabled = True

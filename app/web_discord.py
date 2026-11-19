@@ -6,6 +6,8 @@ import logging
 import httpx
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import RedirectResponse
+from app.discord_invite import invite_url
 from app import auth, database
 
 router = APIRouter()
@@ -23,6 +25,24 @@ def identify(request):
     if not account:
         raise HTTPException(403, "Hubungkan akun Discord terlebih dahulu.")
     return identity, str(account["provider_user_id"])
+
+@router.get("/discord/invite")
+async def invite():
+    """Public invite. Resolve the running bot application, not the OAuth login app."""
+    verify_url = os.getenv("ABUD_BOT_VERIFY_URL", "")
+    key = os.getenv("ABUD_INTERNAL_API_KEY", "")
+    suffix = "/internal/verify/guild-member"
+    if not verify_url.endswith(suffix) or not key:
+        raise HTTPException(503, "Undangan ABUD sementara tidak tersedia.")
+    try:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+            response = await client.get(verify_url[:-len(suffix)] + "/internal/dashboard/discord/install",
+                                        headers={"Authorization": "Bearer " + key})
+            response.raise_for_status()
+            url = invite_url(response.json()["application_id"])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        raise HTTPException(503, "Undangan ABUD sementara tidak tersedia. Coba lagi dari website.") from None
+    return RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
 
 @router.get("/dashboard/discord/servers")
 async def servers(request: Request):

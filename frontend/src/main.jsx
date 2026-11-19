@@ -214,6 +214,7 @@ function Login({ error }) {
             <button className="auth-switch" onClick={() => setMode('oauth')}>KEMBALI KE LOGIN DISCORD / GOOGLE</button>
           </>}
           <label className="remember-row"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)}/> <span>Ingat saya di perangkat ini</span></label>
+          <a className="login-button discord" href="/discord/invite" target="_blank" rel="noopener noreferrer"><Bot size={20}/><span>Invite ABUD to your server</span><ArrowUpRight size={16}/></a>
           <div className="login-foot"><ShieldCheck size={13}/> Identity verification enabled <span>•</span> Session protected</div>
         </div>
       </div>
@@ -2379,6 +2380,7 @@ function WorkspaceHome({ health, user, openChat, navigate }) {
         <div className="abud-actions">
           <button className="abud-primary" onClick={() => openChat({})}>Start a chat</button>
           <a href="#workspace-tools" className="abud-secondary">Explore tools</a>
+          <a href="/discord/invite" target="_blank" rel="noopener noreferrer" className="abud-secondary"><Bot size={16}/> Invite ABUD to your server</a>
         </div>
       </div>
       <div className="abud-hero-reactor" aria-hidden="true">

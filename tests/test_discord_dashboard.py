@@ -1,9 +1,31 @@
 import unittest
+import discord
+from urllib.parse import urlsplit, parse_qs
+from app.discord_invite import invite_url, INSTALL_PERMISSIONS
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 from app.discord_dashboard import install_dashboard_gateway, snowflake, row_json, toggle, administer
+
+class InviteTests(unittest.TestCase):
+    def test_fixed_guild_install_and_minimal_permissions(self):
+        url = urlsplit(invite_url("123456789012345678"))
+        q = parse_qs(url.query)
+        self.assertEqual((url.scheme, url.netloc, url.path), ("https","discord.com","/oauth2/authorize"))
+        self.assertEqual(q["client_id"], ["123456789012345678"])
+        self.assertEqual(q["scope"], ["bot applications.commands"])
+        self.assertEqual(q["integration_type"], ["0"])
+        self.assertEqual(set(q), {"client_id","scope","integration_type","permissions"})
+        perms = discord.Permissions(INSTALL_PERMISSIONS)
+        for name in ("manage_channels","add_reactions","view_channel","send_messages","manage_messages","embed_links","attach_files","read_message_history","connect","speak","manage_roles","create_public_threads","create_private_threads","send_messages_in_threads"):
+            self.assertTrue(getattr(perms,name), name)
+        for name in ("administrator","manage_guild","mention_everyone","ban_members","kick_members"):
+            self.assertFalse(getattr(perms,name), name)
+    def test_invalid_app_id(self):
+        for bad in ("", "123&redirect_uri=evil", "0", 123, "9"*20):
+            with self.assertRaises(ValueError):
+                invite_url(bad)
 
 class Serialization(unittest.TestCase):
     def test_discord_ids_not_js_numbers(self):
@@ -19,10 +41,19 @@ class GatewayAuth(AioHTTPTestCase):
         self.guild.fetch_member = AsyncMock(return_value=SimpleNamespace(id=456,guild_permissions=SimpleNamespace(administrator=False)))
         self.client_bot=Mock()
         self.client_bot.is_ready.return_value=True
+        self.client_bot.application_id=123456789012345678
         self.client_bot.get_guild.side_effect=lambda ident: self.guild if ident==123 else None
         app=web.Application()
         install_dashboard_gateway(app,self.client_bot,"private",None,None,None,None,None,None)
         return app
+    async def test_invite_gateway_requires_key_and_returns_live_app_id(self):
+        path="/internal/dashboard/discord/install"
+        r=await self.client.get(path)
+        self.assertEqual(r.status,401)
+        r=await self.client.get(path,headers={"Authorization":"Bearer private"})
+        self.assertEqual(r.status,200)
+        self.assertEqual(await r.json(),{"application_id":"123456789012345678"})
+        self.guild.fetch_member.assert_not_called()
     async def test_missing_internal_key(self):
         r=await self.client.post("/internal/dashboard/discord",json={})
         self.assertEqual(r.status,401)

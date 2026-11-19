@@ -44,3 +44,22 @@ Do not deploy this branch until CI and live authorization checks pass.
 The web API and bot must be upgraded together, preserving the currently enabled
 voice/music/YouTube Compose overlays and all data volumes. Keep Ollama stopped.
 Adventure is out of scope.
+
+## Invite ABUD
+The login page, Command Center and Discord workspace link to the public
+`/discord/invite` route, which redirects to Discord guild installation with
+the running bot's actual application ID. No login to the ABUD website is
+required to start an invite. The user's Discord account must have permission
+to install apps in the selected guild. The link requests bot and
+applications.commands scopes, without Administrator, Manage Guild or
+Mention Everyone. Manage Messages supports single-choice reaction roles;
+thread permissions support private ticket ACLs. Optional @everyone/@here
+notification permission can be granted by a guild admin if desired.
+Check Guild Install and Public Bot in the actual bot's Developer Portal;
+an invite link cannot override a private application or installation settings.
+After authorization, return to the existing tab and refresh the server list.
+Only guild owners/administrators can use the settings even if another
+member has permission to install a bot. Test public redirect and actual
+installation in a disposable guild. The link is unavailable when the bot
+gateway cannot provide its application ID. No tokens are sent to Discord
+or the browser by this route; only public installation parameters.

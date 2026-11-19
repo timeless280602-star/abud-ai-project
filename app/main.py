@@ -77,6 +77,7 @@ async def require_internal_api_key(request: Request, call_next):
         "/dashboard/neural-engine/history",
         "/dashboard/activity-logs",
         "/dashboard/network-command",
+        "/discord/invite",
         "/dashboard/discord/servers",
         "/dashboard/discord/action",
     }

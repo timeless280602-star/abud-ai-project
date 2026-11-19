@@ -227,4 +227,13 @@ def install_dashboard_gateway(app, client, key, level, onboarding, tickets, noti
         except Exception:
             log.exception("Discord dashboard operation failed")
             return web.json_response({"detail": "Operasi gagal. Muat ulang untuk memeriksa status sebelum mencoba lagi."}, status=503)
+    async def installation(request):
+        if not key or not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + key):
+            return web.json_response({"detail": "Unauthorized"}, status=401)
+        application_id = client.application_id
+        if not application_id:
+            return web.json_response({"detail": "Bot application belum tersedia."}, status=503)
+        return web.json_response({"application_id": str(application_id)})
+
+    app.router.add_get("/internal/dashboard/discord/install", installation)
     app.router.add_post("/internal/dashboard/discord", handle)

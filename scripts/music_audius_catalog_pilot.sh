@@ -7,8 +7,8 @@ cd /opt/abud
 
 BASE=(docker compose -p abud -f compose.yaml -f compose.voice.yaml -f compose.music.yaml -f compose.music.youtube.yaml)
 OLD=sha256:26585b1ea6b7ec70d5b0279be816c164e209210d1825f7a616fecadfd1d0f1e7
-IMAGE=abud-staging-bot:music-v2-6658cc8
-EXPECTED=sha256:f69a2d06f93ee6cd334381b875cdb0582ee7ba902241b37f90efac7dfbbad785
+IMAGE=abud-staging-bot:music-v2-35e5323
+EXPECTED=sha256:355ef9327a5e15dec8456f4e10dd11ecaa37c2f5c7c59877c85d74f85eae8f20
 ROOT=/var/lib/abud-audius-pilot
 UNIT=abud-audius-pilot-rollback
 [[ $EUID == 0 ]]
@@ -70,10 +70,28 @@ test "$(docker inspect abud-bot --format '{{.Image}}')" = "$OLD"
 test "$(docker image inspect "$IMAGE" --format '{{.Id}}')" = "$EXPECTED"
 probe production
 
+check_memberships() {
+    docker exec -i abud-bot python - "$GUILD" "$1" <<'PY'
+import os, sys, json, urllib.request
+req = urllib.request.Request(
+    "https://discord.com/api/v10/users/@me/guilds",
+    headers={"Authorization": "Bot " + os.environ["DISCORD_TOKEN"],
+             "User-Agent": "DiscordBot (https://abud.web.id, 1.0)"})
+with urllib.request.urlopen(req, timeout=15) as r:
+    guilds = json.load(r)
+ids = sorted(g["id"] for g in guilds)
+if sys.argv[1] not in ids:
+    raise SystemExit("FAIL: Bot is not a member of the pilot guild")
+print(" ".join(ids))
+PY
+}
+
 read -r -p "Private pilot Discord Server ID: " GUILD < /dev/tty
 [[ "$GUILD" =~ ^[0-9]{17,20}$ ]]
 read -r -p "Reviewed Audius terms and authorized playback in private guild? YES: " ACK < /dev/tty
 [[ "$ACK" == YES ]]
+BEFORE_GUILDS="$(check_memberships before)"
+echo "PASS: pilot guild membership verified"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP="/opt/abud-backups/audius-catalog-$STAMP"
@@ -154,14 +172,14 @@ Unit=$UNIT.service
 WantedBy=timers.target
 YAML
 touch "$ROOT/pending"
+# Queue independent rollback even if timer setup fails.
+trap 'rc=$?; if (( rc != 0 )); then systemctl --no-block start "$UNIT.service" || true; fi' EXIT
 systemctl daemon-reload
 systemctl enable --now "$UNIT.timer"
 systemctl is-active --quiet "$UNIT.timer"
 systemctl is-enabled --quiet "$UNIT.timer"
 echo "Rollback armed: $DEADLINE"
 systemctl list-timers "$UNIT.timer" --no-pager
-# On error, queue independent systemd recovery. It acquires the lock after exit.
-trap 'rc=$?; if (( rc != 0 )); then systemctl --no-block start "$UNIT.service" || true; fi' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
@@ -172,6 +190,17 @@ VOICE_ID="$(docker inspect abud-abud-voice-1 --format '{{.Id}}')"
 "${BASE[@]}" -f "$ROOT/pilot.yaml" up -d --no-deps --no-build --pull never --force-recreate abud-bot
 test "$(docker inspect abud-bot --format '{{.Image}}')" = "$EXPECTED"
 probe pilot
+READY=false
+for i in $(seq 1 45); do
+    if docker logs abud-bot 2>&1 | grep -F "Guild sync selesai:" >/dev/null; then
+        READY=true
+        break
+    fi
+    sleep 2
+done
+test "$READY" = true
+test "$(check_memberships after)" = "$BEFORE_GUILDS"
+echo "PASS: Discord login and guild membership unchanged"
 test "$(docker inspect abud-api --format '{{.Id}}')" = "$API_ID"
 test "$(docker inspect abud-abud-voice-1 --format '{{.Id}}')" = "$VOICE_ID"
 echo "=== AUDIUS CATALOG PILOT READY ==="

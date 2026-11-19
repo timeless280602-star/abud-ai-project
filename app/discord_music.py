@@ -11,6 +11,7 @@ import wavelink
 
 from app.music_session import MusicChoiceRequired, MusicError, MusicSession, RequestedTrack, duration, music_query
 from app.music_audius_live import AudiusCatalogMode
+from app.music_native import NativeCatalog, NativePlayer, NativeTrack
 from app.music_providers import (
     NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link, normalized, youtube_target,
 )
@@ -78,7 +79,7 @@ def now_embed(session):
     embed.add_field(
         name="Posisi / durasi", value=f"{duration(session.player.position)} / {length}"
     )
-    embed.add_field(name="Sumber track", value="Audius" if track.source == "http" else PROVIDER_NAMES.get(track.source, "Lainnya"))
+    embed.add_field(name="Sumber track", value="Audius" if track.source == "http" else "Local Audio" if track.source == "native" else PROVIDER_NAMES.get(track.source, "Lainnya"))
     embed.add_field(name="Diminta oleh", value=f"<@{current.requester}>")
     embed.add_field(
         name="Antrean · volume · repeat",
@@ -135,6 +136,19 @@ class Music:
         )
         self.playback_fallback = os.getenv("ABUD_MUSIC_PLAYBACK_FALLBACK", "false").lower() == "true"
         self.audius_probe = AudiusCatalogMode()
+        self.native_catalog = None
+        self.native_guild = None
+        if os.getenv("ABUD_MUSIC_NATIVE_LOCAL", "false").lower() == "true":
+            if (self.audius_probe.enabled or self.playback_fallback
+                    or os.getenv("ABUD_MUSIC_NATIVE_TERMS_ACCEPTED", "").lower() != "true"):
+                raise ValueError("Native local pilot requires exclusive authorized mode")
+            try:
+                self.native_guild = int(os.getenv("ABUD_MUSIC_NATIVE_GUILD", ""))
+                if self.native_guild <= 0:
+                    raise ValueError()
+            except ValueError:
+                raise ValueError("Invalid native catalog guild") from None
+            self.native_catalog = NativeCatalog()
         self.sessions = {}
         self.node = None
         self.node_lock = asyncio.Lock()
@@ -196,6 +210,18 @@ class Music:
             return self.node
 
     async def search(self, query, source=None):
+        native = getattr(self, "native_catalog", None)
+        if native:
+            self.require()
+            if source not in (None, "native"):
+                raise MusicError("Pilot ini hanya mendukung katalog audio lokal.")
+            async with self.search_slots:
+                result = await asyncio.to_thread(native.search, query)
+            if not result:
+                raise MusicError("Tidak ada audio lokal yang cocok.")
+            return result
+        if source == "native":
+            raise MusicError("Audio lokal belum diaktifkan.")
         if self.audius_probe.enabled:
             try:
                 is_youtube = source_for_link(query.strip()) == "youtube"
@@ -269,7 +295,7 @@ class Music:
                 "Abud sedang di mode voice lain. Tutup sesi AI dengan /leave sebelum mulai musik."
             )
         result = await self.search(query, source)
-        if self.audius_probe.dynamic:
+        if self.audius_probe.dynamic or getattr(self, "native_catalog", None):
             # Never silently substitute a cover or unrelated search hit.
             q = normalized(query)
             exact = [t for t in result if q in (normalized(t.title),
@@ -280,7 +306,8 @@ class Music:
                 raise MusicChoiceRequired(choices)
             result = exact
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
-        allow_fallback = (not self.audius_probe.enabled and self.playback_fallback and source is None
+        allow_fallback = (not self.audius_probe.enabled and not getattr(self, "native_catalog", None)
+                          and self.playback_fallback and source is None
                           and not urlsplit(query.strip()).scheme
                           and not isinstance(result, wavelink.Playlist))
         await self.enqueue(context, tracks, allow_fallback=allow_fallback)
@@ -288,6 +315,8 @@ class Music:
 
     def user_channel(self, interaction):
         self.audius_probe.require_actor(interaction)
+        if getattr(self, "native_catalog", None) and interaction.guild_id != self.native_guild:
+            raise MusicError("Pilot audio lokal belum aktif di server ini.")
         channel = getattr(getattr(interaction.user, "voice", None), "channel", None)
         if not interaction.guild or not isinstance(channel, discord.VoiceChannel):
             raise MusicError("Masuk ke voice channel biasa dulu.")
@@ -325,7 +354,14 @@ class Music:
         channel = self.user_channel(interaction)
         if not tracks or len(tracks) > MusicSession.LIMIT:
             raise MusicError("Pilih 1–100 lagu per permintaan/playlist.")
-        self.audius_probe.check_enqueue(tracks)
+        native = getattr(self, "native_catalog", None)
+        if native:
+            for track in tracks:
+                await asyncio.to_thread(native.validate, track)
+        else:
+            if any(isinstance(track, NativeTrack) for track in tracks):
+                raise MusicError("Audio lokal belum diaktifkan.")
+            self.audius_probe.check_enqueue(tracks)
         # Shared lock prevents simultaneous music/AI joins creating competing connections.
         async with self.voice.lock:
             session = self.sessions.get(interaction.guild_id)
@@ -355,24 +391,24 @@ class Music:
                     raise MusicError(
                         "Abud perlu View Channel, Send Messages, dan Embed Links untuk panel musik."
                     )
-                node = await self.ensure_node()
+                node = None if native else await self.ensure_node()
                 # Recheck member position after network I/O before connecting.
                 if self.user_channel(interaction).id != channel.id:
                     raise MusicError(
                         "Voice channel berubah saat mencari lagu. Coba /music play lagi."
                     )
-                player = await channel.connect(
-                    cls=lambda client, channel: wavelink.Player(
-                        client, channel, nodes=[node]
-                    ),
-                    timeout=20,
-                    self_deaf=True,
-                    reconnect=True,
-                )
-                player.autoplay = wavelink.AutoPlayMode.disabled
-                player.inactive_timeout = None
+                if native:
+                    vc = await channel.connect(timeout=20, self_deaf=True, reconnect=True)
+                    player = NativePlayer(vc, native, self.native_end)
+                else:
+                    player = await channel.connect(
+                        cls=lambda client, channel: wavelink.Player(client, channel, nodes=[node]),
+                        timeout=20, self_deaf=True, reconnect=True,
+                    )
+                    player.autoplay = wavelink.AutoPlayMode.disabled
+                    player.inactive_timeout = None
                 session = MusicSession(player, interaction.user.id, text,
-                                       before_play=self.audius_probe.before_play)
+                                       before_play=None if native else self.audius_probe.before_play)
                 self.sessions[interaction.guild_id] = session
                 created = True
             else:
@@ -449,6 +485,18 @@ class Music:
                         await panel[0].edit(view=None)
                     except discord.HTTPException:
                         pass
+
+    async def native_end(self, player, nonce, reason):
+        session = self.for_player(player)
+        if not session:
+            return
+        try:
+            if await session.ended(nonce, reason):
+                if reason == "loadFailed":
+                    await self.report(session, MusicError("Audio lokal gagal diputar. Abud mencoba antrean berikutnya."))
+                await self.panel(session)
+        except Exception as error:
+            await self.report(session, error)
 
     async def track_end(self, payload):
         if payload.reason == "loadFailed" and self.playback_fallback:
@@ -570,7 +618,8 @@ class Music:
     async def node_lost(self, payload):
         if payload.node is self.node:
             for session in list(self.sessions.values()):
-                await self.connection_lost(session.player)
+                if not isinstance(session.player, NativePlayer):
+                    await self.connection_lost(session.player)
 
     async def voice_state_update(self, member, before, after):
         session = self.sessions.get(member.guild.id)

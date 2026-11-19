@@ -2,6 +2,7 @@
 # Private guild Audius catalog pilot. Persistent rollback timer; no .env edits.
 set -euo pipefail
 umask 077
+SCRIPT_PATH="$(realpath -e -- "$0")"
 cd /opt/abud
 
 BASE=(docker compose -p abud -f compose.yaml -f compose.voice.yaml -f compose.music.yaml -f compose.music.youtube.yaml)
@@ -126,7 +127,7 @@ services:
 YAML
 "${BASE[@]}" -f "$ROOT/pilot.yaml" config --quiet
 "${BASE[@]}" -f "$ROOT/rollback.yaml" config --quiet
-install -m 700 "$(realpath "$0")" "$ROOT/control.sh"
+install -m 700 "$SCRIPT_PATH" "$ROOT/control.sh"
 DEADLINE="$(date -u -d '+20 minutes' '+%Y-%m-%d %H:%M:%S UTC')"
 cat > "/etc/systemd/system/$UNIT.service" <<YAML
 [Unit]

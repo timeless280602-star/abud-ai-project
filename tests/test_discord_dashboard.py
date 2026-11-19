@@ -38,17 +38,17 @@ class EmojiPickerTests(unittest.TestCase):
                 return self.usable
             def __str__(self):
                 return f"<{'a' if self.animated else ''}:{self.name}:{self.id}>"
-        good = Emoji(777, "gaming", animated=True)
-        other = Emoji(888, "blocked", False)
-        guild = SimpleNamespace(emojis=[other, good], get_emoji=lambda ident: good if ident == 777 else None)
-        self.assertEqual(guild_emojis(guild), [{"id":"777","name":"gaming","value":"<a:gaming:777>"}])
-        self.assertEqual(parse_emoji(":gaming:", guild), ("c:777","<a:gaming:777>"))
-        self.assertEqual(parse_emoji("<a:gaming:777>", guild), ("c:777","<a:gaming:777>"))
+        good = Emoji(123456789012345777, "gaming", animated=True)
+        other = Emoji(123456789012345888, "blocked", False)
+        guild = SimpleNamespace(emojis=[other, good], get_emoji=lambda ident: good if ident == 123456789012345777 else None)
+        self.assertEqual(guild_emojis(guild), [{"id":"123456789012345777","name":"gaming","value":"<a:gaming:123456789012345777>"}])
+        self.assertEqual(parse_emoji(":gaming:", guild), ("c:123456789012345777","<a:gaming:123456789012345777>"))
+        self.assertEqual(parse_emoji("<a:gaming:123456789012345777>", guild), ("c:123456789012345777","<a:gaming:123456789012345777>"))
         self.assertEqual(parse_emoji("🎮", guild), ("u:🎮","🎮"))
-        for invalid in (":blocked:", ":remote:", "<:remote:999>"):
+        for invalid in (":blocked:", ":remote:", "<:remote:123456789012345999>"):
             with self.assertRaises(OnboardingError):
                 parse_emoji(invalid, guild)
-        guild.emojis.append(Emoji(999, "gaming"))
+        guild.emojis.append(Emoji(123456789012345999, "gaming"))
         with self.assertRaises(OnboardingError):
             parse_emoji(":gaming:", guild)
 

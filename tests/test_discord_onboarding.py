@@ -238,14 +238,14 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     def test_emoji_validation_and_custom_id_stability(self):
         self.assertEqual(parse_emoji("❤️", self.guild)[0], emoji_key("❤"))
         self.assertEqual(parse_emoji("👩‍💻", self.guild)[0], emoji_key("👩‍💻"))
-        custom = Mock(id=777, is_usable=Mock(return_value=True))
-        custom.__str__ = Mock(return_value="<:game:777>")
+        custom = Mock(id=123456789012345777, is_usable=Mock(return_value=True))
+        custom.__str__ = Mock(return_value="<:game:123456789012345777>")
         self.guild.get_emoji.return_value = custom
         self.assertEqual(
-            parse_emoji("<:game:777>", self.guild), ("c:777", "<:game:777>")
+            parse_emoji("<:game:123456789012345777>", self.guild), ("c:123456789012345777", "<:game:123456789012345777>")
         )
         self.guild.get_emoji.return_value = None
-        for text in ["not an emoji", ":)", "🎮 hello", "<:remote:999>"]:
+        for text in ["not an emoji", ":)", "🎮 hello", "<:remote:123456789012345999>"]:
             with self.assertRaises(OnboardingError):
                 parse_emoji(text, self.guild)
 

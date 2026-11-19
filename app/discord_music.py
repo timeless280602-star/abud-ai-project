@@ -189,7 +189,23 @@ class Music:
             raise MusicError(
                 "Abud sedang di mode voice lain. Tutup sesi AI dengan /leave sebelum mulai musik."
             )
-        result = await self.search(query, source)
+        if query.strip() == "abud-diagnostic-tone":
+            if (
+                os.getenv("ABUD_MUSIC_DIAGNOSTIC_ENABLED") != "true"
+                or str(context.guild_id) != os.getenv("ABUD_MUSIC_DIAGNOSTIC_GUILD")
+                or str(context.user.id) != os.getenv("ABUD_MUSIC_DIAGNOSTIC_USER")
+                or not context.user.guild_permissions.manage_guild
+            ):
+                raise MusicError("Diagnostik audio hanya untuk pengelola yang ditentukan.")
+            node = await self.ensure_node()
+            async with asyncio.timeout(15), self.search_slots:
+                result = await wavelink.Pool.fetch_tracks(
+                    "/diagnostic/abud-tone.wav", node=node
+                )
+            if not result or isinstance(result, wavelink.Playlist):
+                raise MusicError("Audio diagnostik lokal tidak tersedia.")
+        else:
+            result = await self.search(query, source)
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
         await self.enqueue(context, tracks)
         return tracks

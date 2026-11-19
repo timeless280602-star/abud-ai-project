@@ -9,12 +9,12 @@ from urllib.parse import urlsplit
 import discord
 import wavelink
 
-from app.music_session import MusicError, MusicSession, duration, music_query
+from app.music_session import MusicError, MusicSession, RequestedTrack, duration, music_query
+from app.music_providers import (
+    NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link,
+)
 
 log = logging.getLogger(__name__)
-
-
-PROVIDER_NAMES = {"youtube": "YouTube", "soundcloud": "SoundCloud", "bandcamp": "Bandcamp"}
 
 
 def provider_failure(source, details):
@@ -34,17 +34,6 @@ def provider_failure(source, details):
     if "timeout" in text or "timed out" in text:
         return f"{name} melewati batas waktu."
     return f"{name} gagal memuat audio."
-
-
-def link_provider(query):
-    host = urlsplit(query).hostname or ""
-    if host == "youtu.be" or host.endswith("youtube.com"):
-        return "youtube"
-    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
-        return "soundcloud"
-    if host == "bandcamp.com" or host.endswith(".bandcamp.com"):
-        return "bandcamp"
-    return ""
 
 
 def safe_link(value):
@@ -88,6 +77,7 @@ def now_embed(session):
     embed.add_field(
         name="Posisi / durasi", value=f"{duration(session.player.position)} / {length}"
     )
+    embed.add_field(name="Sumber track", value=PROVIDER_NAMES.get(track.source, "Lainnya"))
     embed.add_field(name="Diminta oleh", value=f"<@{current.requester}>")
     embed.add_field(
         name="Antrean · volume · repeat",
@@ -138,7 +128,11 @@ class Music:
         self.enabled = os.getenv("ABUD_MUSIC_ENABLED", "false").lower() == "true"
         self.uri = os.getenv("ABUD_LAVALINK_URL", "http://abud-lavalink:2333")
         self.password = os.getenv("ABUD_LAVALINK_PASSWORD", "")
-        self.search_source = os.getenv("ABUD_MUSIC_SEARCH_SOURCE", "soundcloud")
+        self.providers = provider_order(os.getenv("ABUD_MUSIC_PROVIDERS", "soundcloud,youtube,bandcamp"))
+        self.search_source = os.getenv("ABUD_MUSIC_SEARCH_SOURCE") or next(
+            (p for p in self.providers if p in PREFIXES), ""
+        )
+        self.playback_fallback = os.getenv("ABUD_MUSIC_PLAYBACK_FALLBACK", "false").lower() == "true"
         self.sessions = {}
         self.node = None
         self.node_lock = asyncio.Lock()
@@ -200,21 +194,28 @@ class Music:
             return self.node
 
     async def search(self, query, source=None):
-        query = music_query(query)
+        query = music_query(query, self.providers)
         preferred = source or self.search_source
-        if preferred not in ("youtube", "soundcloud"):
-            raise MusicError("Sumber pencarian harus YouTube atau SoundCloud.")
-        node = await self.ensure_node()
         direct = bool(urlsplit(query).scheme)
-        providers = [link_provider(query) if direct else preferred]
-        if not direct and source is None:
-            providers.append("soundcloud" if preferred == "youtube" else "youtube")
+        if source is not None and (source not in PREFIXES or source not in self.providers):
+            raise MusicError("Provider pencarian ini belum aktif.")
+        if direct:
+            provider = source_for_link(query)
+            if source is not None and source != provider:
+                raise MusicError("Pilihan provider tidak cocok dengan link lagu.")
+            providers = [provider]
+        else:
+            if preferred not in PREFIXES or preferred not in self.providers:
+                raise MusicError("Provider pencarian default belum aktif.")
+            providers = [preferred]
+            if source is None:
+                providers.extend(p for p in self.providers if p in PREFIXES and p != preferred)
+        node = await self.ensure_node()
         failures = []
         try:
             async with asyncio.timeout(30), self.search_slots:
                 for provider in providers:
-                    prefix = "ytsearch:" if provider == "youtube" else "scsearch:"
-                    identifier = query if direct else prefix + query
+                    identifier = query if direct else PREFIXES[provider] + query
                     try:
                         async with asyncio.timeout(15):
                             result = await wavelink.Pool.fetch_tracks(identifier, node=node)
@@ -244,7 +245,10 @@ class Music:
             )
         result = await self.search(query, source)
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
-        await self.enqueue(context, tracks)
+        allow_fallback = (self.playback_fallback and source is None
+                          and not urlsplit(query.strip()).scheme
+                          and not isinstance(result, wavelink.Playlist))
+        await self.enqueue(context, tracks, allow_fallback=allow_fallback)
         return tracks
 
     def user_channel(self, interaction):
@@ -280,7 +284,7 @@ class Music:
             )
         return session
 
-    async def enqueue(self, interaction, tracks):
+    async def enqueue(self, interaction, tracks, *, allow_fallback=False):
         self.require()
         channel = self.user_channel(interaction)
         if not tracks or len(tracks) > MusicSession.LIMIT:
@@ -336,7 +340,7 @@ class Music:
             else:
                 self.active(interaction)
             try:
-                await session.enqueue(tracks, interaction.user.id)
+                await session.enqueue(tracks, interaction.user.id, allow_fallback=allow_fallback)
             except BaseException:
                 if created:
                     self.sessions.pop(interaction.guild_id, None)
@@ -407,6 +411,9 @@ class Music:
                         pass
 
     async def track_end(self, payload):
+        if payload.reason == "loadFailed" and self.playback_fallback:
+            await self.track_error(payload)
+            return
         session = self.for_player(payload.player)
         if not session:
             return
@@ -428,14 +435,38 @@ class Music:
             else None
         )
 
+    async def resolve_alternative(self, original):
+        """One bounded search for a matching recording from enabled direct sources."""
+        if not self.node or self.node.status != wavelink.NodeStatus.CONNECTED or original.is_stream:
+            return None
+        try:
+            async with asyncio.timeout(8), self.search_slots:
+                for provider in self.providers:
+                    if provider == original.source or provider not in DIRECT or provider not in PREFIXES:
+                        continue
+                    try:
+                        async with asyncio.timeout(3):
+                            query = f"{original.title} {original.author}"[:300]
+                            found = await wavelink.Pool.fetch_tracks(PREFIXES[provider] + query, node=self.node)
+                    except (TimeoutError, wavelink.LavalinkLoadException):
+                        continue
+                    if isinstance(found, wavelink.Playlist):
+                        continue
+                    for candidate in found[:5]:
+                        if candidate.source == provider and same_recording(original, candidate):
+                            return candidate
+        except (TimeoutError, wavelink.WavelinkException):
+            pass
+        return None
+
     async def track_error(self, payload):
         session = self.for_player(payload.player)
         if session:
             # Nonce invalidation also makes a subsequent loadFailed end event harmless.
             async with session.lock:
                 if (
-                    getattr(payload.track.extras, "abud_music_nonce", None)
-                    != session.nonce
+                    session.closed or not session.current or not session.nonce
+                    or getattr(payload.track.extras, "abud_music_nonce", None) != session.nonce
                 ):
                     return
                 exception = getattr(payload, "exception", None)
@@ -447,6 +478,21 @@ class Music:
                 else:
                     message = provider_failure(payload.track.source, "")
                 log.warning("Music provider failure: %s", message)
+                current = session.current
+                if (self.playback_fallback and current.allow_fallback
+                        and not current.track.is_stream
+                        and 0 <= session.player.position <= 5000):
+                    candidate = await self.resolve_alternative(current.track)
+                    if candidate is not None:
+                        try:
+                            await session._play(RequestedTrack(candidate, current.requester))
+                        except Exception:
+                            pass
+                        else:
+                            await self.report(session, MusicError(message + " Mencoba rekaman yang sama dari "
+                                + PROVIDER_NAMES.get(candidate.source, "provider lain") + "."))
+                            await self.panel(session)
+                            return
                 await self.report(session, MusicError(message + " Abud mencoba lagu berikutnya."))
                 session.failures += 1
                 if session.failures >= 3:

@@ -6,7 +6,7 @@ import unittest
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from app.music_native import NativeCatalog, NativePlayer, NativeTrack, local_audio
 from app.music_session import MusicError, MusicSession
@@ -125,6 +125,7 @@ class NativePlayerTests(unittest.IsolatedAsyncioTestCase):
         self.voice.channel = SimpleNamespace(id=7)
         self.voice.guild = SimpleNamespace(id=11)
         self.voice.is_connected.return_value = True
+        self.voice._connection = SimpleNamespace(dave_protocol_version=1, can_encrypt=True)
         self.voice.is_paused.return_value = False
         self.voice.disconnect = AsyncMock()
         self.callbacks = []
@@ -144,6 +145,30 @@ class NativePlayerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
+
+    async def test_waits_for_negotiated_dave_before_play(self):
+        state = self.voice._connection
+        state.can_encrypt = False
+        async def ready(delay):
+            self.voice.play.assert_not_called()
+            state.can_encrypt = True
+        with patch("app.music_native.asyncio.sleep", side_effect=ready):
+            await self.player.play(self.track, volume=50)
+        self.voice.play.assert_called_once()
+
+    async def test_dave_timeout_does_not_start_audio(self):
+        self.voice._connection.can_encrypt = False
+        with patch("app.music_native.asyncio.sleep", new_callable=AsyncMock):
+            with self.assertRaises(MusicError):
+                await self.player.play(self.track, volume=50)
+        self.voice.play.assert_not_called()
+        self.assertEqual(self.sources, [])
+
+    async def test_unknown_dave_state_rejected(self):
+        self.voice._connection = None
+        with self.assertRaises(MusicError):
+            await self.player.play(self.track, volume=50)
+        self.voice.play.assert_not_called()
 
     async def test_finished_once(self):
         await self.player.play(self.track, volume=50)

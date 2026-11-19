@@ -162,7 +162,7 @@ async def administer(guild, actor, action, data, level, onboarding, tickets, not
             destination = resource(guild, data, "destination", discord.TextChannel)
             ping = string(data, "ping", 8)
             events = string(data, "events", 8)
-            if ping not in ("none", "here", "everyone") or events not in ("live", "video", "both"):
+            if ping not in ("none", "here", "everyone") or events not in ("live", "post", "both"):
                 raise NotificationError("Jenis notifikasi tidak valid.")
             notify.destination(gid, destination.id, ping)
             if not notify.key:
@@ -175,7 +175,7 @@ async def administer(guild, actor, action, data, level, onboarding, tickets, not
             dest = resource(guild, data, "destination", discord.TextChannel)
             ping, events = string(data, "ping", 8), string(data, "events", 8)
             enabled = toggle(data, "enabled")
-            if ping not in ("none", "here", "everyone") or events not in ("live", "video", "both"):
+            if ping not in ("none", "here", "everyone") or events not in ("live", "post", "both"):
                 raise NotificationError("Jenis notifikasi tidak valid.")
             if enabled:
                 notify.destination(gid, dest.id, ping)

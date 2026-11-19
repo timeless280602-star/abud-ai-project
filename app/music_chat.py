@@ -5,7 +5,8 @@ from dataclasses import dataclass
 
 import discord
 
-from app.music_session import MusicError
+from app.music_session import MusicChoiceRequired, MusicError
+from app.music_commands import SongSelection
 
 # Anchored imperative grammar: ordinary chat, quoted instructions and explanations
 # are not treated as actions. Song titles and artist names are passed through intact.
@@ -86,6 +87,13 @@ async def handle_music_message(message, manager, *, bot_id=None):
             text = f"🎶 **{title}** masuk antrean musik, Bos. Lihat panel Abud Music untuk status pemutarannya."
         else:
             text = f"🎶 {len(tracks)} lagu masuk antrean musik. Lihat panel Abud Music untuk status pemutarannya."
+    except MusicChoiceRequired as choice:
+        view = SongSelection(manager, message.author.id, choice.tracks)
+        view.message = await message.reply(
+            "Pilih lagu yang kamu maksud (berlaku 60 detik; hanya peminta yang bisa memilih).",
+            view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
     except Exception as error:  # noqa: BLE001 - do not expose provider responses or credentials in chat
         text = (
             str(error)

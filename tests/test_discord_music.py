@@ -554,6 +554,60 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pemilik sesi", self.interaction.followup.send.call_args.args[0])
         view.stop()
 
+    async def test_picker_claim_is_atomic_and_uses_interaction_payload(self):
+        manager = Mock(enqueue=AsyncMock())
+        tracks = [track("First"), track("Second")]
+        view = SongSelection(manager, 100, tracks)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def defer(**kwargs):
+            entered.set()
+            await release.wait()
+
+        first = SimpleNamespace(user=SimpleNamespace(id=100), data={"values": ["1"]},
+            response=Mock(defer=AsyncMock(side_effect=defer)),
+            followup=Mock(send=AsyncMock()))
+        second = SimpleNamespace(user=SimpleNamespace(id=100), data={"values": ["0"]},
+            response=Mock(send_message=AsyncMock()))
+        pending = asyncio.create_task(view.children[0].callback(first))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            await view.children[0].callback(second)
+            second.response.send_message.assert_awaited_once()
+        finally:
+            release.set()
+            await pending
+            view.stop()
+        manager.enqueue.assert_awaited_once_with(first, [tracks[1]])
+
+    async def test_invalid_picker_value_does_not_consume_selection(self):
+        manager = Mock(enqueue=AsyncMock())
+        view = SongSelection(manager, 100, [track()])
+        interaction = SimpleNamespace(user=SimpleNamespace(id=100),
+            data={"values": ["-1"]}, response=Mock(send_message=AsyncMock()))
+        await view.children[0].callback(interaction)
+        self.assertFalse(view.claimed)
+        manager.enqueue.assert_not_awaited()
+        view.stop()
+
+    async def test_leave_only_disconnects_target_guild(self):
+        self.manager.sessions[2] = other = MusicSession(player(), 200, Mock())
+        await self.session.enqueue([track("First")], 100)
+        await other.enqueue([track("Second")], 200)
+        await self.manager.leave(1, expected=self.session)
+        self.assertNotIn(1, self.manager.sessions)
+        self.assertIs(self.manager.sessions[2], other)
+        self.assertEqual(other.current.track.title, "Second")
+        other.player.disconnect.assert_not_awaited()
+
+    async def test_leave_with_stale_session_cannot_disconnect_new_session(self):
+        replacement = MusicSession(player(), 200, Mock())
+        self.manager.sessions[1] = replacement
+        with self.assertRaises(MusicError):
+            await self.manager.leave(1, expected=self.session)
+        self.assertIs(self.manager.sessions[1], replacement)
+        replacement.player.disconnect.assert_not_awaited()
+
     async def test_song_picker_is_private_and_only_queues_on_selection(self):
         manager = Mock(enqueue=AsyncMock())
         view = SongSelection(manager, 100, [track()])

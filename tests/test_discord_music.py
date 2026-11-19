@@ -285,6 +285,47 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.manager.sessions[1].queue), 1)
         self.assertTrue(self.player.autoplay == wavelink.AutoPlayMode.disabled)
 
+    async def test_local_diagnostic_requires_exact_opt_in_identity(self):
+        self.manager.sessions.clear()
+        self.interaction.guild.voice_client = None
+        self.interaction.user.guild_permissions.manage_guild = True
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        self.manager.enqueue = AsyncMock()
+        self.manager.search = AsyncMock()
+        env = {
+            "ABUD_MUSIC_DIAGNOSTIC_ENABLED": "true",
+            "ABUD_MUSIC_DIAGNOSTIC_GUILD": "1",
+            "ABUD_MUSIC_DIAGNOSTIC_USER": "100",
+        }
+        with (
+            patch.dict("os.environ", env),
+            patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                  new=AsyncMock(return_value=[track()])) as fetch,
+        ):
+            await self.manager.play_query(self.interaction, "abud-diagnostic-tone")
+            fetch.assert_awaited_once_with(
+                "/diagnostic/abud-tone.wav", node=self.manager.ensure_node.return_value
+            )
+            self.manager.enqueue.assert_awaited_once()
+            self.manager.search.assert_not_awaited()
+            self.interaction.user.id = 200
+            with self.assertRaises(MusicError):
+                await self.manager.play_query(self.interaction, "abud-diagnostic-tone")
+            self.interaction.user.id = 100
+            self.interaction.guild_id = 2
+            with self.assertRaises(MusicError):
+                await self.manager.play_query(self.interaction, "abud-diagnostic-tone")
+            self.interaction.guild_id = 1
+            self.interaction.user.guild_permissions.manage_guild = False
+            with self.assertRaises(MusicError):
+                await self.manager.play_query(self.interaction, "abud-diagnostic-tone")
+            self.interaction.user.guild_permissions.manage_guild = True
+            with patch.dict("os.environ", {"ABUD_MUSIC_DIAGNOSTIC_ENABLED": "false"}):
+                with self.assertRaises(MusicError):
+                    await self.manager.play_query(self.interaction, "abud-diagnostic-tone")
+            self.assertEqual(fetch.await_count, 1)
+            self.assertEqual(self.manager.enqueue.await_count, 1)
+
     async def test_search_uses_chosen_node_and_prefix_no_network_on_invalid_url(self):
         self.manager.ensure_node = AsyncMock(return_value=Mock())
         with patch(

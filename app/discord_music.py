@@ -14,6 +14,39 @@ from app.music_session import MusicError, MusicSession, duration, music_query
 log = logging.getLogger(__name__)
 
 
+PROVIDER_NAMES = {"youtube": "YouTube", "soundcloud": "SoundCloud", "bandcamp": "Bandcamp"}
+
+
+def provider_failure(source, details):
+    """Classify upstream errors without returning raw provider data."""
+    name = PROVIDER_NAMES.get(source, "Sumber musik")
+    text = details.casefold()
+    if "sign in to confirm" in text or "requires login" in text:
+        return f"{name} meminta verifikasi atau login."
+    if "sig function" in text or "signature cipher" in text:
+        return f"{name} mengalami masalah signature audio."
+    if "supported format" in text or "supported audio stream" in text:
+        return f"{name} tidak menyediakan format audio yang didukung."
+    if "status code: 403" in text or "http 403" in text:
+        return f"{name} menolak akses audio (403)."
+    if "video is unavailable" in text:
+        return f"{name}: video tidak tersedia."
+    if "timeout" in text or "timed out" in text:
+        return f"{name} melewati batas waktu."
+    return f"{name} gagal memuat audio."
+
+
+def link_provider(query):
+    host = urlsplit(query).hostname or ""
+    if host == "youtu.be" or host.endswith("youtube.com"):
+        return "youtube"
+    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
+        return "soundcloud"
+    if host == "bandcamp.com" or host.endswith(".bandcamp.com"):
+        return "bandcamp"
+    return ""
+
+
 def safe_link(value):
     try:
         url = urlsplit(value or "")
@@ -119,6 +152,9 @@ class Music:
 
     async def start(self):
         if self.enabled and not self.watchdog:
+            # Wavelink 3.5.2 logs unsanitized upstream exception bodies here.
+            # track_error emits a safe diagnosis instead.
+            logging.getLogger("TrackException").setLevel(logging.CRITICAL)
             self.watchdog = asyncio.create_task(self.watch(), name="music-watchdog")
 
     async def ensure_node(self):
@@ -165,19 +201,36 @@ class Music:
 
     async def search(self, query, source=None):
         query = music_query(query)
-        node = await self.ensure_node()
-        source = source or self.search_source
-        if source not in ("youtube", "soundcloud"):
+        preferred = source or self.search_source
+        if preferred not in ("youtube", "soundcloud"):
             raise MusicError("Sumber pencarian harus YouTube atau SoundCloud.")
-        prefix = "ytsearch:" if source == "youtube" else "scsearch:"
-        identifier = query if urlsplit(query).scheme else prefix + query
-        async with asyncio.timeout(15), self.search_slots:
-            result = await wavelink.Pool.fetch_tracks(identifier, node=node)
-        if not result:
-            raise MusicError(
-                "Lagu tidak ditemukan atau sumber tidak tersedia. Coba judul/link atau sumber lain."
-            )
-        return result
+        node = await self.ensure_node()
+        direct = bool(urlsplit(query).scheme)
+        providers = [link_provider(query) if direct else preferred]
+        if not direct and source is None:
+            providers.append("soundcloud" if preferred == "youtube" else "youtube")
+        failures = []
+        try:
+            async with asyncio.timeout(30), self.search_slots:
+                for provider in providers:
+                    prefix = "ytsearch:" if provider == "youtube" else "scsearch:"
+                    identifier = query if direct else prefix + query
+                    try:
+                        async with asyncio.timeout(15):
+                            result = await wavelink.Pool.fetch_tracks(identifier, node=node)
+                    except wavelink.LavalinkLoadException as error:
+                        failures.append(provider_failure(provider, f"{error.error} {error.cause}"))
+                    except TimeoutError:
+                        failures.append(provider_failure(provider, "timeout"))
+                    except wavelink.WavelinkException:
+                        raise MusicError("Koneksi layanan musik bermasalah. Coba lagi sebentar.") from None
+                    else:
+                        if result and (not isinstance(result, wavelink.Playlist) or result.tracks):
+                            return result
+                        failures.append(f"{PROVIDER_NAMES.get(provider, 'Sumber musik')}: tidak ada hasil.")
+        except TimeoutError:
+            raise MusicError("Pencarian musik melewati batas waktu. Coba lagi sebentar.") from None
+        raise MusicError(" ".join(failures) + " Coba judul/link atau sumber lain.")
 
     async def play_query(self, context, query, source=None):
         """Execute a real user request; text chat and slash commands share this path."""
@@ -385,12 +438,16 @@ class Music:
                     != session.nonce
                 ):
                     return
-                await self.report(
-                    session,
-                    MusicError(
-                        "Sumber lagu gagal atau macet; Abud mencoba lagu berikutnya."
-                    ),
-                )
+                exception = getattr(payload, "exception", None)
+                if isinstance(exception, dict):
+                    details = " ".join(str(exception.get(k) or "") for k in ("message", "cause"))
+                    message = provider_failure(payload.track.source, details)
+                elif getattr(payload, "threshold", None) is not None:
+                    message = f"{PROVIDER_NAMES.get(payload.track.source, 'Sumber musik')} macet."
+                else:
+                    message = provider_failure(payload.track.source, "")
+                log.warning("Music provider failure: %s", message)
+                await self.report(session, MusicError(message + " Abud mencoba lagu berikutnya."))
                 session.failures += 1
                 if session.failures >= 3:
                     session.queue.clear()

@@ -18,6 +18,8 @@ from app.music_chat import handle_music_message
 from app.discord_leveling import Leveling, install_leveling_commands
 from app.discord_onboarding import Onboarding
 from app.onboarding_commands import install_onboarding_commands
+from app.discord_tickets import Tickets
+from app.ticket_commands import install_ticket_commands
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -55,7 +57,10 @@ class AbudClient(discord.Client):
             try:
                 try:
                     try:
-                        await onboarding_manager.close()
+                        try:
+                            await ticket_manager.close()
+                        finally:
+                            await onboarding_manager.close()
                     finally:
                         await leveling_manager.close()
                 finally:
@@ -75,7 +80,23 @@ class AbudClient(discord.Client):
 
 
 client = AbudClient(intents=intents, chunk_guilds_at_startup=False)
-tree = app_commands.CommandTree(client)
+
+
+class AbudCommandTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction):
+        if ticket_manager.protected(interaction.channel):
+            command = interaction.command
+            root = (getattr(command, "root_parent", None) or command) if command else None
+            if not root or root.name != "ticket":
+                await interaction.response.send_message(
+                    "Channel tiket hanya untuk support. Gunakan perintah Abud lainnya di channel umum.",
+                    ephemeral=True,
+                )
+                return False
+        return True
+
+
+tree = AbudCommandTree(client)
 voice_manager = DiscordVoice(client, API_URL, INTERNAL_API_KEY)
 install_voice_commands(tree, voice_manager)
 notification_manager = Notifications(client)
@@ -86,6 +107,10 @@ leveling_manager = Leveling(client)
 install_leveling_commands(tree, leveling_manager)
 onboarding_manager = Onboarding(client)
 install_onboarding_commands(tree, onboarding_manager)
+ticket_manager = Tickets(client)
+install_ticket_commands(tree, ticket_manager)
+onboarding_manager.role_reserved = ticket_manager.reserved_role
+ticket_manager.reaction_role_bound = onboarding_manager.has_role_binding
 
 
 
@@ -944,6 +969,7 @@ async def on_ready():
         except Exception as error:
             print(f"Slash Command sync error: {error}")
 
+    await ticket_manager.start()
     await onboarding_manager.start()
     await leveling_manager.start()
     await notification_manager.start()
@@ -1011,6 +1037,11 @@ async def on_raw_reaction_clear_emoji(payload):
 
 
 @client.event
+async def on_guild_channel_delete(channel):
+    await ticket_manager.channel_deleted(channel)
+
+
+@client.event
 async def on_raw_message_delete(payload):
     await onboarding_manager.invalidated(payload.guild_id, [payload.message_id])
 
@@ -1059,6 +1090,7 @@ async def on_disconnect():
 
 @client.event
 async def on_resumed():
+    await ticket_manager.start()
     await onboarding_manager.start()
     await leveling_manager.start()
 
@@ -1066,6 +1098,9 @@ async def on_resumed():
 @client.event
 async def on_message(message):
     if message.author.bot:
+        return
+
+    if ticket_manager.protected(message.channel):
         return
 
     await leveling_manager.message(message)

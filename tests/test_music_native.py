@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 import tempfile
 import unittest
 import wave
@@ -7,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from app.music_native import NativeCatalog, NativePlayer, NativeTrack
+from app.music_native import NativeCatalog, NativePlayer, NativeTrack, local_audio
 from app.music_session import MusicError, MusicSession
 
 
@@ -77,6 +78,23 @@ class NativeCatalogTests(unittest.TestCase):
             out.write(b"x")
         with self.assertRaises(MusicError):
             self.catalog.validate(track)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    def test_real_ffmpeg_decodes_pcm_offline(self):
+        with wave.open(str(self.fx.root / "tone.wav"), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(48000)
+            wav.writeframes(b"\xff\x0f" * 48000 * 2)
+        audio = local_audio(self.catalog.search("tone")[0], 50)
+        try:
+            packets = [audio.read() for _ in range(101)]
+            self.assertEqual(audio.frames, 100)
+            self.assertTrue(any(packets[0]))
+            self.assertEqual(len(packets[0]), 3840)
+            self.assertEqual(packets[-1], b"")
+        finally:
+            audio.cleanup()
 
     def test_non_native_rejected(self):
         with self.assertRaises(MusicError):

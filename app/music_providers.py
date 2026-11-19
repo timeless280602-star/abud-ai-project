@@ -1,7 +1,7 @@
 """Opt-in catalog routing and conservative recording identity."""
 import re
 import unicodedata
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 NAMES = {"deezer": "Deezer", "spotify": "Spotify", "applemusic": "Apple Music",
          "tidal": "Tidal", "soundcloud": "SoundCloud", "youtube": "YouTube",
@@ -19,10 +19,43 @@ def provider_order(value):
     return items
 
 
+YOUTUBE_HOSTS = frozenset(("youtube.com", "www.youtube.com", "m.youtube.com",
+                           "music.youtube.com", "youtu.be"))
+
+
+def youtube_target(query):
+    """Return a canonical video/playlist URL and a video ID, if applicable."""
+    p = urlsplit(query)
+    if (p.scheme != "https" or p.hostname not in YOUTUBE_HOSTS
+            or p.username is not None or p.password is not None or p.port not in (None, 443)):
+        raise ValueError("Invalid YouTube URL")
+    params = parse_qs(p.query, keep_blank_values=True, max_num_fields=30)
+    path = p.path.rstrip("/")
+    video = None
+    if p.hostname == "youtu.be":
+        video = path.removeprefix("/")
+    elif path == "/watch" and len(params.get("v", [])) == 1:
+        video = params["v"][0]
+    elif re.fullmatch(r"/(?:shorts|live|embed)/[A-Za-z0-9_-]{11}", path):
+        video = path.rsplit("/", 1)[1]
+    elif path == "/playlist" and len(params.get("list", [])) == 1:
+        playlist = params["list"][0]
+        if re.fullmatch(r"[A-Za-z0-9_-]{2,100}", playlist):
+            return "https://www.youtube.com/playlist?list=" + playlist, None
+    if video and re.fullmatch(r"[A-Za-z0-9_-]{11}", video):
+        # A shared watch URL always means the selected video, not its mix/playlist.
+        return "https://www.youtube.com/watch?v=" + video, video
+    raise ValueError("Invalid YouTube video or playlist ID")
+
+
 def source_for_link(query):
     p = urlsplit(query)
     host = p.hostname or ""
-    if host in ("youtube.com", "www.youtube.com", "music.youtube.com", "youtu.be"):
+    if host in YOUTUBE_HOSTS:
+        try:
+            youtube_target(query)
+        except ValueError:
+            return None
         return "youtube"
     if host in ("soundcloud.com", "www.soundcloud.com", "on.soundcloud.com"):
         return "soundcloud"

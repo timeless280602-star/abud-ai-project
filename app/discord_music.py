@@ -136,6 +136,12 @@ class Music:
         )
         self.playback_fallback = os.getenv("ABUD_MUSIC_PLAYBACK_FALLBACK", "false").lower() == "true"
         self.audius_probe = AudiusCatalogMode()
+        self.pilot_guild = None
+        pilot = os.getenv("ABUD_MUSIC_PILOT_GUILD", "")
+        if pilot:
+            if not pilot.isascii() or not pilot.isdecimal() or not 17 <= len(pilot) <= 20 or int(pilot) <= 0:
+                raise ValueError("Invalid private music pilot guild")
+            self.pilot_guild = int(pilot)
         self.native_catalog = None
         self.native_guild = None
         if os.getenv("ABUD_MUSIC_NATIVE_LOCAL", "false").lower() == "true":
@@ -315,6 +321,9 @@ class Music:
 
     def user_channel(self, interaction):
         self.audius_probe.require_actor(interaction)
+        pilot_guild = getattr(self, "pilot_guild", None)
+        if pilot_guild is not None and interaction.guild_id != pilot_guild:
+            raise MusicError("Musik sedang dalam pengujian terbatas di server lain.")
         if getattr(self, "native_catalog", None) and interaction.guild_id != self.native_guild:
             raise MusicError("Pilot audio lokal belum aktif di server ini.")
         channel = getattr(getattr(interaction.user, "voice", None), "channel", None)

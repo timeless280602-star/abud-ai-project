@@ -297,6 +297,69 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 await self.manager.search("https://localhost/private")
             self.assertEqual(fetch.await_count, 1)
 
+    async def test_implicit_search_falls_back_on_provider_load_error(self):
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        self.manager.search_source = "soundcloud"
+        error = wavelink.LavalinkLoadException(data={
+            "message": "failed", "severity": "fault",
+            "cause": "Did not detect any supported formats secret=https://secret.invalid/"
+        })
+        with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                   new=AsyncMock(side_effect=[error, [track()]])) as fetch:
+            result = await self.manager.search("song")
+            self.assertEqual(len(result), 1)
+            self.assertEqual([c.args[0] for c in fetch.await_args_list],
+                             ["scsearch:song", "ytsearch:song"])
+
+    async def test_implicit_empty_result_falls_back_only_once(self):
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        self.manager.search_source = "youtube"
+        with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                   new=AsyncMock(side_effect=[[], []])) as fetch:
+            with self.assertRaisesRegex(MusicError, "YouTube.*SoundCloud"):
+                await self.manager.search("song")
+            self.assertEqual(fetch.await_count, 2)
+
+    async def test_explicit_source_or_link_never_falls_back_and_error_is_safe(self):
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        error = wavelink.LavalinkLoadException(data={
+            "message": "failed", "severity": "fault",
+            "cause": "Not success status code: 403; secret=https://secret.invalid/"
+        })
+        for query, source, label in [
+            ("song", "youtube", "YouTube"),
+            ("https://artist.bandcamp.com/track/song", None, "Bandcamp"),
+        ]:
+            with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                       new=AsyncMock(side_effect=error)) as fetch:
+                with self.assertRaises(MusicError) as cm:
+                    await self.manager.search(query, source)
+                self.assertIn(label + " menolak akses audio", str(cm.exception))
+                self.assertNotIn("secret", str(cm.exception))
+                fetch.assert_awaited_once()
+                if source is None:
+                    self.assertEqual(fetch.call_args.args[0], query)
+
+    async def test_provider_track_error_does_not_echo_raw_details(self):
+        await self.session.enqueue([track()], 100)
+        self.manager.report = AsyncMock()
+        self.manager.panel = AsyncMock()
+        await self.manager.track_error(SimpleNamespace(
+            player=self.player, track=self.player.play.call_args.args[0],
+            exception={"message": "failed", "cause": "Did not detect any supported formats https://secret.invalid/token"},
+        ))
+        msg = str(self.manager.report.await_args.args[1])
+        self.assertIn("SoundCloud tidak menyediakan format audio", msg)
+        self.assertNotIn("secret", msg)
+
+    async def test_node_failure_not_retried_against_other_provider(self):
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                   new=AsyncMock(side_effect=wavelink.NodeException("secret"))) as fetch:
+            with self.assertRaisesRegex(MusicError, "Koneksi layanan musik"):
+                await self.manager.search("song")
+            fetch.assert_awaited_once()
+
     async def test_node_waits_for_delayed_ready_and_reuses_concurrent_connection(self):
         self.manager.password = "not-a-real-secret"
         node = Mock(status=wavelink.NodeStatus.CONNECTING, close=AsyncMock())

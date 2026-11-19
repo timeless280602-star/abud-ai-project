@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 
 from app.voice_session import VoiceSession
+from app.music_session import MusicError
 
 log = logging.getLogger(__name__)
 MAX_RESPONSE = 16 * 1024 * 1024
@@ -375,12 +376,12 @@ class GuildVoice:
             await self.services.close()
 
 
-def install_voice_commands(tree, manager):
+def install_voice_commands(tree, manager, *, music_manager=None):
     async def run(interaction, action):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             text = await action()
-        except VoiceError as error:
+        except (VoiceError, MusicError) as error:
             text = str(error)
         except Exception as error:  # noqa: BLE001 - slash-command boundary must sanitize failures
             log.warning("Discord voice command failed (%s)", type(error).__name__)
@@ -398,13 +399,32 @@ def install_voice_commands(tree, manager):
 
         await run(interaction, action)
 
-    @tree.command(name="leave", description="Tutup sesi voice dan keluarkan Abud.")
+    @tree.command(name="leave", description="Putuskan koneksi Abud dari voice channel, bukan server.")
     @app_commands.guild_only()
     async def leave(interaction: discord.Interaction):
         async def action():
-            manager.active(interaction, control=True)
-            await manager.leave(interaction.guild_id)
-            return "Sesi voice selesai. Abud sudah keluar."
+            guild_id = interaction.guild_id
+            if guild_id is None:
+                raise VoiceError("Gunakan command ini di server Discord.")
+            if music_manager is not None and guild_id in music_manager.sessions:
+                route = "music"
+            elif guild_id in manager.sessions:
+                route = "voice"
+            else:
+                log.info("Voice-only leave: guild=%s route=none outcome=no_session", guild_id)
+                return "Abud belum masuk voice channel. Tidak ada sesi musik atau AI voice aktif."
+            log.info("Voice-only leave: guild=%s route=%s outcome=requested", guild_id, route)
+            try:
+                if route == "music":
+                    await music_manager.apply(interaction, "leave")
+                else:
+                    manager.active(interaction, control=True)
+                    await manager.leave(guild_id)
+            except (MusicError, VoiceError):
+                log.info("Voice-only leave: guild=%s route=%s outcome=rejected", guild_id, route)
+                raise
+            log.info("Voice-only leave: guild=%s route=%s outcome=completed", guild_id, route)
+            return "Sesi selesai. Abud keluar dari voice channel, bukan dari server."
 
         await run(interaction, action)
 

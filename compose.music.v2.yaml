@@ -1,0 +1,13 @@
+# Optional compatibility profile AFTER compose.music.youtube.yaml.
+# No new sources enabled; no credentials, keys, cookies or raw audio URL access.
+services:
+  abud-lavalink:
+    environment:
+      LAVALINK_PLUGINS_1_DEPENDENCY: com.github.topi314.lavasrc:lavasrc-plugin:4.8.2
+      LAVALINK_PLUGINS_1_SNAPSHOT: 'false'
+      LAVALINK_PLUGINS_2_DEPENDENCY: com.github.topi314.lavasearch:lavasearch-plugin:1.0.0
+      LAVALINK_PLUGINS_2_SNAPSHOT: 'false'
+      PLUGINS_LAVASRC_SOURCES_DEEZER: 'false'
+      PLUGINS_LAVASRC_SOURCES_SPOTIFY: 'false'
+      PLUGINS_LAVASRC_SOURCES_APPLEMUSIC: 'false'
+      PLUGINS_LAVASRC_SOURCES_TIDAL: 'false'

@@ -1,0 +1,17 @@
+# Maintenance ONLY. Last overlay after compose.music.youtube.yaml.
+# No public listener; the normal music session is restricted to one test operator.
+services:
+  abud-bot:
+    environment:
+      ABUD_MUSIC_AUDIUS_TEST: 'true'
+      ABUD_MUSIC_AUDIUS_TEST_GUILD: ${ABUD_MUSIC_AUDIUS_TEST_GUILD:?Set test guild ID}
+      ABUD_MUSIC_AUDIUS_TEST_USER: ${ABUD_MUSIC_AUDIUS_TEST_USER:?Set test user ID}
+      ABUD_MUSIC_AUDIUS_TEST_TRACK: ${ABUD_MUSIC_AUDIUS_TEST_TRACK:?Set approved Audius track ID}
+      ABUD_MUSIC_PLAYBACK_FALLBACK: 'false'
+  abud-lavalink:
+    environment:
+      LAVALINK_SERVER_SOURCES_HTTP: 'true'
+      LAVALINK_SERVER_SOURCES_LOCAL: 'false'
+      LAVALINK_SERVER_SOURCES_SOUNDCLOUD: 'false'
+      LAVALINK_SERVER_SOURCES_BANDCAMP: 'false'
+      PLUGINS_YOUTUBE_ENABLED: 'false'

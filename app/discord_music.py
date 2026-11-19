@@ -9,12 +9,14 @@ from urllib.parse import urlsplit
 import discord
 import wavelink
 
-from app.music_session import MusicError, MusicSession, duration, music_query
+from app.music_session import MusicChoiceRequired, MusicError, MusicSession, RequestedTrack, duration, music_query
+from app.music_audius_live import AudiusCatalogMode
+from app.music_native import NativeCatalog, NativePlayer, NativeTrack
+from app.music_providers import (
+    NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link, normalized, youtube_target,
+)
 
 log = logging.getLogger(__name__)
-
-
-PROVIDER_NAMES = {"youtube": "YouTube", "soundcloud": "SoundCloud", "bandcamp": "Bandcamp"}
 
 
 def provider_failure(source, details):
@@ -34,17 +36,6 @@ def provider_failure(source, details):
     if "timeout" in text or "timed out" in text:
         return f"{name} melewati batas waktu."
     return f"{name} gagal memuat audio."
-
-
-def link_provider(query):
-    host = urlsplit(query).hostname or ""
-    if host == "youtu.be" or host.endswith("youtube.com"):
-        return "youtube"
-    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
-        return "soundcloud"
-    if host == "bandcamp.com" or host.endswith(".bandcamp.com"):
-        return "bandcamp"
-    return ""
 
 
 def safe_link(value):
@@ -70,7 +61,7 @@ def now_embed(session):
     track = current.track
     embed = discord.Embed(
         title=discord.utils.escape_mentions(track.title)[:256],
-        url=safe_link(track.uri),
+        url=None if track.source == "http" else safe_link(track.uri),
         description=discord.utils.escape_mentions(track.author or "Unknown artist")[
             :1000
         ],
@@ -88,6 +79,7 @@ def now_embed(session):
     embed.add_field(
         name="Posisi / durasi", value=f"{duration(session.player.position)} / {length}"
     )
+    embed.add_field(name="Sumber track", value="Audius" if track.source == "http" else "Local Audio" if track.source == "native" else PROVIDER_NAMES.get(track.source, "Lainnya"))
     embed.add_field(name="Diminta oleh", value=f"<@{current.requester}>")
     embed.add_field(
         name="Antrean · volume · repeat",
@@ -138,7 +130,31 @@ class Music:
         self.enabled = os.getenv("ABUD_MUSIC_ENABLED", "false").lower() == "true"
         self.uri = os.getenv("ABUD_LAVALINK_URL", "http://abud-lavalink:2333")
         self.password = os.getenv("ABUD_LAVALINK_PASSWORD", "")
-        self.search_source = os.getenv("ABUD_MUSIC_SEARCH_SOURCE", "soundcloud")
+        self.providers = provider_order(os.getenv("ABUD_MUSIC_PROVIDERS", "soundcloud,youtube,bandcamp"))
+        self.search_source = os.getenv("ABUD_MUSIC_SEARCH_SOURCE") or next(
+            (p for p in self.providers if p in PREFIXES), ""
+        )
+        self.playback_fallback = os.getenv("ABUD_MUSIC_PLAYBACK_FALLBACK", "false").lower() == "true"
+        self.audius_probe = AudiusCatalogMode()
+        self.pilot_guild = None
+        pilot = os.getenv("ABUD_MUSIC_PILOT_GUILD", "")
+        if pilot:
+            if not pilot.isascii() or not pilot.isdecimal() or not 17 <= len(pilot) <= 20 or int(pilot) <= 0:
+                raise ValueError("Invalid private music pilot guild")
+            self.pilot_guild = int(pilot)
+        self.native_catalog = None
+        self.native_guild = None
+        if os.getenv("ABUD_MUSIC_NATIVE_LOCAL", "false").lower() == "true":
+            if (self.audius_probe.enabled or self.playback_fallback
+                    or os.getenv("ABUD_MUSIC_NATIVE_TERMS_ACCEPTED", "").lower() != "true"):
+                raise ValueError("Native local pilot requires exclusive authorized mode")
+            try:
+                self.native_guild = int(os.getenv("ABUD_MUSIC_NATIVE_GUILD", ""))
+                if self.native_guild <= 0:
+                    raise ValueError()
+            except ValueError:
+                raise ValueError("Invalid native catalog guild") from None
+            self.native_catalog = NativeCatalog()
         self.sessions = {}
         self.node = None
         self.node_lock = asyncio.Lock()
@@ -200,21 +216,58 @@ class Music:
             return self.node
 
     async def search(self, query, source=None):
-        query = music_query(query)
+        native = getattr(self, "native_catalog", None)
+        if native:
+            self.require()
+            if source not in (None, "native"):
+                raise MusicError("Pilot ini hanya mendukung katalog audio lokal.")
+            async with self.search_slots:
+                result = await asyncio.to_thread(native.search, query)
+            if not result:
+                raise MusicError("Tidak ada audio lokal yang cocok.")
+            return result
+        if source == "native":
+            raise MusicError("Audio lokal belum diaktifkan.")
+        if self.audius_probe.enabled:
+            try:
+                is_youtube = source_for_link(query.strip()) == "youtube"
+            except ValueError:
+                is_youtube = False
+            if is_youtube:
+                raise MusicError("Link YouTube belum tersedia selama pilot Audius. Buka video di YouTube atau pilih lagu Audius.")
+            node = await self.ensure_node()
+            try:
+                async with asyncio.timeout(30), self.search_slots:
+                    return await self.audius_probe.load(query, source, node)
+            except (TimeoutError, wavelink.WavelinkException):
+                raise MusicError("Audio Audius belum bisa dimuat.") from None
+        if source == "audius":
+            raise MusicError("Audius masih dalam pengujian terbatas.")
+        query = music_query(query, self.providers)
         preferred = source or self.search_source
-        if preferred not in ("youtube", "soundcloud"):
-            raise MusicError("Sumber pencarian harus YouTube atau SoundCloud.")
-        node = await self.ensure_node()
         direct = bool(urlsplit(query).scheme)
-        providers = [link_provider(query) if direct else preferred]
-        if not direct and source is None:
-            providers.append("soundcloud" if preferred == "youtube" else "youtube")
+        if source is not None and (source not in PREFIXES or source not in self.providers):
+            raise MusicError("Provider pencarian ini belum aktif.")
+        video_id = None
+        if direct:
+            provider = source_for_link(query)
+            if provider == "youtube":
+                query, video_id = youtube_target(query)
+            if source is not None and source != provider:
+                raise MusicError("Pilihan provider tidak cocok dengan link lagu.")
+            providers = [provider]
+        else:
+            if preferred not in PREFIXES or preferred not in self.providers:
+                raise MusicError("Provider pencarian default belum aktif.")
+            providers = [preferred]
+            if source is None:
+                providers.extend(p for p in self.providers if p in PREFIXES and p != preferred)
+        node = await self.ensure_node()
         failures = []
         try:
             async with asyncio.timeout(30), self.search_slots:
                 for provider in providers:
-                    prefix = "ytsearch:" if provider == "youtube" else "scsearch:"
-                    identifier = query if direct else prefix + query
+                    identifier = query if direct else PREFIXES[provider] + query
                     try:
                         async with asyncio.timeout(15):
                             result = await wavelink.Pool.fetch_tracks(identifier, node=node)
@@ -226,6 +279,11 @@ class Music:
                         raise MusicError("Koneksi layanan musik bermasalah. Coba lagi sebentar.") from None
                     else:
                         if result and (not isinstance(result, wavelink.Playlist) or result.tracks):
+                            if video_id is not None:
+                                if (isinstance(result, wavelink.Playlist) or len(result) != 1
+                                        or result[0].source != "youtube"
+                                        or result[0].identifier != video_id):
+                                    raise MusicError("Hasil YouTube tidak cocok dengan video yang diminta.")
                             return result
                         failures.append(f"{PROVIDER_NAMES.get(provider, 'Sumber musik')}: tidak ada hasil.")
         except TimeoutError:
@@ -243,11 +301,31 @@ class Music:
                 "Abud sedang di mode voice lain. Tutup sesi AI dengan /leave sebelum mulai musik."
             )
         result = await self.search(query, source)
+        if self.audius_probe.dynamic or getattr(self, "native_catalog", None):
+            # Never silently substitute a cover or unrelated search hit.
+            q = normalized(query)
+            exact = [t for t in result if q in (normalized(t.title),
+                     normalized(t.title + ' ' + t.author), normalized(t.author + ' ' + t.title))]
+            if len(exact) != 1:
+                # Exact matches first; retain other candidates for deliberate selection.
+                choices = exact + [t for t in result if not any(t is e for e in exact)]
+                raise MusicChoiceRequired(choices)
+            result = exact
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
-        await self.enqueue(context, tracks)
+        allow_fallback = (not self.audius_probe.enabled and not getattr(self, "native_catalog", None)
+                          and self.playback_fallback and source is None
+                          and not urlsplit(query.strip()).scheme
+                          and not isinstance(result, wavelink.Playlist))
+        await self.enqueue(context, tracks, allow_fallback=allow_fallback)
         return tracks
 
     def user_channel(self, interaction):
+        self.audius_probe.require_actor(interaction)
+        pilot_guild = getattr(self, "pilot_guild", None)
+        if pilot_guild is not None and interaction.guild_id != pilot_guild:
+            raise MusicError("Musik sedang dalam pengujian terbatas di server lain.")
+        if getattr(self, "native_catalog", None) and interaction.guild_id != self.native_guild:
+            raise MusicError("Pilot audio lokal belum aktif di server ini.")
         channel = getattr(getattr(interaction.user, "voice", None), "channel", None)
         if not interaction.guild or not isinstance(channel, discord.VoiceChannel):
             raise MusicError("Masuk ke voice channel biasa dulu.")
@@ -280,11 +358,19 @@ class Music:
             )
         return session
 
-    async def enqueue(self, interaction, tracks):
+    async def enqueue(self, interaction, tracks, *, allow_fallback=False):
         self.require()
         channel = self.user_channel(interaction)
         if not tracks or len(tracks) > MusicSession.LIMIT:
             raise MusicError("Pilih 1–100 lagu per permintaan/playlist.")
+        native = getattr(self, "native_catalog", None)
+        if native:
+            for track in tracks:
+                await asyncio.to_thread(native.validate, track)
+        else:
+            if any(isinstance(track, NativeTrack) for track in tracks):
+                raise MusicError("Audio lokal belum diaktifkan.")
+            self.audius_probe.check_enqueue(tracks)
         # Shared lock prevents simultaneous music/AI joins creating competing connections.
         async with self.voice.lock:
             session = self.sessions.get(interaction.guild_id)
@@ -314,29 +400,30 @@ class Music:
                     raise MusicError(
                         "Abud perlu View Channel, Send Messages, dan Embed Links untuk panel musik."
                     )
-                node = await self.ensure_node()
+                node = None if native else await self.ensure_node()
                 # Recheck member position after network I/O before connecting.
                 if self.user_channel(interaction).id != channel.id:
                     raise MusicError(
                         "Voice channel berubah saat mencari lagu. Coba /music play lagi."
                     )
-                player = await channel.connect(
-                    cls=lambda client, channel: wavelink.Player(
-                        client, channel, nodes=[node]
-                    ),
-                    timeout=20,
-                    self_deaf=True,
-                    reconnect=True,
-                )
-                player.autoplay = wavelink.AutoPlayMode.disabled
-                player.inactive_timeout = None
-                session = MusicSession(player, interaction.user.id, text)
+                if native:
+                    vc = await channel.connect(timeout=20, self_deaf=True, reconnect=True)
+                    player = NativePlayer(vc, native, self.native_end)
+                else:
+                    player = await channel.connect(
+                        cls=lambda client, channel: wavelink.Player(client, channel, nodes=[node]),
+                        timeout=20, self_deaf=True, reconnect=True,
+                    )
+                    player.autoplay = wavelink.AutoPlayMode.disabled
+                    player.inactive_timeout = None
+                session = MusicSession(player, interaction.user.id, text,
+                                       before_play=None if native else self.audius_probe.before_play)
                 self.sessions[interaction.guild_id] = session
                 created = True
             else:
                 self.active(interaction)
             try:
-                await session.enqueue(tracks, interaction.user.id)
+                await session.enqueue(tracks, interaction.user.id, allow_fallback=allow_fallback)
             except BaseException:
                 if created:
                     self.sessions.pop(interaction.guild_id, None)
@@ -378,13 +465,15 @@ class Music:
             interaction, control=True, action=action, expected=expected
         )
         if action == "leave":
-            await self.leave(interaction.guild_id)
+            await self.leave(interaction.guild_id, expected=session)
         else:
             await session.control(action, value)
             await self.panel(session)
 
-    async def leave(self, guild_id):
+    async def leave(self, guild_id, *, expected=None):
         async with self.voice.lock:
+            if expected is not None and self.sessions.get(guild_id) is not expected:
+                raise MusicError("Sesi musik sudah berubah. Coba lagi.")
             session = self.sessions.pop(guild_id, None)
             if not session:
                 return
@@ -406,7 +495,22 @@ class Music:
                     except discord.HTTPException:
                         pass
 
+    async def native_end(self, player, nonce, reason):
+        session = self.for_player(player)
+        if not session:
+            return
+        try:
+            if await session.ended(nonce, reason):
+                if reason == "loadFailed":
+                    await self.report(session, MusicError("Audio lokal gagal diputar. Abud mencoba antrean berikutnya."))
+                await self.panel(session)
+        except Exception as error:
+            await self.report(session, error)
+
     async def track_end(self, payload):
+        if payload.reason == "loadFailed" and self.playback_fallback:
+            await self.track_error(payload)
+            return
         session = self.for_player(payload.player)
         if not session:
             return
@@ -428,14 +532,38 @@ class Music:
             else None
         )
 
+    async def resolve_alternative(self, original):
+        """One bounded search for a matching recording from enabled direct sources."""
+        if not self.node or self.node.status != wavelink.NodeStatus.CONNECTED or original.is_stream:
+            return None
+        try:
+            async with asyncio.timeout(8), self.search_slots:
+                for provider in self.providers:
+                    if provider == original.source or provider not in DIRECT or provider not in PREFIXES:
+                        continue
+                    try:
+                        async with asyncio.timeout(3):
+                            query = f"{original.title} {original.author}"[:300]
+                            found = await wavelink.Pool.fetch_tracks(PREFIXES[provider] + query, node=self.node)
+                    except (TimeoutError, wavelink.LavalinkLoadException):
+                        continue
+                    if isinstance(found, wavelink.Playlist):
+                        continue
+                    for candidate in found[:5]:
+                        if candidate.source == provider and same_recording(original, candidate):
+                            return candidate
+        except (TimeoutError, wavelink.WavelinkException):
+            pass
+        return None
+
     async def track_error(self, payload):
         session = self.for_player(payload.player)
         if session:
             # Nonce invalidation also makes a subsequent loadFailed end event harmless.
             async with session.lock:
                 if (
-                    getattr(payload.track.extras, "abud_music_nonce", None)
-                    != session.nonce
+                    session.closed or not session.current or not session.nonce
+                    or getattr(payload.track.extras, "abud_music_nonce", None) != session.nonce
                 ):
                     return
                 exception = getattr(payload, "exception", None)
@@ -447,6 +575,21 @@ class Music:
                 else:
                     message = provider_failure(payload.track.source, "")
                 log.warning("Music provider failure: %s", message)
+                current = session.current
+                if (self.playback_fallback and current.allow_fallback
+                        and not current.track.is_stream
+                        and 0 <= session.player.position <= 5000):
+                    candidate = await self.resolve_alternative(current.track)
+                    if candidate is not None:
+                        try:
+                            await session._play(RequestedTrack(candidate, current.requester))
+                        except Exception:
+                            pass
+                        else:
+                            await self.report(session, MusicError(message + " Mencoba rekaman yang sama dari "
+                                + PROVIDER_NAMES.get(candidate.source, "provider lain") + "."))
+                            await self.panel(session)
+                            return
                 await self.report(session, MusicError(message + " Abud mencoba lagu berikutnya."))
                 session.failures += 1
                 if session.failures >= 3:
@@ -484,7 +627,8 @@ class Music:
     async def node_lost(self, payload):
         if payload.node is self.node:
             for session in list(self.sessions.values()):
-                await self.connection_lost(session.player)
+                if not isinstance(session.player, NativePlayer):
+                    await self.connection_lost(session.player)
 
     async def voice_state_update(self, member, before, after):
         session = self.sessions.get(member.guild.id)

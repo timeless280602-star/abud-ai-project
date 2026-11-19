@@ -5,7 +5,8 @@ from dataclasses import dataclass
 
 import discord
 
-from app.music_session import MusicError
+from app.music_session import MusicChoiceRequired, MusicError
+from app.music_commands import SongSelection
 
 # Anchored imperative grammar: ordinary chat, quoted instructions and explanations
 # are not treated as actions. Song titles and artist names are passed through intact.
@@ -34,7 +35,7 @@ def music_request(content, bot_id=None):
     addressed = text != original
     if not addressed and not re.match(
         r"^(?:coba\s+(?:putar|puter|mainkan)\w*\b|"
-        r"(?:(?:tolong|coba|mohon)\s+)*(?:putar\w*|puter\w*|mainkan|play)\s+(?:lagu|musik|playlist|https://)\b)",
+        r"(?:(?:tolong|coba|mohon)\s+)*(?:putar\w*|puter\w*|mainkan|play)\s+(?:lagu\b|musik\b|playlist\b|<?https://))",
         text,
         re.IGNORECASE,
     ):
@@ -49,6 +50,13 @@ def music_request(content, bot_id=None):
         (query[0], query[-1]) in [('"', '"'), ("'", "'"), ("(", ")"), ("<", ">")]
     ):
         query = query[1:-1].strip()
+    # Accept a pasted Markdown link only when its visible URL and target agree.
+    # Never interpret an arbitrary hyperlink label as a different requested URL.
+    linked = re.fullmatch(r"\[(https://[^\s\[\]()]+)\]\((https://[^\s\[\]()]+)\)", query)
+    if linked:
+        if linked.group(1) != linked.group(2):
+            return None
+        query = linked.group(2)
     return query
 
 
@@ -86,6 +94,13 @@ async def handle_music_message(message, manager, *, bot_id=None):
             text = f"🎶 **{title}** masuk antrean musik, Bos. Lihat panel Abud Music untuk status pemutarannya."
         else:
             text = f"🎶 {len(tracks)} lagu masuk antrean musik. Lihat panel Abud Music untuk status pemutarannya."
+    except MusicChoiceRequired as choice:
+        view = SongSelection(manager, message.author.id, choice.tracks)
+        view.message = await message.reply(
+            "Pilih lagu yang kamu maksud (berlaku 60 detik; hanya peminta yang bisa memilih).",
+            view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
     except Exception as error:  # noqa: BLE001 - do not expose provider responses or credentials in chat
         text = (
             str(error)

@@ -1,0 +1,18 @@
+# Guild-scoped Audius-only pilot. Not a mixed-provider or public HTTP configuration.
+# Apply last, after compose.music.youtube.yaml. Keep Lavalink on private network.
+services:
+  abud-bot:
+    environment:
+      ABUD_MUSIC_ENABLED: 'true'
+      ABUD_MUSIC_AUDIUS_TEST: 'false'
+      ABUD_MUSIC_AUDIUS_CATALOG: 'true'
+      ABUD_MUSIC_AUDIUS_GUILD: ${ABUD_MUSIC_AUDIUS_GUILD:?Set pilot guild ID}
+      ABUD_MUSIC_AUDIUS_TERMS_ACCEPTED: ${ABUD_MUSIC_AUDIUS_TERMS_ACCEPTED:?Review API terms and confirm authorized use}
+      ABUD_MUSIC_PLAYBACK_FALLBACK: 'false'
+  abud-lavalink:
+    environment:
+      LAVALINK_SERVER_SOURCES_HTTP: 'true'
+      LAVALINK_SERVER_SOURCES_LOCAL: 'false'
+      LAVALINK_SERVER_SOURCES_SOUNDCLOUD: 'false'
+      LAVALINK_SERVER_SOURCES_BANDCAMP: 'false'
+      PLUGINS_YOUTUBE_ENABLED: 'false'

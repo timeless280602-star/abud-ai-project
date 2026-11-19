@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 COPY requirements-bot.txt .
-RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg libopus0 fonts-dejavu-core \
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ffmpeg libopus0 fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements-bot.txt
 RUN groupadd --system --gid 10001 abudbot && useradd --system --uid 10001 --gid 10001 --home-dir /app --no-create-home abudbot

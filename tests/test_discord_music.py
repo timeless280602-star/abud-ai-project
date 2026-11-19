@@ -204,6 +204,29 @@ class QueryTests(unittest.TestCase):
                 music_query(value)
         self.assertEqual(duration(3661000), "1:01:01")
 
+    def test_youtube_link_variants_and_untrusted_paths(self):
+        from app.music_providers import youtube_target
+        canonical = "https://www.youtube.com/watch?v=abcdefghijk"
+        for value in (
+            "https://youtu.be/abcdefghijk?si=shared",
+            "https://www.youtube.com/watch?v=abcdefghijk&list=RDabcdefghijk",
+            "https://m.youtube.com/watch?v=abcdefghijk",
+            "https://music.youtube.com/watch?v=abcdefghijk",
+            "https://www.youtube.com/shorts/abcdefghijk",
+            "https://www.youtube.com/live/abcdefghijk",
+        ):
+            self.assertEqual(youtube_target(music_query(value)), (canonical, "abcdefghijk"))
+        for value in (
+            "https://youtube.com/redirect?q=https://example.com",
+            "https://youtu.be/abcdefghijk/other",
+            "https://youtube.com/watch?v=abcdefghijk&v=ABCDEFGHIJK",
+            "https://youtube.com/watch?v=bad",
+        ):
+            with self.assertRaises(MusicError):
+                music_query(value)
+        self.assertEqual(youtube_target("https://youtube.com/playlist?list=PL123"),
+                         ("https://www.youtube.com/playlist?list=PL123", None))
+
     def test_v2_catalog_url_guards_and_recording_identity(self):
         enabled = provider_order("deezer,spotify,deezer")
         self.assertEqual(enabled, ("deezer", "spotify"))
@@ -337,6 +360,40 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(MusicError, "YouTube.*SoundCloud"):
                 await self.manager.search("song")
             self.assertEqual(fetch.await_count, 2)
+
+    async def test_direct_youtube_video_queues_exact_recording_without_fallback(self):
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        self.manager.enqueue = AsyncMock()
+        self.manager.playback_fallback = True
+        song = track("abcdefghijk", source="youtube")
+        with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                   new=AsyncMock(return_value=[song])) as fetch:
+            result = await self.manager.play_query(
+                self.interaction, "https://youtu.be/abcdefghijk?si=test")
+        self.assertEqual(result, [song])
+        self.assertEqual(fetch.await_args.args[0], "https://www.youtube.com/watch?v=abcdefghijk")
+        self.manager.enqueue.assert_awaited_once_with(
+            self.interaction, [song], allow_fallback=False)
+
+    async def test_direct_youtube_rejects_different_track_or_provider(self):
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        self.manager.enqueue = AsyncMock()
+        for song in [track("ABCDEFGHIJK", source="youtube"),
+                     track("abcdefghijk", source="soundcloud")]:
+            with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                       new=AsyncMock(return_value=[song])) as fetch:
+                with self.assertRaisesRegex(MusicError, "tidak cocok"):
+                    await self.manager.play_query(
+                        self.interaction, "https://youtu.be/abcdefghijk")
+                fetch.assert_awaited_once()
+        self.manager.enqueue.assert_not_awaited()
+
+    async def test_audius_pilot_rejects_direct_youtube_without_loading(self):
+        self.manager.audius_probe.enabled = True
+        self.manager.ensure_node = AsyncMock()
+        with self.assertRaisesRegex(MusicError, "pilot Audius"):
+            await self.manager.search("https://youtu.be/abcdefghijk")
+        self.manager.ensure_node.assert_not_awaited()
 
     async def test_explicit_source_or_link_never_falls_back_and_error_is_safe(self):
         self.manager.ensure_node = AsyncMock(return_value=Mock())

@@ -87,7 +87,9 @@ class NativeCatalogTests(unittest.TestCase):
             wav.setframerate(48000)
             wav.writeframes(b"\xff\x0f" * 48000 * 2)
         audio = local_audio(self.catalog.search("tone")[0], 50)
+        pipe = audio.original._process.stdout
         try:
+            self.assertIsNone(audio.original._pipe_reader_thread)
             packets = [audio.read() for _ in range(101)]
             self.assertEqual(audio.frames, 100)
             self.assertTrue(any(packets[0]))
@@ -95,6 +97,19 @@ class NativeCatalogTests(unittest.TestCase):
             self.assertEqual(packets[-1], b"")
         finally:
             audio.cleanup()
+        self.assertTrue(pipe.closed)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    def test_real_ffmpeg_early_stop_closes_pipe(self):
+        audio = local_audio(self.catalog.search("tone")[0], 50)
+        process = audio.original._process
+        pipe = process.stdout
+        try:
+            self.assertEqual(len(audio.read()), 3840)
+        finally:
+            audio.cleanup()
+        self.assertTrue(pipe.closed)
+        self.assertIsNotNone(process.poll())
 
     def test_non_native_rejected(self):
         with self.assertRaises(MusicError):

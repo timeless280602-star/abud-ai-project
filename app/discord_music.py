@@ -12,7 +12,7 @@ import wavelink
 from app.music_session import MusicChoiceRequired, MusicError, MusicSession, RequestedTrack, duration, music_query
 from app.music_audius_live import AudiusCatalogMode
 from app.music_providers import (
-    NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link, normalized,
+    NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link, normalized, youtube_target,
 )
 
 log = logging.getLogger(__name__)
@@ -197,6 +197,12 @@ class Music:
 
     async def search(self, query, source=None):
         if self.audius_probe.enabled:
+            try:
+                is_youtube = source_for_link(query.strip()) == "youtube"
+            except ValueError:
+                is_youtube = False
+            if is_youtube:
+                raise MusicError("Link YouTube belum tersedia selama pilot Audius. Buka video di YouTube atau pilih lagu Audius.")
             node = await self.ensure_node()
             try:
                 async with asyncio.timeout(30), self.search_slots:
@@ -210,8 +216,11 @@ class Music:
         direct = bool(urlsplit(query).scheme)
         if source is not None and (source not in PREFIXES or source not in self.providers):
             raise MusicError("Provider pencarian ini belum aktif.")
+        video_id = None
         if direct:
             provider = source_for_link(query)
+            if provider == "youtube":
+                query, video_id = youtube_target(query)
             if source is not None and source != provider:
                 raise MusicError("Pilihan provider tidak cocok dengan link lagu.")
             providers = [provider]
@@ -238,6 +247,11 @@ class Music:
                         raise MusicError("Koneksi layanan musik bermasalah. Coba lagi sebentar.") from None
                     else:
                         if result and (not isinstance(result, wavelink.Playlist) or result.tracks):
+                            if video_id is not None:
+                                if (isinstance(result, wavelink.Playlist) or len(result) != 1
+                                        or result[0].source != "youtube"
+                                        or result[0].identifier != video_id):
+                                    raise MusicError("Hasil YouTube tidak cocok dengan video yang diminta.")
                             return result
                         failures.append(f"{PROVIDER_NAMES.get(provider, 'Sumber musik')}: tidak ada hasil.")
         except TimeoutError:

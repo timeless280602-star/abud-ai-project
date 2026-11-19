@@ -26,6 +26,8 @@ class SongSelection(discord.ui.View):
         super().__init__(timeout=60)
         self.message = None
         self.requester = requester
+        tracks = tuple(tracks[:5])
+        self.claimed = False
         select = discord.ui.Select(
             placeholder="Pilih lagu untuk ditambahkan",
             options=[
@@ -47,19 +49,30 @@ class SongSelection(discord.ui.View):
                     ephemeral=True,
                 )
                 return
-            await interaction.response.defer(ephemeral=True)
-            # Consume selection before I/O, so two clicks cannot enqueue the song twice.
-            if self.is_finished():
-                await interaction.followup.send(
-                    "Pilihan sudah digunakan. Cari lagi untuk menambah lagu lain.",
+            # Read this interaction's payload, not mutable shared Select.values.
+            # Claim synchronously before any await; simultaneous clicks cannot race.
+            if self.claimed or self.is_finished():
+                await interaction.response.send_message(
+                    "Pilihan sudah digunakan atau kedaluwarsa. Cari lagi.",
                     ephemeral=True,
                 )
                 return
+            values = (interaction.data or {}).get("values", [])
+            if (len(values) != 1 or values[0] not in
+                    {str(i) for i in range(len(tracks))}):
+                await interaction.response.send_message("Pilihan lagu tidak valid.", ephemeral=True)
+                return
+            track = tracks[int(values[0])]
+            self.claimed = True
             self.stop()
             select.disabled = True
+            await interaction.response.defer(ephemeral=True, thinking=True)
             try:
-                await interaction.edit_original_response(view=self)
-                track = tracks[int(select.values[0])]
+                if self.message:
+                    try:
+                        await self.message.edit(view=None)
+                    except discord.HTTPException:
+                        pass
                 await manager.enqueue(interaction, [track])
                 await interaction.followup.send(
                     f"Ditambahkan: {discord.utils.escape_mentions(track.title)[:150]}.",

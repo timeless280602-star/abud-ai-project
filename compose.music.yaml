@@ -3,6 +3,9 @@ services:
   abud-bot:
     environment:
       ABUD_MUSIC_ENABLED: ${ABUD_MUSIC_ENABLED:-false}
+      ABUD_MUSIC_PROVIDERS: ${ABUD_MUSIC_PROVIDERS:-soundcloud,youtube,bandcamp}
+      ABUD_MUSIC_SEARCH_SOURCE: ${ABUD_MUSIC_SEARCH_SOURCE:-}
+      ABUD_MUSIC_PLAYBACK_FALLBACK: ${ABUD_MUSIC_PLAYBACK_FALLBACK:-false}
       ABUD_LAVALINK_URL: http://abud-lavalink:2333
       ABUD_LAVALINK_PASSWORD: ${ABUD_LAVALINK_PASSWORD:?Set a private Lavalink password}
     networks:

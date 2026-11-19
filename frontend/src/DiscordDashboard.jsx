@@ -43,13 +43,40 @@ function EmojiPicker({value,change,emojis,disabled}){
   <Field label="Emoji yang dipilih / tempel emoji lain" note="Pilih di atas atau tempel satu emoji asli. Nama :emoji: hanya untuk custom emoji server ini."><input value={value} maxLength={100} disabled={disabled} onChange={e=>change(e.target.value)} placeholder="🎮"/></Field>
  </div>
 }
+function ReactionEmoji({value}){
+ const custom=/^<a?:([A-Za-z0-9_]+):(\d+)>$/.exec(value||'');
+ return custom?<span role="img" aria-label={custom[1]}>:{custom[1]}:</span>:<span>{value||'—'}</span>;
+}
 function Panel({p,s,run}){
  const [emoji,setEmoji]=useState(''),[role,setRole]=useState(''),[target,setTarget]=useState(p.channel||'');
- return <Section title={p.title}><p>{p.description}</p><p className="dd-note">{p.enabled?'Aktif':'Draft / jeda'} · {p.mode==='single'?'Satu pilihan':'Beberapa pilihan'}</p>{p.mappings.map(m=><div key={m.emoji} className="dd-line"><span>{m.display} — {s.roles.find(r=>r.id===m.role)?.name||'Role tidak tersedia'}</span>{btn('Hapus pilihan',()=>run('reaction.unbind',{id:p.id,emoji:m.display},true),!!p.enabled)}</div>)}<EmojiPicker value={emoji} change={setEmoji} emojis={s.emojis||[]} disabled={!!p.enabled}/><Select label="Role yang diberikan" value={role} change={setRole} options={s.roles}/>{btn('Tambahkan pilihan',()=>run('reaction.bind',{id:p.id,emoji,role}),!emoji||!role||!!p.enabled)}<Select label="Channel panel" value={target} change={setTarget} options={s.channels.filter(c=>c.type==='text')}/><div className="dd-actions">{btn('Publikasikan',()=>run('reaction.publish',{id:p.id,channel:target},true),!target||!p.mappings.length||!!p.enabled)}{btn('Nonaktifkan',()=>run('reaction.disable',{id:p.id},true),!p.enabled)}{btn('Hapus panel',()=>run('reaction.delete',{id:p.id},true),!!p.enabled)}</div><p className="dd-note">Menonaktifkan atau menghapus panel tidak mencabut role lama secara massal.</p></Section>
+ const checks=s.reaction_roles||{}, roleInfo=checks[role], eligible=s.roles.filter(r=>checks[r.id]?.allowed&&!p.mappings.some(m=>m.role===r.id)), blocked=s.roles.filter(r=>checks[r.id]&&!checks[r.id].allowed);
+ const channels=s.channels.filter(c=>c.type==='text'&&(!p.channel||c.id===p.channel)), chosen=channels.find(c=>c.id===target);
+ return <div className="dd-reaction-editor">
+ <div className="dd-panel-head"><div><h2>{p.title}</h2><p>{p.description}</p></div><span className={'dd-state '+(p.enabled?'is-live':'')}>{p.enabled?'Aktif di Discord':p.message?'Dijeda':'Draft · belum terbit'}</span></div>
+ <div className="dd-steps" aria-label="Progres konfigurasi"><span className="done">1. Panel dibuat</span><span className={p.mappings.length?'done':''}>2. Pilihan role</span><span className={p.enabled?'done':''}>3. Publikasi</span></div>
+ <div className="dd-panel-columns"><div>
+ <Section title="2. Pilih emoji & role">
+ <p className="dd-note">{p.enabled?'Jeda panel sebelum mengubah pilihan.':'Tambahkan satu pasangan emoji dan role untuk setiap pilihan anggota.'}</p>
+ {p.mappings.length?<div className="dd-mapping-list">{p.mappings.map(m=><div className="dd-mapping" key={m.emoji}><div className="dd-mapping-emoji"><ReactionEmoji value={m.display}/></div><div><strong>{s.roles.find(r=>r.id===m.role)?.name||'Role tidak tersedia'}</strong><small>{checks[m.role]?.allowed?'Siap digunakan':checks[m.role]?.reason||'Periksa role di Discord'}</small></div>{!p.enabled&&btn('Hapus',()=>run('reaction.unbind',{id:p.id,emoji:m.display},true))}</div>)}</div>:<p className="dd-empty">Belum ada pilihan. Tambahkan pilihan pertama di bawah.</p>}
+ {!p.enabled&&<><EmojiPicker value={emoji} change={setEmoji} emojis={s.emojis||[]}/><Select label="Role yang akan diterima anggota" value={role} change={setRole} options={eligible}/>{!eligible.length&&<p className="dd-note">Tidak ada role tambahan yang memenuhi syarat. Periksa izin dan hierarki role di Discord, lalu muat ulang.</p>}
+ <button className="dd-primary" type="button" disabled={!emoji.trim()||!roleInfo?.allowed||!eligible.some(r=>r.id===role)} onClick={()=>run('reaction.bind',{id:p.id,emoji:emoji.trim(),role})}>+ Simpan pilihan</button>
+ {blocked.length>0&&<details className="dd-role-help"><summary>{blocked.length} role tidak dapat dipilih — lihat alasan</summary>{blocked.map(r=><div key={r.id}><strong>{r.name}</strong><small>{checks[r.id].reason}</small></div>)}<p className="dd-note">Perbaiki di Server Settings → Roles, lalu gunakan Muat ulang. Jangan menghapus izin staff hanya agar role bisa dipilih.</p></details>}
+ </>}</Section></div>
+ <div><Section title="Preview pesan Discord"><div className="dd-discord-preview"><small>ABUD BOT</small><strong>{p.title}</strong><p>{p.description}</p>{p.mappings.map(m=><div key={m.emoji}><ReactionEmoji value={m.display}/> → @{s.roles.find(r=>r.id===m.role)?.name||'Role tidak tersedia'}</div>)}{!p.mappings.length&&<small>Belum ada pilihan tersimpan.</small>}<small>{p.mode==='single'?'Hanya satu pilihan role':'Boleh memilih beberapa role'}</small></div><p className="dd-note">Preview dari pilihan yang sudah disimpan, bukan pesan yang sudah dikirim.</p></Section>
+ <Section title="3. Publikasikan ke Discord">
+ {p.enabled?<><p>Panel aktif di #{s.channels.find(c=>c.id===p.channel)?.name||'channel tersimpan'}.</p>{btn('Jeda panel untuk mengedit',()=>run('reaction.disable',{id:p.id},true))}</>:<><Select label="Channel tujuan" value={target} change={setTarget} options={channels}/>{p.channel&&<p className="dd-note">Panel yang pernah terbit harus tetap di channel asal.</p>}<button className="dd-primary" type="button" disabled={!chosen||!p.mappings.length||p.mappings.some(m=>!checks[m.role]?.allowed)} onClick={()=>run('reaction.publish',{id:p.id,channel:target},true)}>{p.message?'Aktifkan kembali':'Publikasikan panel'}</button><p className="dd-note">{!p.mappings.length?'Tambahkan minimal satu pilihan dulu.':p.mappings.some(m=>!checks[m.role]?.allowed)?'Perbaiki atau hapus pilihan role yang tidak valid.':!chosen?'Pilih channel tujuan.':'Siap dikirim ke Discord.'}</p></>}
+ <details className="dd-role-help"><summary>Pengaturan lanjutan</summary><p className="dd-note">Menjeda atau menghapus panel tidak mencabut role lama secara massal.</p>{btn('Hapus panel',()=>run('reaction.delete',{id:p.id},true),!!p.enabled)}</details></Section></div></div></div>
 }
 function Reactions({s,run}){
  const [v,set]=useFields({title:'Pilih role kamu',description:'Klik emoji untuk mendapatkan role.',mode:'multiple'});
- return <><Section title="Buat panel role"><Text label="Judul" value={v.title} change={x=>set('title',x)}/><Text label="Deskripsi" value={v.description} change={x=>set('description',x)} max={1500} area/><Select label="Mode pilihan" value={v.mode} change={x=>set('mode',x)} options={choices([['multiple','Boleh beberapa role'],['single','Hanya satu role']])}/><p className="dd-note">Buat draft, tambahkan emoji dan role, lalu publikasikan. Role berizin tinggi akan ditolak oleh bot.</p>{btn('Buat draft panel',()=>run('reaction.create',v),!v.title||!v.mode)}</Section>{s.panels.map(p=><Panel key={p.id} p={p} s={s} run={run}/>)}</>
+ const [selected,setSelected]=useState(null),[creating,setCreating]=useState(false);
+ const panel=s.panels.find(p=>p.id===selected)||s.panels[0];
+ return <div className="dd-reaction">
+ <p className="dd-note">Anggota klik emoji di Discord untuk mengambil role sendiri. Kelola panel yang sudah ada atau buat panel baru.</p>
+ <div className="dd-panel-head"><h2>Panel role ({s.panels.length})</h2><button className="dd-primary" type="button" onClick={()=>setCreating(x=>!x)}>{creating?'Tutup form':'+ Buat panel'}</button></div>
+ {(creating||!s.panels.length)&&<Section title="1. Buat panel baru"><Text label="Judul pesan" value={v.title} change={x=>set('title',x)}/><Text label="Petunjuk untuk anggota" value={v.description} change={x=>set('description',x)} max={1500} area/><Select label="Berapa role boleh dipilih?" value={v.mode} change={x=>set('mode',x)} options={choices([['multiple','Boleh beberapa role'],['single','Hanya satu role']])}/><button className="dd-primary" type="button" disabled={!v.title.trim()||!v.mode} onClick={async()=>{const result=await run('reaction.create',v);if(result){setSelected(result.panels.find(p=>!s.panels.some(old=>old.id===p.id))?.id||null);setCreating(false)}}}>Buat panel & lanjutkan</button></Section>}
+ {s.panels.length>0&&<><div className="dd-panel-list" aria-label="Pilih panel">{s.panels.map(p=><button aria-pressed={panel?.id===p.id} key={p.id} type="button" onClick={()=>{setSelected(p.id);setCreating(false)}}><strong>{p.title}</strong><small>{p.enabled?'Aktif':p.message?'Dijeda':'Draft'} · {p.mappings.length} pilihan</small></button>)}</div>{panel&&<Panel key={panel.id+':'+s.revision} p={panel} s={s} run={run}/>}</>}
+ </div>
 }
 function NotifyFields({v,set,text}){return <><Select label="Channel tujuan" value={v.destination} change={x=>set('destination',x)} options={text}/><Select label="Jenis notifikasi" value={v.events} change={x=>set('events',x)} options={choices([['both','Live dan video baru'],['live','Live saja'],['post','Video baru saja']])}/><Select label="Ping anggota" value={v.ping} change={x=>set('ping',x)} options={choices([['none','Tanpa ping'],['here','@here'],['everyone','@everyone']])}/></>}
 function Subscription({row,s,run}){const [v,set]=useFields(row);return <Section title={row.title}><p className="dd-note">{row.platform} · {row.account}</p><Toggle label="Aktifkan notifikasi" value={v.enabled} onChange={x=>set('enabled',x)}/><NotifyFields v={v} set={set} text={s.channels.filter(c=>c.type==='text')}/><div className="dd-actions">{btn('Simpan',()=>run('notify.edit',{id:row.id,destination:v.destination,ping:v.ping,events:v.events,enabled:!!v.enabled},v.ping!=='none'))}{btn('Kirim contoh (tanpa ping)',()=>run('notify.test',{id:row.id},true))}{btn('Hapus langganan',()=>run('notify.remove',{id:row.id},true))}</div></Section>}
@@ -61,7 +88,7 @@ function VoiceMusic({s,kind}){return <Section title={kind==='voice'?'AI Voice':'
 async function request(path, data) {
  const response=await fetch(path,{credentials:'same-origin',...(data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{})});
  let body;try{body=await response.json()}catch{throw new Error('Server tidak dapat memberikan respons. Muat ulang.')}
- if(!response.ok)throw new Error(typeof body.detail==='string'?body.detail:'Permintaan gagal.');
+ if(!response.ok){const error=new Error(typeof body.detail==='string'?body.detail:'Permintaan gagal.');error.status=response.status;throw error;}
  return body;
 }
 export default function DiscordDashboard(){
@@ -75,8 +102,8 @@ export default function DiscordDashboard(){
   setBusy(true);setError('');setNotice('');
   try{
    if(action!=='read')await request('/dashboard/discord/action',{guild_id:guild,action,data});
-   setSnapshot(await load(guild));setVersion(x=>x+1);setNotice(action==='read'?'Data diperbarui.':'Pengaturan berhasil disimpan / tindakan berhasil.');
-  }catch(e){setError(e.message+' Muat ulang sebelum mencoba aksi yang sama.');if(action!=='read'){try{setSnapshot(await load(guild));setVersion(x=>x+1)}catch{setSnapshot(null)}}}
+   const fresh=await load(guild);setSnapshot(fresh);setVersion(x=>x+1);setNotice(action==='read'?'Data diperbarui.':action==='reaction.bind'?'Pilihan emoji dan role tersimpan.':action==='reaction.publish'?'Panel berhasil dipublikasikan ke Discord.':'Pengaturan berhasil disimpan.');return fresh;
+  }catch(e){setError(e.message+(e.status===400?' Periksa pilihan dan izin di Discord.':' Muat ulang sebelum mencoba aksi yang sama.'));if(action!=='read'){try{setSnapshot(await load(guild));if(e.status!==400)setVersion(x=>x+1)}catch{setSnapshot(null)}}return null;}
   finally{setBusy(false)}
  }
  const current=modules.find(m=>m[0]===tab), available=s?.available[linked[tab]||tab];
@@ -88,8 +115,8 @@ export default function DiscordDashboard(){
   {servers===null?<p>Memeriksa server Discord…</p>:!servers.length?<Section title="Belum ada server yang dapat dikelola"><p>Undang ABUD menggunakan tombol di atas, lalu segarkan daftar server. Login dengan akun Discord yang menjadi Administrator atau pemilik server. Selesaikan profil jika diperlukan.</p><a href="/auth/discord/login">Login Discord</a></Section>:<Section title="Pilih server"><fieldset disabled={busy}><Select label="Server Discord" value={guild} change={id=>{setTab('overview');setGuild(id)}} options={servers}/>{guild&&btn('Muat ulang',()=>run('read'))}</fieldset></Section>}
   {busy&&<p role="status">Memproses…</p>}
   {s&&<><div className="dd-tabs"><button type="button" aria-current={tab==='overview'?'page':undefined} onClick={()=>setTab('overview')} disabled={busy}>Ringkasan</button>{modules.map(([key,title])=><button key={key} type="button" aria-current={tab===key?'page':undefined} disabled={busy} onClick={()=>{setTab(key);setNotice('');setError('')}}>{title}</button>)}</div>
-  {tab==='overview'?<div className="dd-grid">{modules.map(([key,title,desc,Icon])=><button key={key} disabled={busy} type="button" className="dd-module" onClick={()=>setTab(key)}><Icon size={25}/><span><strong>{title}</strong><small>{desc}</small><small className="dd-status">{status(key)}</small></span><ChevronRight size={18}/></button>)}</div>:<><h2 className="dd-subheading">{current?.[1]}</h2>{!available?<Section title="Fitur belum tersedia"><p>Hubungi pengelola ABUD untuk mengaktifkan layanan ini.</p></Section>:<fieldset disabled={busy} key={guild+'-'+tab+'-'+version}>
-  {tab==='leveling'?<Level s={s} run={run}/>:tab==='welcome'?<Welcome s={s} run={run}/>:tab==='ticket'?<Tickets s={s} run={run}/>:tab==='reaction'?<Reactions s={s} run={run}/>:tab==='notifications'?<Notifications s={s} run={run}/>:<VoiceMusic s={s} kind={tab}/>}
+  {tab==='overview'?<div className="dd-grid">{modules.map(([key,title,desc,Icon])=><button key={key} disabled={busy} type="button" className="dd-module" onClick={()=>setTab(key)}><Icon size={25}/><span><strong>{title}</strong><small>{desc}</small><small className="dd-status">{status(key)}</small></span><ChevronRight size={18}/></button>)}</div>:<><h2 className="dd-subheading">{current?.[1]}</h2>{!available?<Section title="Fitur belum tersedia"><p>Hubungi pengelola ABUD untuk mengaktifkan layanan ini.</p></Section>:<fieldset disabled={busy} key={guild+'-'+tab+(tab==='reaction'?'':'-'+version)}>
+  {tab==='leveling'?<Level s={s} run={run}/>:tab==='welcome'?<Welcome s={s} run={run}/>:tab==='ticket'?<Tickets s={s} run={run}/>:tab==='reaction'?<Reactions s={{...s,revision:version}} run={run}/>:tab==='notifications'?<Notifications s={s} run={run}/>:<VoiceMusic s={s} kind={tab}/>}
   </fieldset>}</>}
   </>}
  </main>

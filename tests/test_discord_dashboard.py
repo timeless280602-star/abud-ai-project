@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, Mock
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 from app.discord_dashboard import install_dashboard_gateway, snowflake, row_json, toggle, administer, guild_emojis
-from app.onboarding import parse_emoji, OnboardingError
+from app.onboarding import parse_emoji, OnboardingError, blocked_permission_names
+from app.discord_dashboard import reaction_role_check
 
 class InviteTests(unittest.TestCase):
     def test_fixed_guild_install_and_minimal_permissions(self):
@@ -50,6 +51,18 @@ class EmojiPickerTests(unittest.TestCase):
         guild.emojis.append(Emoji(999, "gaming"))
         with self.assertRaises(OnboardingError):
             parse_emoji(":gaming:", guild)
+
+class RoleChecks(unittest.TestCase):
+    def test_role_checks_share_real_policy(self):
+        manager=Mock()
+        guild, role, actor=Mock(), Mock(), Mock()
+        self.assertTrue(reaction_role_check(guild,role,actor,manager)["allowed"])
+        manager.check_role.assert_called_once_with(guild,role,actor)
+        manager.check_role.side_effect=OnboardingError("Manage Roles")
+        self.assertEqual(reaction_role_check(guild,role,actor,manager),{"allowed":False,"reason":"Manage Roles"})
+    def test_permission_names_explain_without_weakening_policy(self):
+        self.assertIn("Manage Roles", blocked_permission_names(discord.Permissions(manage_roles=True).value))
+        self.assertIn("Administrator", blocked_permission_names(discord.Permissions(administrator=True).value))
 
 class Serialization(unittest.TestCase):
     def test_discord_ids_not_js_numbers(self):

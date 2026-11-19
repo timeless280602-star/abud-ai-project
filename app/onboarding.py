@@ -90,6 +90,13 @@ def parse_emoji(text, guild):
     return emoji_key(text), text
 
 
+def blocked_permission_names(value):
+    blocked = value & ~SAFE_PERMISSIONS
+    names = [name.replace("_", " ").title()
+             for name, enabled in discord.Permissions(blocked) if enabled]
+    return ", ".join(names) or "Izin khusus"
+
+
 def validate_role(guild, role, actor=None):
     if (
         not role
@@ -109,13 +116,13 @@ def validate_role(guild, role, actor=None):
         )
     if role.permissions.value & ~SAFE_PERMISSIONS:
         raise OnboardingError(
-            "Role dengan izin administrasi/moderasi atau izin khusus tidak boleh dipilih sendiri."
+            "Role dengan izin administrasi/moderasi atau izin khusus tidak boleh dipilih sendiri: " + blocked_permission_names(role.permissions.value) + "."
         )
     for channel in guild.channels:
         allow, _ = channel.overwrites_for(role).pair()
         if allow.value & ~SAFE_PERMISSIONS:
             raise OnboardingError(
-                "Role ini memberi izin khusus lewat channel overwrite dan tidak bisa menjadi reaction role."
+                "Role ini memberi izin khusus lewat channel overwrite: " + blocked_permission_names(allow.value) + " (channel " + channel.name + ")."
             )
     return role
 

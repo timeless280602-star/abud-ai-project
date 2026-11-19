@@ -66,3 +66,5 @@ or the browser by this route; only public installation parameters.
 
 ### Reaction emoji picker
 Choose a common Unicode emoji or a usable custom emoji listed from the selected server. The manual field accepts pasted emoji and unique `:name:` shorthand for custom emojis in that server; ambiguous or unavailable names are rejected. The backend still validates the selected emoji and role before storing a mapping. Existing panels are unchanged.
+
+Reaction Roles now opens a single selected panel with draft creation, saved choices and a separate publication preview. Role compatibility uses the existing server-side policy with the current actor; explanations include blocked permission names. This is an advisory snapshot, and all mutations still revalidate permissions. Invalid choices must be removed or repaired before publishing. Existing panels and database schema are unchanged.

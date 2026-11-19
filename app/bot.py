@@ -16,6 +16,8 @@ from app.discord_music import Music
 from app.music_commands import install_music_commands
 from app.music_chat import handle_music_message
 from app.discord_leveling import Leveling, install_leveling_commands
+from app.discord_onboarding import Onboarding
+from app.onboarding_commands import install_onboarding_commands
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -43,6 +45,8 @@ if not INTERNAL_API_KEY:
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
+intents.reactions = True
+intents.members = os.getenv("ABUD_ONBOARDING_ENABLED", "false").lower() == "true"
 
 
 class AbudClient(discord.Client):
@@ -50,7 +54,10 @@ class AbudClient(discord.Client):
         try:
             try:
                 try:
-                    await leveling_manager.close()
+                    try:
+                        await onboarding_manager.close()
+                    finally:
+                        await leveling_manager.close()
                 finally:
                     await notification_manager.close()
             finally:
@@ -67,7 +74,7 @@ class AbudClient(discord.Client):
                 await super().close()
 
 
-client = AbudClient(intents=intents)
+client = AbudClient(intents=intents, chunk_guilds_at_startup=False)
 tree = app_commands.CommandTree(client)
 voice_manager = DiscordVoice(client, API_URL, INTERNAL_API_KEY)
 install_voice_commands(tree, voice_manager)
@@ -77,6 +84,8 @@ music_manager = Music(client, voice_manager)
 install_music_commands(tree, music_manager)
 leveling_manager = Leveling(client)
 install_leveling_commands(tree, leveling_manager)
+onboarding_manager = Onboarding(client)
+install_onboarding_commands(tree, onboarding_manager)
 
 
 
@@ -935,6 +944,7 @@ async def on_ready():
         except Exception as error:
             print(f"Slash Command sync error: {error}")
 
+    await onboarding_manager.start()
     await leveling_manager.start()
     await notification_manager.start()
     await music_manager.start()
@@ -968,6 +978,46 @@ async def on_guild_remove(guild):
             f"Guild remove sync gagal ({guild.id}): "
             f"{type(error).__name__}: {error}"
         )
+
+
+@client.event
+async def on_member_join(member):
+    await onboarding_manager.welcome(member)
+
+
+@client.event
+async def on_raw_member_remove(payload):
+    await onboarding_manager.member_left(payload.guild_id, payload.user.id)
+
+
+@client.event
+async def on_raw_reaction_add(payload):
+    await onboarding_manager.reaction(payload, added=True)
+
+
+@client.event
+async def on_raw_reaction_remove(payload):
+    await onboarding_manager.reaction(payload, added=False)
+
+
+@client.event
+async def on_raw_reaction_clear(payload):
+    await onboarding_manager.invalidated(payload.guild_id, [payload.message_id])
+
+
+@client.event
+async def on_raw_reaction_clear_emoji(payload):
+    await onboarding_manager.invalidated(payload.guild_id, [payload.message_id])
+
+
+@client.event
+async def on_raw_message_delete(payload):
+    await onboarding_manager.invalidated(payload.guild_id, [payload.message_id])
+
+
+@client.event
+async def on_raw_bulk_message_delete(payload):
+    await onboarding_manager.invalidated(payload.guild_id, payload.message_ids)
 
 
 @client.event
@@ -1009,6 +1059,7 @@ async def on_disconnect():
 
 @client.event
 async def on_resumed():
+    await onboarding_manager.start()
     await leveling_manager.start()
 
 

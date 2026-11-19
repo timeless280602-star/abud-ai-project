@@ -1,5 +1,12 @@
 # Optional overlay for compose.yaml. Voice services have no published ports.
 services:
+  abud-bot:
+    networks:
+      - voice
+    environment:
+      ABUD_DISCORD_VOICE_ENABLED: ${ABUD_DISCORD_VOICE_ENABLED:-false}
+      ABUD_DISCORD_VOICE_WORKER_URL: http://abud-voice:8001
+
   abud-api:
     networks:
       - voice

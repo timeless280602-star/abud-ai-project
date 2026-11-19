@@ -10,6 +10,8 @@ import discord
 from discord import app_commands
 from aiohttp import web
 
+from app.discord_voice import DiscordVoice, install_voice_commands
+
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 INTERNAL_API_KEY = os.getenv("ABUD_INTERNAL_API_KEY", "")
@@ -35,9 +37,26 @@ if not INTERNAL_API_KEY:
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 
-client = discord.Client(intents=intents)
+
+class AbudClient(discord.Client):
+    async def close(self):
+        try:
+            await voice_manager.close()
+        finally:
+            try:
+                runner = getattr(self, "_verification_gateway_runner", None)
+                if runner:
+                    await runner.cleanup()
+            finally:
+                await super().close()
+
+
+client = AbudClient(intents=intents)
 tree = app_commands.CommandTree(client)
+voice_manager = DiscordVoice(client, API_URL, INTERNAL_API_KEY)
+install_voice_commands(tree, voice_manager)
 
 
 
@@ -609,7 +628,7 @@ async def memory_command(
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Panduan Abud",
-        description="Gunakan tiga slash command berikut:",
+        description="Chat, Memory, dan percakapan suara bersama Abud:",
         color=discord.Color.blurple()
     )
 
@@ -632,6 +651,18 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="/help",
         value="Menampilkan panduan ini.",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Voice channel",
+        value=(
+            "`/join` masuk; `/listen aktif:True` aktifkan suaramu; "
+            "`/listen aktif:False` berhenti didengar; `/stop` hentikan jawaban; "
+            "`/voice-status` status; `/leave` keluar. "
+            "Awali setiap pertanyaan dengan ‘Abud’, maksimal 12 detik. "
+            "Pembuka sesi atau pengelola server dapat menutup sesi."
+        ),
         inline=False
     )
 
@@ -901,6 +932,7 @@ async def on_guild_join(guild):
 
 @client.event
 async def on_guild_remove(guild):
+    await voice_manager.leave(guild.id)
     try:
         await asyncio.to_thread(sync_guild_to_api, guild, False)
         print(f"Guild ditandai tidak aktif: {guild.id}")
@@ -909,6 +941,11 @@ async def on_guild_remove(guild):
             f"Guild remove sync gagal ({guild.id}): "
             f"{type(error).__name__}: {error}"
         )
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    await voice_manager.voice_state_update(member, before, after)
 
 
 @client.event
@@ -1045,4 +1082,5 @@ async def on_message(message):
         )
 
 
-client.run(TOKEN)
+if __name__ == "__main__":
+    client.run(TOKEN)

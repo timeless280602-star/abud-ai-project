@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import stat
-import subprocess
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,11 +124,23 @@ class CountedAudio(discord.PCMVolumeTransformer):
         return data
 
 
+class LocalPCM(discord.FFmpegPCMAudio):
+    """Close the decoder pipe even when FFmpeg has already exited."""
+    def cleanup(self):
+        process = getattr(self, "_process", None)
+        stdout = getattr(process, "stdout", None)
+        try:
+            super().cleanup()
+        finally:
+            if stdout is not None:
+                stdout.close()
+
+
 def local_audio(track, volume):
     # Force WAV demuxer, forbid all network protocols, never invoke a shell.
-    pcm = discord.FFmpegPCMAudio(
+    pcm = LocalPCM(
         str(track.path), before_options="-nostdin -protocol_whitelist file,pipe -f wav",
-        options="-vn -sn -dn", stderr=subprocess.DEVNULL,
+        options="-vn -sn -dn -loglevel error", stderr=None,
     )
     try:
         return CountedAudio(pcm, volume / 100)
@@ -183,6 +194,10 @@ class NativePlayer:
         self.audio, self.length = audio, checked.length
 
         def after(error):
+            # Discord's audio thread catches transport/encoder exceptions itself.
+            # Record only class and counts, never raw provider data or voice secrets.
+            log.info("Native audio ended: frames=%s expected_ms=%s error=%s",
+                     audio.frames, checked.length, type(error).__name__ if error else "none")
             reason = ("loadFailed" if error or audio.frames == 0
                       or audio.frames * 20 + 1000 < checked.length else "finished")
             try:
@@ -192,6 +207,7 @@ class NativePlayer:
 
         try:
             self.voice.play(audio, after=after)
+            log.info("Native audio started: expected_ms=%s", checked.length)
             if paused:
                 self.voice.pause()
         except BaseException:

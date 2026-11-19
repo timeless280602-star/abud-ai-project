@@ -9,49 +9,32 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from app.music_providers import LEGACY, source_for_link
+
 
 class MusicError(Exception):
     """Actionable text that is safe to show to Discord users."""
 
 
-def music_query(query):
+def music_query(query, enabled=LEGACY):
     query = query.strip()
-    if not query or len(query) > 300:
+    if not query or len(query) > 300 or any(ord(c) < 32 for c in query):
         raise MusicError("Masukkan judul/link lagu, maksimal 300 karakter.")
-    parsed = urlsplit(query)
-    if not parsed.scheme:
-        return query
     try:
-        port = parsed.port
+        parsed = urlsplit(query)
+        if not parsed.scheme:
+            if parsed.netloc:
+                raise ValueError()
+            return query
+        provider = source_for_link(query)
+        if (parsed.scheme != "https" or parsed.username is not None
+                or parsed.password is not None or parsed.port not in (None, 443)
+                or not provider):
+            raise ValueError()
     except ValueError:
-        raise MusicError("Link lagu tidak valid.") from None
-    host = parsed.hostname or ""
-    if host in ("open.spotify.com", "spotify.com"):
-        raise MusicError(
-            "Spotify belum didukung. Cari judul lagunya atau gunakan link YouTube/SoundCloud/Bandcamp."
-        )
-    if (
-        parsed.scheme != "https"
-        or parsed.username
-        or port not in (None, 443)
-        or not (
-            host
-            in (
-                "youtube.com",
-                "www.youtube.com",
-                "music.youtube.com",
-                "youtu.be",
-                "soundcloud.com",
-                "www.soundcloud.com",
-                "on.soundcloud.com",
-                "bandcamp.com",
-            )
-            or host.endswith(".bandcamp.com")
-        )
-    ):
-        raise MusicError(
-            "Gunakan judul lagu atau link HTTPS YouTube, SoundCloud, atau Bandcamp."
-        )
+        raise MusicError("Gunakan judul lagu atau link HTTPS provider musik yang didukung.") from None
+    if provider not in enabled:
+        raise MusicError("Provider link ini belum diaktifkan oleh pengelola bot.")
     return query
 
 
@@ -68,6 +51,7 @@ def duration(milliseconds):
 class RequestedTrack:
     track: object
     requester: int
+    allow_fallback: bool = False
 
 
 class MusicSession:
@@ -88,7 +72,7 @@ class MusicSession:
         self.panel_lock = asyncio.Lock()
         self.idle_since = time.monotonic()
 
-    async def enqueue(self, tracks, requester):
+    async def enqueue(self, tracks, requester, *, allow_fallback=False):
         async with self.lock:
             if self.closed:
                 raise MusicError("Sesi sudah ditutup. Gunakan /music play lagi.")
@@ -96,7 +80,7 @@ class MusicSession:
                 raise MusicError(
                     "Batas antrean 100 lagu termasuk lagu aktif. Kurangi playlist/antrean dulu."
                 )
-            self.queue.extend(RequestedTrack(t, requester) for t in tracks)
+            self.queue.extend(RequestedTrack(t, requester, allow_fallback) for t in tracks)
             self.idle_since = time.monotonic()
             if self.current is None:
                 await self._next()

@@ -58,7 +58,21 @@ def resource(guild, data, key, cls, optional=False):
 def available(manager):
     return bool(manager.enabled and manager.store is not None)
 
-def snapshot(guild, level, onboarding, tickets, notify, voice, music):
+def guild_emojis(guild):
+    """Return only usable custom emojis in the selected guild, as strings."""
+    return [{"id": str(emoji.id), "name": emoji.name, "value": str(emoji)}
+            for emoji in sorted(guild.emojis, key=lambda item: (item.name.casefold(), item.id))
+            if emoji.is_usable()]
+
+def reaction_role_check(guild, role, actor, onboarding):
+    try:
+        onboarding.check_role(guild, role, actor)
+    except OnboardingError as exc:
+        return {"allowed": False, "reason": str(exc)}
+    return {"allowed": True, "reason": ""}
+
+
+def snapshot(guild, level, onboarding, tickets, notify, voice, music, actor=None):
     gid = guild.id
     result = {
         "guild": {"id": str(gid), "name": guild.name},
@@ -68,7 +82,7 @@ def snapshot(guild, level, onboarding, tickets, notify, voice, music):
                      for c in guild.channels if isinstance(c, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel))],
         "roles": [{"id": str(r.id), "name": r.name} for r in guild.roles if not r.is_default() and not r.managed],
         "leveling": None, "welcome": None, "ticket": None, "notifications": None,
-        "panels": [], "available": {"leveling": available(level), "onboarding": available(onboarding),
+        "panels": [], "emojis": guild_emojis(guild), "available": {"leveling": available(level), "onboarding": available(onboarding),
             "ticket": available(tickets), "notifications": available(notify),
             "voice": voice.configured(), "music": bool(music.enabled)},
         "providers": {"youtube": bool(notify.key), "tiktok": len(notify.webhook_secret) >= 32},
@@ -78,6 +92,8 @@ def snapshot(guild, level, onboarding, tickets, notify, voice, music):
         result["leveling"] = row_json(level.store.config(gid))
         result["leveling"]["excluded"] = [str(i) for i in level.store.excludes(gid)]
     if available(onboarding):
+        result["reaction_roles"] = {str(role.id): reaction_role_check(guild, role, actor, onboarding)
+                                    for role in guild.roles if not role.is_default() and not role.managed}
         result["welcome"] = row_json(onboarding.store.welcome(gid))
         result["panels"] = [dict(row_json(p), mappings=[row_json(m) for m in onboarding.store.mappings(p["id"])])
                             for p in onboarding.store.panels(gid)]
@@ -217,7 +233,7 @@ def install_dashboard_gateway(app, client, key, level, onboarding, tickets, noti
                 await administer(guild, actor, action, data, level, onboarding, tickets, notify)
                 log.info("Discord dashboard action=%s guild=%s actor=%s", action, guild.id, actor.id)
                 return web.json_response({"ok": True})
-            return web.json_response(snapshot(guild, level, onboarding, tickets, notify, voice, music))
+            return web.json_response(snapshot(guild, level, onboarding, tickets, notify, voice, music, actor))
         except discord.NotFound:
             return web.json_response({"detail": "Server atau anggota tidak ditemukan."}, status=403)
         except SAFE_ERRORS as exc:

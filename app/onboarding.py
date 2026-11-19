@@ -56,6 +56,18 @@ def emoji_key(emoji):
 
 def parse_emoji(text, guild):
     text = text.strip()
+    # Discord's :name: shorthand is not expanded by a plain web input.
+    # Resolve only unique, usable emojis from this guild, never external IDs.
+    shorthand = re.fullmatch(r":([A-Za-z0-9_]{2,32}):", text)
+    if shorthand:
+        matches = [emoji for emoji in guild.emojis
+                   if emoji.name.casefold() == shorthand.group(1).casefold()
+                   and emoji.is_usable()]
+        if len(matches) == 1:
+            return emoji_key(matches[0]), str(matches[0])
+        if len(matches) > 1:
+            raise OnboardingError("Nama custom emoji ganda. Pilih emoji dari daftar server.")
+        raise OnboardingError("Custom emoji tidak ditemukan atau tidak bisa digunakan Abud. Pilih emoji dari daftar server, atau gunakan emoji Unicode seperti 🎮.")
     if re.fullmatch(r"<a?:\w{2,32}:\d{1,22}>", text):
         ident = discord.PartialEmoji.from_str(text).id
         emoji = guild.get_emoji(ident)
@@ -71,11 +83,18 @@ def parse_emoji(text, guild):
         or not any(unicodedata.category(c) == "So" or c == "\u20e3" for c in text)
     ):
         raise OnboardingError(
-            "Gunakan satu emoji Unicode atau custom emoji dari server ini."
+            "Pilih satu emoji dari daftar, atau tempel emoji Unicode (mis. 🎮). Untuk custom emoji gunakan :nama_emoji: dari server ini."
         )
     if any(c.isalpha() or c in "<>:@" for c in text):
         raise OnboardingError("Format emoji tidak valid.")
     return emoji_key(text), text
+
+
+def blocked_permission_names(value):
+    blocked = value & ~SAFE_PERMISSIONS
+    names = [name.replace("_", " ").title()
+             for name, enabled in discord.Permissions(blocked) if enabled]
+    return ", ".join(names) or "Izin khusus"
 
 
 def validate_role(guild, role, actor=None):
@@ -97,13 +116,13 @@ def validate_role(guild, role, actor=None):
         )
     if role.permissions.value & ~SAFE_PERMISSIONS:
         raise OnboardingError(
-            "Role dengan izin administrasi/moderasi atau izin khusus tidak boleh dipilih sendiri."
+            "Role dengan izin administrasi/moderasi atau izin khusus tidak boleh dipilih sendiri: " + blocked_permission_names(role.permissions.value) + "."
         )
     for channel in guild.channels:
         allow, _ = channel.overwrites_for(role).pair()
         if allow.value & ~SAFE_PERMISSIONS:
             raise OnboardingError(
-                "Role ini memberi izin khusus lewat channel overwrite dan tidak bisa menjadi reaction role."
+                "Role ini memberi izin khusus lewat channel overwrite: " + blocked_permission_names(allow.value) + " (channel " + channel.name + ")."
             )
     return role
 

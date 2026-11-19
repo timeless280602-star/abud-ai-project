@@ -1,5 +1,7 @@
+import asyncio
+import json
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 from app.music_audius import AudiusCatalog, AudiusError, public_track
 
 
@@ -51,3 +53,23 @@ class AudiusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await AudiusCatalog(request=request).search("a & b"),
                          ["good", "next", "third"])
         request.assert_awaited_once_with("/tracks/search?query=a+%26+b&limit=5")
+
+    async def test_curl_real_adapter_path_without_asyncio_timeout(self):
+        proc = Mock(returncode=0, communicate=AsyncMock(
+            return_value=(json.dumps({"data": record()}).encode(), None)
+        ))
+        with patch("app.music_audius.asyncio.create_subprocess_exec",
+                   new=AsyncMock(return_value=proc)) as create:
+            with patch("app.music_audius.asyncio.timeout", None, create=True):
+                result = await AudiusCatalog().track("V66vyPP")
+        self.assertEqual(result.id, "V66vyPP")
+        self.assertEqual(create.await_args.args[0], "curl")
+        proc.kill.assert_not_called()
+
+    async def test_timeout_is_sanitized(self):
+        catalog = AudiusCatalog()
+        with patch.object(catalog, "_curl_request", new=AsyncMock(
+            side_effect=asyncio.TimeoutError("secret")
+        )):
+            with self.assertRaisesRegex(AudiusError, "^API Audius tidak tersedia\\.$"):
+                await catalog.track("V66vyPP")

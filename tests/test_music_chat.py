@@ -12,8 +12,8 @@ from discord import app_commands
 
 from app.discord_music import Music
 from app.music_chat import ChatMusicContext, handle_music_message, music_request
-from app.music_commands import install_music_commands
-from app.music_session import MusicError
+from app.music_commands import install_music_commands, SongSelection
+from app.music_session import MusicChoiceRequired, MusicError
 
 
 class IntentTests(unittest.TestCase):
@@ -172,3 +172,38 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         play.assert_awaited_once()
         ask.assert_not_called()
         await bot.client.close()
+
+
+    async def test_ambiguous_chat_offers_requester_only_selection(self):
+        from test_discord_music import track
+        message = self.message("Abud, coba putar Example")
+        manager = Mock(play_query=AsyncMock(side_effect=MusicChoiceRequired(
+            [track("Example"), track("Other")])), enqueue=AsyncMock())
+        self.assertTrue(await handle_music_message(message, manager))
+        view = message.reply.call_args.kwargs["view"]
+        self.assertIsInstance(view, SongSelection)
+        self.assertEqual(view.requester, message.author.id)
+        self.assertEqual(len(view.children[0].options), 2)
+        manager.enqueue.assert_not_awaited()
+        view.stop()
+
+    async def test_ambiguous_slash_alias_and_group_offer_private_selection(self):
+        from test_discord_music import track
+        client = discord.Client(intents=discord.Intents.none())
+        tree = app_commands.CommandTree(client)
+        manager = Mock(play_query=AsyncMock(side_effect=MusicChoiceRequired(
+            [track("Example"), track("Other")])), enqueue=AsyncMock())
+        install_music_commands(tree, manager)
+        interaction = SimpleNamespace(user=SimpleNamespace(id=20),
+            response=Mock(defer=AsyncMock()), followup=Mock(send=AsyncMock()))
+        try:
+            for command in (tree.get_command("play"), tree.get_command("music").get_command("play")):
+                await command.callback(interaction, "Example", "audius")
+                kwargs = interaction.followup.send.call_args.kwargs
+                self.assertTrue(kwargs["ephemeral"])
+                self.assertEqual(kwargs["view"].requester, 20)
+                self.assertEqual(len(kwargs["view"].children[0].options), 2)
+                kwargs["view"].stop()
+            manager.enqueue.assert_not_awaited()
+        finally:
+            await client.close()

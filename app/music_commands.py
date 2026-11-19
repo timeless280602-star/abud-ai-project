@@ -9,7 +9,7 @@ from app.music_session import MusicError, duration
 from app.music_providers import NAMES, PREFIXES
 
 SOURCES = [app_commands.Choice(name=NAMES[p], value=p) for p in PREFIXES] + [
-    app_commands.Choice(name="Audius (uji)", value="audius")
+    app_commands.Choice(name="Audius", value="audius")
 ]
 MODES = [
     app_commands.Choice(name=name, value=mode)

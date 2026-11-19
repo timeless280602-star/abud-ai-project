@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import discord
 import wavelink
 
-from app.music_session import MusicError, MusicSession, RequestedTrack, duration, music_query
+from app.music_session import MusicChoiceRequired, MusicError, MusicSession, RequestedTrack, duration, music_query
 from app.music_audius_live import AudiusCatalogMode
 from app.music_providers import (
     NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link, normalized,
@@ -261,7 +261,9 @@ class Music:
             exact = [t for t in result if q in (normalized(t.title),
                      normalized(t.title + ' ' + t.author), normalized(t.author + ' ' + t.title))]
             if len(exact) != 1:
-                raise MusicError("Hasil tidak unik atau belum cocok persis. Gunakan /music search untuk memilih lagu.")
+                # Exact matches first; retain other candidates for deliberate selection.
+                choices = exact + [t for t in result if not any(t is e for e in exact)]
+                raise MusicChoiceRequired(choices)
             result = exact
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
         allow_fallback = (not self.audius_probe.enabled and self.playback_fallback and source is None

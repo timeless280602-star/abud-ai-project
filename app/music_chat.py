@@ -35,7 +35,7 @@ def music_request(content, bot_id=None):
     addressed = text != original
     if not addressed and not re.match(
         r"^(?:coba\s+(?:putar|puter|mainkan)\w*\b|"
-        r"(?:(?:tolong|coba|mohon)\s+)*(?:putar\w*|puter\w*|mainkan|play)\s+(?:lagu|musik|playlist|https://)\b)",
+        r"(?:(?:tolong|coba|mohon)\s+)*(?:putar\w*|puter\w*|mainkan|play)\s+(?:lagu\b|musik\b|playlist\b|<?https://))",
         text,
         re.IGNORECASE,
     ):
@@ -50,6 +50,13 @@ def music_request(content, bot_id=None):
         (query[0], query[-1]) in [('"', '"'), ("'", "'"), ("(", ")"), ("<", ">")]
     ):
         query = query[1:-1].strip()
+    # Accept a pasted Markdown link only when its visible URL and target agree.
+    # Never interpret an arbitrary hyperlink label as a different requested URL.
+    linked = re.fullmatch(r"\[(https://[^\s\[\]()]+)\]\((https://[^\s\[\]()]+)\)", query)
+    if linked:
+        if linked.group(1) != linked.group(2):
+            return None
+        query = linked.group(2)
     return query
 
 

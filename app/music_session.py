@@ -16,6 +16,14 @@ class MusicError(Exception):
     """Actionable text that is safe to show to Discord users."""
 
 
+class MusicChoiceRequired(MusicError):
+    """Validated candidates require a deliberate selection before enqueue."""
+
+    def __init__(self, tracks):
+        super().__init__("Hasil tidak unik atau belum cocok persis. Pilih lagu yang diinginkan.")
+        self.tracks = tuple(tracks[:5])
+
+
 def music_query(query, enabled=LEGACY):
     query = query.strip()
     if not query or len(query) > 300 or any(ord(c) < 32 for c in query):

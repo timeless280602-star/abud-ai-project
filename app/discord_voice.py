@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 
 from app.voice_session import VoiceSession
+from app.music_session import MusicError
 
 log = logging.getLogger(__name__)
 MAX_RESPONSE = 16 * 1024 * 1024
@@ -375,12 +376,12 @@ class GuildVoice:
             await self.services.close()
 
 
-def install_voice_commands(tree, manager):
+def install_voice_commands(tree, manager, *, music_manager=None):
     async def run(interaction, action):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             text = await action()
-        except VoiceError as error:
+        except (VoiceError, MusicError) as error:
             text = str(error)
         except Exception as error:  # noqa: BLE001 - slash-command boundary must sanitize failures
             log.warning("Discord voice command failed (%s)", type(error).__name__)
@@ -398,10 +399,13 @@ def install_voice_commands(tree, manager):
 
         await run(interaction, action)
 
-    @tree.command(name="leave", description="Tutup sesi voice dan keluarkan Abud.")
+    @tree.command(name="leave", description="Keluar dari sesi musik atau AI voice Abud.")
     @app_commands.guild_only()
     async def leave(interaction: discord.Interaction):
         async def action():
+            if music_manager is not None and interaction.guild_id in music_manager.sessions:
+                await music_manager.apply(interaction, "leave")
+                return "Sesi musik selesai. Abud sudah keluar."
             manager.active(interaction, control=True)
             await manager.leave(interaction.guild_id)
             return "Sesi voice selesai. Abud sudah keluar."

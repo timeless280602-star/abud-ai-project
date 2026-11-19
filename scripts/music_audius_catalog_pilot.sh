@@ -159,8 +159,8 @@ systemctl is-active --quiet "$UNIT.timer"
 systemctl is-enabled --quiet "$UNIT.timer"
 echo "Rollback armed: $DEADLINE"
 systemctl list-timers "$UNIT.timer" --no-pager
-# Any error or signal attempts restoration; timer remains active if it fails.
-trap 'rc=$?; if (( rc != 0 )); then restore || true; fi' EXIT
+# On error, queue independent systemd recovery. It acquires the lock after exit.
+trap 'rc=$?; if (( rc != 0 )); then systemctl --no-block start "$UNIT.service" || true; fi' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP

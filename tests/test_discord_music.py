@@ -11,24 +11,26 @@ from discord import app_commands
 
 from app.discord_music import Music, MusicControls, now_embed, queue_embed
 from app.music_commands import SongSelection, install_music_commands
+from app.music_providers import provider_order, same_recording
 from app.music_session import MusicError, MusicSession, duration, music_query
 
 
-def track(name="Track", *, stream=False):
+def track(name="Track", *, stream=False, source="soundcloud", author="Artist", length=240000, isrc=None):
     return wavelink.Playable(
         {
             "encoded": name,
             "info": {
                 "identifier": name,
                 "isSeekable": not stream,
-                "author": "Artist",
-                "length": 240000,
+                "author": author,
+                "length": length,
                 "isStream": stream,
                 "position": 0,
                 "title": name,
                 "uri": "https://soundcloud.com/artist/" + name,
                 "artworkUrl": "https://cdn.example.com/cover.jpg",
-                "sourceName": "soundcloud",
+                "sourceName": source,
+                "isrc": isrc,
             },
             "pluginInfo": {},
             "userData": {},
@@ -202,6 +204,22 @@ class QueryTests(unittest.TestCase):
                 music_query(value)
         self.assertEqual(duration(3661000), "1:01:01")
 
+    def test_v2_catalog_url_guards_and_recording_identity(self):
+        enabled = provider_order("deezer,spotify,deezer")
+        self.assertEqual(enabled, ("deezer", "spotify"))
+        with self.assertRaises(ValueError):
+            provider_order("deezer,unknown")
+        for value in ["https://deezer.com.evil/track/585433102",
+                      "https://www.deezer.com/redirect/x",
+                      "//www.deezer.com/track/585433102", "dzsearch:raw",
+                      "https://www.deezer.com:8443/track/585433102"]:
+            with self.assertRaises(MusicError):
+                music_query(value, enabled)
+        self.assertTrue(same_recording(track("Song", isrc="ABC"), track("Song", isrc="ABC")))
+        self.assertFalse(same_recording(track("Song", isrc="ABC"), track("Song", isrc="DEF")))
+        self.assertFalse(same_recording(track("Song"), track("Song", stream=True)))
+
+
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -359,6 +377,70 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(MusicError, "Koneksi layanan musik"):
                 await self.manager.search("song")
             fetch.assert_awaited_once()
+
+    async def test_v2_deezer_first_and_disabled_link(self):
+        self.manager.ensure_node = AsyncMock(return_value=Mock())
+        link = "https://www.deezer.com/track/585433102"
+        with self.assertRaises(MusicError):
+            await self.manager.search(link)
+        self.manager.ensure_node.assert_not_awaited()
+        self.manager.providers = provider_order("deezer,soundcloud,youtube")
+        self.manager.search_source = "deezer"
+        with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                   new=AsyncMock(return_value=[track(source="deezer")])) as fetch:
+            await self.manager.search("Separuh Aku NOAH")
+            await self.manager.search(link)
+            self.assertEqual([c.args[0] for c in fetch.await_args_list],
+                             ["dzsearch:Separuh Aku NOAH", link])
+            with self.assertRaises(MusicError):
+                await self.manager.search(link, "youtube")
+            self.assertEqual(fetch.await_count, 2)
+
+    async def test_v2_matching_and_one_retry_with_fresh_nonce(self):
+        self.manager.playback_fallback = True
+        self.player.position = 0
+        await self.session.enqueue([track("Song")], 100, allow_fallback=True)
+        old = self.player.play.call_args.args[0]
+        replacement = track("Song", source="youtube")
+        self.manager.resolve_alternative = AsyncMock(return_value=replacement)
+        self.manager.report = AsyncMock()
+        self.manager.panel = AsyncMock()
+        await self.manager.track_error(SimpleNamespace(player=self.player, track=old))
+        self.assertIs(self.session.current.track, replacement)
+        self.assertFalse(self.session.current.allow_fallback)
+        self.assertEqual(self.session.current.requester, 100)
+        self.assertNotEqual(self.session.nonce, old.extras.abud_music_nonce)
+        await self.manager.track_end(SimpleNamespace(player=self.player, track=old, reason="loadFailed"))
+        self.assertIs(self.session.current.track, replacement)
+        await self.manager.track_error(SimpleNamespace(player=self.player, track=self.player.play.call_args.args[0]))
+        self.assertIsNone(self.session.current)
+        self.manager.resolve_alternative.assert_awaited_once()
+
+    async def test_v2_resolver_rejects_wrong_version_and_source(self):
+        self.manager.node = Mock(status=wavelink.NodeStatus.CONNECTED)
+        self.manager.providers = ("soundcloud", "youtube")
+        original = track("Song")
+        correct = track("Song", source="youtube")
+        with patch("app.discord_music.wavelink.Pool.fetch_tracks",
+                   new=AsyncMock(return_value=[
+                       track("Song (Live)", source="youtube"),
+                       track("Song", source="youtube", author="Cover Artist"),
+                       track("Song", source="youtube", length=300000),
+                       track("Song", source="spotify"),
+                       correct,
+                   ])):
+            self.assertIs(await self.manager.resolve_alternative(original), correct)
+
+    async def test_v2_never_retry_explicit_or_late_failure(self):
+        self.manager.playback_fallback = True
+        self.manager.resolve_alternative = AsyncMock()
+        self.manager.report = AsyncMock()
+        self.manager.panel = AsyncMock()
+        for permitted, pos in [(False, 0), (True, 12000)]:
+            await self.session.enqueue([track()], 100, allow_fallback=permitted)
+            self.player.position = pos
+            await self.manager.track_error(SimpleNamespace(player=self.player, track=self.player.play.call_args.args[0]))
+        self.manager.resolve_alternative.assert_not_awaited()
 
     async def test_node_waits_for_delayed_ready_and_reuses_concurrent_connection(self):
         self.manager.password = "not-a-real-secret"

@@ -227,12 +227,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             validate_role(self.guild, self.roles[10], non_owner)
         self.guild.channels = [
             SimpleNamespace(
+                name="staff-test",
                 overwrites_for=lambda role: discord.PermissionOverwrite(
                     manage_messages=True
                 )
             )
         ]
-        with self.assertRaises(OnboardingError):
+        with self.assertRaisesRegex(OnboardingError, r"Manage Messages.*staff-test"):
             validate_role(self.guild, self.roles[10])
 
     def test_emoji_validation_and_custom_id_stability(self):

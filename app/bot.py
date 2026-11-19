@@ -15,6 +15,7 @@ from app.discord_notifications import Notifications, install_notification_comman
 from app.discord_music import Music
 from app.music_commands import install_music_commands
 from app.music_chat import handle_music_message
+from app.discord_leveling import Leveling, install_leveling_commands
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -48,7 +49,10 @@ class AbudClient(discord.Client):
     async def close(self):
         try:
             try:
-                await notification_manager.close()
+                try:
+                    await leveling_manager.close()
+                finally:
+                    await notification_manager.close()
             finally:
                 try:
                     await music_manager.close()
@@ -71,6 +75,8 @@ notification_manager = Notifications(client)
 install_notification_commands(tree, notification_manager)
 music_manager = Music(client, voice_manager)
 install_music_commands(tree, music_manager)
+leveling_manager = Leveling(client)
+install_leveling_commands(tree, leveling_manager)
 
 
 
@@ -929,6 +935,7 @@ async def on_ready():
         except Exception as error:
             print(f"Slash Command sync error: {error}")
 
+    await leveling_manager.start()
     await notification_manager.start()
     await music_manager.start()
     await sync_all_guilds_to_api()
@@ -950,6 +957,7 @@ async def on_guild_join(guild):
 
 @client.event
 async def on_guild_remove(guild):
+    leveling_manager.forget(guild.id)
     await music_manager.leave(guild.id)
     await voice_manager.leave(guild.id)
     try:
@@ -964,6 +972,7 @@ async def on_guild_remove(guild):
 
 @client.event
 async def on_voice_state_update(member, before, after):
+    leveling_manager.sync_voice(member.guild)
     await voice_manager.voice_state_update(member, before, after)
     await music_manager.voice_state_update(member, before, after)
 
@@ -994,9 +1003,21 @@ async def on_wavelink_node_disconnected(payload):
 
 
 @client.event
+async def on_disconnect():
+    leveling_manager.suspend()
+
+
+@client.event
+async def on_resumed():
+    await leveling_manager.start()
+
+
+@client.event
 async def on_message(message):
     if message.author.bot:
         return
+
+    await leveling_manager.message(message)
 
     if await handle_music_message(
         message, music_manager, bot_id=client.user.id if client.user else None

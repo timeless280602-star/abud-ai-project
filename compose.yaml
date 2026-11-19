@@ -34,9 +34,11 @@ services:
       ABUD_INTERNAL_API_KEY: ${ABUD_INTERNAL_API_KEY}
       ABUD_BOT_VERIFY_HOST: 0.0.0.0
       ABUD_BOT_VERIFY_PORT: 8765
+      ABUD_LEVELING_DB: /app/leveling/levels.db
       ABUD_NOTIFICATIONS_DB: /app/notifications/creators.db
     volumes:
       - abud-notifications:/app/notifications
+      - abud-leveling:/app/leveling
     networks:
       - default
     mem_limit: 256m
@@ -48,3 +50,4 @@ networks:
 
 volumes:
   abud-notifications:
+  abud-leveling:

@@ -10,9 +10,9 @@ import discord
 import wavelink
 
 from app.music_session import MusicError, MusicSession, RequestedTrack, duration, music_query
-from app.music_audius_live import AudiusLiveProbe
+from app.music_audius_live import AudiusCatalogMode
 from app.music_providers import (
-    NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link,
+    NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link, normalized,
 )
 
 log = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def now_embed(session):
     embed.add_field(
         name="Posisi / durasi", value=f"{duration(session.player.position)} / {length}"
     )
-    embed.add_field(name="Sumber track", value="Audius (uji)" if track.source == "http" else PROVIDER_NAMES.get(track.source, "Lainnya"))
+    embed.add_field(name="Sumber track", value="Audius" if track.source == "http" else PROVIDER_NAMES.get(track.source, "Lainnya"))
     embed.add_field(name="Diminta oleh", value=f"<@{current.requester}>")
     embed.add_field(
         name="Antrean · volume · repeat",
@@ -134,7 +134,7 @@ class Music:
             (p for p in self.providers if p in PREFIXES), ""
         )
         self.playback_fallback = os.getenv("ABUD_MUSIC_PLAYBACK_FALLBACK", "false").lower() == "true"
-        self.audius_probe = AudiusLiveProbe()
+        self.audius_probe = AudiusCatalogMode()
         self.sessions = {}
         self.node = None
         self.node_lock = asyncio.Lock()
@@ -255,6 +255,14 @@ class Music:
                 "Abud sedang di mode voice lain. Tutup sesi AI dengan /leave sebelum mulai musik."
             )
         result = await self.search(query, source)
+        if self.audius_probe.dynamic:
+            # Never silently substitute a cover or unrelated search hit.
+            q = normalized(query)
+            exact = [t for t in result if q in (normalized(t.title),
+                     normalized(t.title + ' ' + t.author), normalized(t.author + ' ' + t.title))]
+            if not exact:
+                raise MusicError("Tidak ada judul/artis yang cocok persis. Gunakan /music search untuk memilih hasil.")
+            result = exact
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
         allow_fallback = (not self.audius_probe.enabled and self.playback_fallback and source is None
                           and not urlsplit(query.strip()).scheme

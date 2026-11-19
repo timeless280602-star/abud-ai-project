@@ -297,6 +297,63 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 await self.manager.search("https://localhost/private")
             self.assertEqual(fetch.await_count, 1)
 
+    async def test_node_waits_for_delayed_ready_and_reuses_concurrent_connection(self):
+        self.manager.password = "not-a-real-secret"
+        node = Mock(status=wavelink.NodeStatus.CONNECTING, close=AsyncMock())
+
+        async def delayed_ready():
+            await asyncio.sleep(0.02)
+            node.status = wavelink.NodeStatus.CONNECTED
+
+        ready_task = None
+
+        async def connect(**kwargs):
+            nonlocal ready_task
+            ready_task = asyncio.create_task(delayed_ready())
+
+        with (
+            patch("app.discord_music.wavelink.Node", return_value=node) as factory,
+            patch("app.discord_music.wavelink.Pool.connect", new=AsyncMock(side_effect=connect)) as pool,
+        ):
+            first, second = await asyncio.gather(
+                self.manager.ensure_node(), self.manager.ensure_node()
+            )
+            self.assertIs(first, node)
+            self.assertIs(second, node)
+            factory.assert_called_once()
+            pool.assert_awaited_once()
+        await ready_task
+        node.close.assert_not_awaited()
+
+    async def test_node_ready_timeout_closes_and_allows_retry(self):
+        self.manager.password = "not-a-real-secret"
+        self.manager.sessions.clear()
+        self.manager.NODE_CONNECT_TIMEOUT = 0.03
+        pending = Mock(status=wavelink.NodeStatus.CONNECTING, close=AsyncMock())
+        ready = Mock(status=wavelink.NodeStatus.CONNECTED, close=AsyncMock())
+        with (
+            patch("app.discord_music.wavelink.Node", side_effect=[pending, ready]),
+            patch("app.discord_music.wavelink.Pool.connect", new=AsyncMock()),
+        ):
+            with self.assertRaisesRegex(MusicError, "batas waktu"):
+                await self.manager.ensure_node()
+            self.assertIsNone(self.manager.node)
+            pending.close.assert_awaited_once_with(eject=True)
+            self.assertIs(await self.manager.ensure_node(), ready)
+        ready.close.assert_not_awaited()
+
+    async def test_disconnected_node_fails_without_waiting_for_ready(self):
+        self.manager.password = "not-a-real-secret"
+        node = Mock(status=wavelink.NodeStatus.DISCONNECTED, close=AsyncMock())
+        with (
+            patch("app.discord_music.wavelink.Node", return_value=node),
+            patch("app.discord_music.wavelink.Pool.connect", new=AsyncMock()),
+        ):
+            with self.assertRaisesRegex(MusicError, "belum terhubung"):
+                await self.manager.ensure_node()
+        node.close.assert_awaited_once_with(eject=True)
+        self.assertIsNone(self.manager.node)
+
     async def test_node_failed_connection_is_closed_and_can_retry(self):
         self.manager.password = "not-a-real-secret"
         node = Mock(status=wavelink.NodeStatus.DISCONNECTED, close=AsyncMock())

@@ -8,9 +8,10 @@ on:
       - 'requirements*.txt'
       - 'Dockerfile.bot'
       - 'compose.voice.yaml'
+      - 'compose.yaml'
       - '.github/workflows/discord-voice-tests.yml'
   push:
-    branches: [feat/discord-voice-channel]
+    branches: [feat/discord-voice-channel, feat/discord-creator-notifications]
   workflow_dispatch:
 
 permissions:
@@ -41,7 +42,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg libopus0
           python -m pip install -r requirements.txt -r requirements-bot.txt
-      - name: Run backend and voice lifecycle tests
+      - name: Run backend, voice and creator notification tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build bot image and verify the voice runtime without a Discord login
         run: |

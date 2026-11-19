@@ -85,6 +85,8 @@ class MusicSession:
             self.idle_since = time.monotonic()
             if self.current is None:
                 await self._next()
+                if self.current is None:
+                    raise MusicError("Tidak ada lagu yang berhasil dimulai. Cari ulang sumber musik.")
 
     async def _play(self, request):
         if self.before_play:
@@ -135,7 +137,14 @@ class MusicSession:
                 self.failures = 0
                 self.history.append(finished)
                 if self.repeat == "track":
-                    await self._play(finished)
+                    try:
+                        await self._play(finished)
+                    except MusicError:
+                        # Access can be revoked after the original play.
+                        self.repeat = "off"
+                        self.current = self.nonce = None
+                        await self._next()
+                        raise
                     return True
                 if self.repeat == "queue":
                     self.queue.append(finished)

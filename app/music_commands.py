@@ -5,7 +5,7 @@ import wavelink
 from discord import app_commands
 
 from app.discord_music import now_embed, queue_embed
-from app.music_session import MusicError, duration
+from app.music_session import MusicChoiceRequired, MusicError, duration
 from app.music_providers import NAMES, PREFIXES
 
 SOURCES = [app_commands.Choice(name=NAMES[p], value=p) for p in PREFIXES] + [
@@ -105,7 +105,11 @@ def install_music_commands(tree, manager):
 
     async def play_request(interaction, query, source):
         await defer(interaction)
-        tracks = await manager.play_query(interaction, query, source)
+        try:
+            tracks = await manager.play_query(interaction, query, source)
+        except MusicChoiceRequired as choice:
+            await send_selection(interaction, choice.tracks)
+            return
         await confirm(
             interaction,
             f"🎶 {len(tracks)} lagu ditambahkan. Panel pemutar tersedia di channel sesi musik.",
@@ -143,9 +147,15 @@ def install_music_commands(tree, manager):
         await defer(interaction)
         result = await manager.search(query, source)
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result
+        await send_selection(interaction, tracks)
+
+    async def send_selection(interaction, tracks):
+        if not tracks:
+            raise MusicError("Tidak ada lagu yang dapat dipilih.")
         view = SongSelection(manager, interaction.user.id, tracks)
         view.message = await interaction.followup.send(
-            "Pilih satu lagu (berlaku 60 detik).", view=view, ephemeral=True, wait=True
+            "Pilih satu lagu (berlaku 60 detik).", view=view, ephemeral=True, wait=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     @group.command(

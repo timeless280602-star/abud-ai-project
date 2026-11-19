@@ -35,6 +35,20 @@ class IntentTests(unittest.TestCase):
             "Jangan Menyerah - D’MASIV",
         )
 
+    def test_direct_url_chat_variants_preserve_exact_link(self):
+        url = "https://www.youtube.com/watch?v=eMFm30WE9Pk"
+        for text in (
+            f"coba putar lagu {url}",
+            f"Abud, putarin {url}",
+            f"putar {url}",
+            f"play <{url}>",
+            f"coba putar lagu [{url}]({url})",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(music_request(text), url)
+        self.assertIsNone(music_request(url))
+        self.assertIsNone(music_request(f"coba putar lagu [{url}](https://youtu.be/abcdefghijk)"))
+
     def test_conversation_negation_quotes_and_other_mentions_are_not_commands(self):
         for text in [
             "Abud, jangan putar lagu itu",
@@ -85,6 +99,17 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("masuk antrean", reply.args[0])
         self.assertFalse(reply.kwargs["mention_author"])
         self.assertFalse(reply.kwargs["allowed_mentions"].everyone)
+
+    async def test_direct_url_chat_uses_shared_player_without_selection(self):
+        url = "https://www.youtube.com/watch?v=eMFm30WE9Pk"
+        message = self.message(f"coba putar lagu {url}")
+        manager = Mock(play_query=AsyncMock(return_value=[SimpleNamespace(title="Video")]))
+        self.assertTrue(await handle_music_message(message, manager))
+        context, query = manager.play_query.await_args.args
+        self.assertEqual(query, url)
+        self.assertIs(context.user, message.author)
+        self.assertNotIn("view", message.reply.await_args.kwargs)
+        self.assertIn("masuk antrean", message.reply.await_args.args[0])
 
     async def test_failure_never_reports_playback_success_or_exposes_provider_secret(
         self,

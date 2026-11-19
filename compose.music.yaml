@@ -1,0 +1,24 @@
+# Opt-in: docker compose -f compose.yaml -f compose.music.yaml ...
+services:
+  abud-bot:
+    environment:
+      ABUD_MUSIC_ENABLED: ${ABUD_MUSIC_ENABLED:-false}
+      ABUD_LAVALINK_URL: http://abud-lavalink:2333
+      ABUD_LAVALINK_PASSWORD: ${ABUD_LAVALINK_PASSWORD:?Set a private Lavalink password}
+    networks:
+      - music
+
+  abud-lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2
+    restart: unless-stopped
+    environment:
+      LAVALINK_SERVER_PASSWORD: ${ABUD_LAVALINK_PASSWORD:?Set a private Lavalink password}
+      _JAVA_OPTIONS: -Xms128m -Xmx512m
+    volumes:
+      - ./music/application.yml:/opt/Lavalink/application.yml:ro
+    networks:
+      - music
+    mem_limit: 768m
+
+networks:
+  music:

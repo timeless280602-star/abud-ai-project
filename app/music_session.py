@@ -57,7 +57,8 @@ class RequestedTrack:
 class MusicSession:
     LIMIT = 100
 
-    def __init__(self, player, owner, text_channel):
+    def __init__(self, player, owner, text_channel, *, before_play=None):
+        self.before_play = before_play
         self.player, self.owner, self.text_channel = player, owner, text_channel
         self.channel_id = player.channel.id
         self.queue = []
@@ -86,6 +87,8 @@ class MusicSession:
                 await self._next()
 
     async def _play(self, request):
+        if self.before_play:
+            await self.before_play(request)
         track = copy.copy(request.track)
         nonce = uuid4().hex
         track.extras = {"abud_music_nonce": nonce, "requester": request.requester}

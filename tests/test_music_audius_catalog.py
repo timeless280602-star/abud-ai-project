@@ -61,3 +61,45 @@ class AudiusCatalogModeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MusicError):
             await self.mode.before_play(RequestedTrack(result[0], 100))
         self.mode.catalog.track.assert_awaited_once_with("good")
+
+
+    async def test_rejected_initial_play_is_not_reported_as_success(self):
+        from app.music_session import MusicSession
+        from test_discord_music import player
+        p = player()
+        session = MusicSession(p, 100, None, before_play=AsyncMock(
+            side_effect=MusicError("Access revoked")))
+        with self.assertRaises(MusicError):
+            await session.enqueue([track()], 100)
+        self.assertIsNone(session.current)
+        p.play.assert_not_awaited()
+
+    async def test_repeat_revoked_access_clears_current_and_disables_repeat(self):
+        from app.music_session import MusicSession
+        from test_discord_music import player
+        p = player()
+        guard = AsyncMock(side_effect=[None, MusicError("Access revoked")])
+        session = MusicSession(p, 100, None, before_play=guard)
+        await session.enqueue([track()], 100)
+        session.repeat = "track"
+        with self.assertRaises(MusicError):
+            await session.ended(session.nonce, "finished")
+        self.assertIsNone(session.current)
+        self.assertIsNone(session.nonce)
+        self.assertEqual(session.repeat, "off")
+        self.assertEqual(p.play.await_count, 1)
+
+    async def test_ambiguous_autoplay_requires_explicit_selection(self):
+        from unittest.mock import Mock
+        from app.discord_music import Music
+        import asyncio
+        manager = Music(Mock(), SimpleNamespace(lock=asyncio.Lock(), sessions={}))
+        manager.audius_probe = self.mode
+        manager.enabled = True
+        manager.user_channel = Mock()
+        manager.search = AsyncMock(return_value=[track("Example"), track("Example")])
+        manager.enqueue = AsyncMock()
+        context = SimpleNamespace(guild_id=1, guild=SimpleNamespace(voice_client=None))
+        with self.assertRaisesRegex(MusicError, "tidak unik"):
+            await manager.play_query(context, "Example")
+        manager.enqueue.assert_not_awaited()

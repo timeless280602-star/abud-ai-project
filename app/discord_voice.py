@@ -399,16 +399,32 @@ def install_voice_commands(tree, manager, *, music_manager=None):
 
         await run(interaction, action)
 
-    @tree.command(name="leave", description="Keluar dari sesi musik atau AI voice Abud.")
+    @tree.command(name="leave", description="Putuskan koneksi Abud dari voice channel, bukan server.")
     @app_commands.guild_only()
     async def leave(interaction: discord.Interaction):
         async def action():
-            if music_manager is not None and interaction.guild_id in music_manager.sessions:
-                await music_manager.apply(interaction, "leave")
-                return "Sesi musik selesai. Abud sudah keluar."
-            manager.active(interaction, control=True)
-            await manager.leave(interaction.guild_id)
-            return "Sesi voice selesai. Abud sudah keluar."
+            guild_id = interaction.guild_id
+            if guild_id is None:
+                raise VoiceError("Gunakan command ini di server Discord.")
+            if music_manager is not None and guild_id in music_manager.sessions:
+                route = "music"
+            elif guild_id in manager.sessions:
+                route = "voice"
+            else:
+                log.info("Voice-only leave: guild=%s route=none outcome=no_session", guild_id)
+                return "Abud belum masuk voice channel. Tidak ada sesi musik atau AI voice aktif."
+            log.info("Voice-only leave: guild=%s route=%s outcome=requested", guild_id, route)
+            try:
+                if route == "music":
+                    await music_manager.apply(interaction, "leave")
+                else:
+                    manager.active(interaction, control=True)
+                    await manager.leave(guild_id)
+            except (MusicError, VoiceError):
+                log.info("Voice-only leave: guild=%s route=%s outcome=rejected", guild_id, route)
+                raise
+            log.info("Voice-only leave: guild=%s route=%s outcome=completed", guild_id, route)
+            return "Sesi selesai. Abud keluar dari voice channel, bukan dari server."
 
         await run(interaction, action)
 

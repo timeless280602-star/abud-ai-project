@@ -10,6 +10,7 @@ import discord
 import wavelink
 
 from app.music_session import MusicError, MusicSession, RequestedTrack, duration, music_query
+from app.music_audius_live import AudiusLiveProbe
 from app.music_providers import (
     NAMES as PROVIDER_NAMES, PREFIXES, DIRECT, provider_order, same_recording, source_for_link,
 )
@@ -59,7 +60,7 @@ def now_embed(session):
     track = current.track
     embed = discord.Embed(
         title=discord.utils.escape_mentions(track.title)[:256],
-        url=safe_link(track.uri),
+        url=None if track.source == "http" else safe_link(track.uri),
         description=discord.utils.escape_mentions(track.author or "Unknown artist")[
             :1000
         ],
@@ -77,7 +78,7 @@ def now_embed(session):
     embed.add_field(
         name="Posisi / durasi", value=f"{duration(session.player.position)} / {length}"
     )
-    embed.add_field(name="Sumber track", value=PROVIDER_NAMES.get(track.source, "Lainnya"))
+    embed.add_field(name="Sumber track", value="Audius (uji)" if track.source == "http" else PROVIDER_NAMES.get(track.source, "Lainnya"))
     embed.add_field(name="Diminta oleh", value=f"<@{current.requester}>")
     embed.add_field(
         name="Antrean · volume · repeat",
@@ -133,6 +134,7 @@ class Music:
             (p for p in self.providers if p in PREFIXES), ""
         )
         self.playback_fallback = os.getenv("ABUD_MUSIC_PLAYBACK_FALLBACK", "false").lower() == "true"
+        self.audius_probe = AudiusLiveProbe()
         self.sessions = {}
         self.node = None
         self.node_lock = asyncio.Lock()
@@ -194,6 +196,15 @@ class Music:
             return self.node
 
     async def search(self, query, source=None):
+        if self.audius_probe.enabled:
+            node = await self.ensure_node()
+            try:
+                async with asyncio.timeout(30), self.search_slots:
+                    return await self.audius_probe.load(query, source, node)
+            except (TimeoutError, wavelink.WavelinkException):
+                raise MusicError("Audio Audius belum bisa dimuat.") from None
+        if source == "audius":
+            raise MusicError("Audius masih dalam pengujian terbatas.")
         query = music_query(query, self.providers)
         preferred = source or self.search_source
         direct = bool(urlsplit(query).scheme)
@@ -245,13 +256,14 @@ class Music:
             )
         result = await self.search(query, source)
         tracks = result.tracks if isinstance(result, wavelink.Playlist) else result[:1]
-        allow_fallback = (self.playback_fallback and source is None
+        allow_fallback = (not self.audius_probe.enabled and self.playback_fallback and source is None
                           and not urlsplit(query.strip()).scheme
                           and not isinstance(result, wavelink.Playlist))
         await self.enqueue(context, tracks, allow_fallback=allow_fallback)
         return tracks
 
     def user_channel(self, interaction):
+        self.audius_probe.require_actor(interaction)
         channel = getattr(getattr(interaction.user, "voice", None), "channel", None)
         if not interaction.guild or not isinstance(channel, discord.VoiceChannel):
             raise MusicError("Masuk ke voice channel biasa dulu.")
@@ -289,6 +301,7 @@ class Music:
         channel = self.user_channel(interaction)
         if not tracks or len(tracks) > MusicSession.LIMIT:
             raise MusicError("Pilih 1–100 lagu per permintaan/playlist.")
+        self.audius_probe.check_enqueue(tracks)
         # Shared lock prevents simultaneous music/AI joins creating competing connections.
         async with self.voice.lock:
             session = self.sessions.get(interaction.guild_id)
@@ -334,7 +347,8 @@ class Music:
                 )
                 player.autoplay = wavelink.AutoPlayMode.disabled
                 player.inactive_timeout = None
-                session = MusicSession(player, interaction.user.id, text)
+                session = MusicSession(player, interaction.user.id, text,
+                                       before_play=self.audius_probe.before_play)
                 self.sessions[interaction.guild_id] = session
                 created = True
             else:

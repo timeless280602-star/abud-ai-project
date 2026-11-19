@@ -99,10 +99,10 @@ class AbudCommandTree(app_commands.CommandTree):
 
 tree = AbudCommandTree(client)
 voice_manager = DiscordVoice(client, API_URL, INTERNAL_API_KEY)
-install_voice_commands(tree, voice_manager)
 notification_manager = Notifications(client)
 install_notification_commands(tree, notification_manager)
 music_manager = Music(client, voice_manager)
+install_voice_commands(tree, voice_manager, music_manager=music_manager)
 install_music_commands(tree, music_manager)
 leveling_manager = Leveling(client)
 install_leveling_commands(tree, leveling_manager)

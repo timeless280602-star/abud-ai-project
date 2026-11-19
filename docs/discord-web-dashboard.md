@@ -63,3 +63,6 @@ member has permission to install a bot. Test public redirect and actual
 installation in a disposable guild. The link is unavailable when the bot
 gateway cannot provide its application ID. No tokens are sent to Discord
 or the browser by this route; only public installation parameters.
+
+### Reaction emoji picker
+Choose a common Unicode emoji or a usable custom emoji listed from the selected server. The manual field accepts pasted emoji and unique `:name:` shorthand for custom emojis in that server; ambiguous or unavailable names are rejected. The backend still validates the selected emoji and role before storing a mapping. Existing panels are unchanged.

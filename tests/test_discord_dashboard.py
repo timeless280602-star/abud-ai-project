@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
-from app.discord_dashboard import install_dashboard_gateway, snowflake, row_json, toggle, administer
+from app.discord_dashboard import install_dashboard_gateway, snowflake, row_json, toggle, administer, guild_emojis
+from app.onboarding import parse_emoji, OnboardingError
 
 class InviteTests(unittest.TestCase):
     def test_fixed_guild_install_and_minimal_permissions(self):
@@ -26,6 +27,29 @@ class InviteTests(unittest.TestCase):
         for bad in ("", "123&redirect_uri=evil", "0", 123, "9"*20):
             with self.assertRaises(ValueError):
                 invite_url(bad)
+
+class EmojiPickerTests(unittest.TestCase):
+    def test_custom_picker_and_shorthand_are_guild_scoped(self):
+        class Emoji:
+            def __init__(self, ident, name, usable=True, animated=False):
+                self.id, self.name, self.usable, self.animated = ident, name, usable, animated
+            def is_usable(self):
+                return self.usable
+            def __str__(self):
+                return f"<{'a' if self.animated else ''}:{self.name}:{self.id}>"
+        good = Emoji(777, "gaming", animated=True)
+        other = Emoji(888, "blocked", False)
+        guild = SimpleNamespace(emojis=[other, good], get_emoji=lambda ident: good if ident == 777 else None)
+        self.assertEqual(guild_emojis(guild), [{"id":"777","name":"gaming","value":"<a:gaming:777>"}])
+        self.assertEqual(parse_emoji(":gaming:", guild), ("c:777","<a:gaming:777>"))
+        self.assertEqual(parse_emoji("<a:gaming:777>", guild), ("c:777","<a:gaming:777>"))
+        self.assertEqual(parse_emoji("🎮", guild), ("u:🎮","🎮"))
+        for invalid in (":blocked:", ":remote:", "<:remote:999>"):
+            with self.assertRaises(OnboardingError):
+                parse_emoji(invalid, guild)
+        guild.emojis.append(Emoji(999, "gaming"))
+        with self.assertRaises(OnboardingError):
+            parse_emoji(":gaming:", guild)
 
 class Serialization(unittest.TestCase):
     def test_discord_ids_not_js_numbers(self):

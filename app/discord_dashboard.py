@@ -58,6 +58,12 @@ def resource(guild, data, key, cls, optional=False):
 def available(manager):
     return bool(manager.enabled and manager.store is not None)
 
+def guild_emojis(guild):
+    """Return only usable custom emojis in the selected guild, as strings."""
+    return [{"id": str(emoji.id), "name": emoji.name, "value": str(emoji)}
+            for emoji in sorted(guild.emojis, key=lambda item: (item.name.casefold(), item.id))
+            if emoji.is_usable()]
+
 def snapshot(guild, level, onboarding, tickets, notify, voice, music):
     gid = guild.id
     result = {
@@ -68,7 +74,7 @@ def snapshot(guild, level, onboarding, tickets, notify, voice, music):
                      for c in guild.channels if isinstance(c, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel))],
         "roles": [{"id": str(r.id), "name": r.name} for r in guild.roles if not r.is_default() and not r.managed],
         "leveling": None, "welcome": None, "ticket": None, "notifications": None,
-        "panels": [], "available": {"leveling": available(level), "onboarding": available(onboarding),
+        "panels": [], "emojis": guild_emojis(guild), "available": {"leveling": available(level), "onboarding": available(onboarding),
             "ticket": available(tickets), "notifications": available(notify),
             "voice": voice.configured(), "music": bool(music.enabled)},
         "providers": {"youtube": bool(notify.key), "tiktok": len(notify.webhook_secret) >= 32},

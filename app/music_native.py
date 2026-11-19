@@ -18,7 +18,8 @@ import discord
 from app.music_providers import normalized
 from app.music_session import MusicError
 
-log = logging.getLogger(__name__)
+# client.run() configures the discord logger by default, not the root logger.
+log = logging.getLogger("discord.abud.music_native")
 ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 MAX_BYTES = 512 * 1024 * 1024
 MAX_TRACKS = 1000
@@ -181,6 +182,23 @@ class NativePlayer:
     def position(self):
         return min(self.length, self.audio.frames * 20) if self.audio else 0
 
+    async def wait_voice_ready(self):
+        # discord.py 2.7.1 marks the transport connected after receiving the
+        # secret key, before DAVE MLS setup necessarily completes.
+        state = getattr(self.voice, "_connection", None)
+        for _ in range(80):
+            if not self.connected:
+                raise MusicError("Voice channel terputus.")
+            version = getattr(state, "dave_protocol_version", 0)
+            ready = getattr(state, "can_encrypt", False)
+            if not isinstance(version, int) or version == 0 or ready is True:
+                log.info("Native voice ready: dave_version=%s encrypted_ready=%s",
+                         version if isinstance(version, int) else "unknown", ready is True)
+                return
+            await asyncio.sleep(0.1)
+        log.warning("Native voice not ready: DAVE negotiation timed out")
+        raise MusicError("Enkripsi voice Discord belum siap; coba lagi.")
+
     async def play(self, track, *, volume, paused=False, add_history=False):
         if not self.connected:
             raise MusicError("Voice channel tidak terhubung.")
@@ -188,6 +206,7 @@ class NativePlayer:
         nonce = track.extras.get("abud_music_nonce")
         if not nonce:
             raise MusicError("Sesi audio tidak valid.")
+        await self.wait_voice_ready()
         await self.skip(force=True)
         generation = self.generation
         audio = self.audio_factory(checked, volume)

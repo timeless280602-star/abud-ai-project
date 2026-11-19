@@ -98,6 +98,8 @@ def queue_embed(session, page=1):
 
 
 class Music:
+    NODE_CONNECT_TIMEOUT = 15
+
     def __init__(self, client, voice):
         self.client, self.voice = client, voice
         self.enabled = os.getenv("ABUD_MUSIC_ENABLED", "false").lower() == "true"
@@ -142,13 +144,22 @@ class Music:
                 inactive_player_timeout=None,
             )
             try:
-                async with asyncio.timeout(15):
+                async with asyncio.timeout(self.NODE_CONNECT_TIMEOUT):
                     await wavelink.Pool.connect(nodes=[self.node], client=self.client)
-                if self.node.status != wavelink.NodeStatus.CONNECTED:
-                    raise MusicError("Lavalink belum terhubung. Coba lagi sebentar.")
-            except BaseException:
-                await self.node.close(eject=True)
-                self.node = None
+                    # Wavelink opens the websocket before its reader receives READY.
+                    while self.node.status == wavelink.NodeStatus.CONNECTING:
+                        await asyncio.sleep(0.05)
+                    if self.node.status != wavelink.NodeStatus.CONNECTED:
+                        raise MusicError("Lavalink belum terhubung. Coba lagi sebentar.")
+            except BaseException as error:
+                try:
+                    await self.node.close(eject=True)
+                finally:
+                    self.node = None
+                if isinstance(error, TimeoutError):
+                    raise MusicError(
+                        "Lavalink belum siap dalam batas waktu. Coba lagi sebentar."
+                    ) from None
                 raise
             return self.node
 

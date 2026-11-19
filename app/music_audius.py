@@ -68,29 +68,36 @@ class AudiusCatalog:
         self.slots = asyncio.Semaphore(2)
 
     async def _curl(self, endpoint):
-        # Fixed origin, no curl config files, no metadata redirects, no shell.
+        # wait_for works in both the VPS Python 3.10 and the bot Python 3.11.
         try:
-            async with asyncio.timeout(15), self.slots:
-                proc = await asyncio.create_subprocess_exec(
-                    "curl", "--disable", "--fail", "--silent", "--show-error",
-                    "--proto", "=https", "--max-time", "10", "--max-filesize",
-                    "2097152", "-H", "Accept: application/json", BASE + endpoint,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                )
-                try:
-                    raw, _ = await proc.communicate()
-                finally:
-                    if proc.returncode is None:
-                        proc.kill()
-                        await proc.wait()
-                if proc.returncode or len(raw) > 2097152:
-                    raise AudiusError("API Audius tidak tersedia.")
-                data = json.loads(raw)
-                if not isinstance(data, dict):
-                    raise AudiusError("Respons Audius tidak valid.")
-                return data
-        except (OSError, TimeoutError, ValueError):
+            return await asyncio.wait_for(self._curl_request(endpoint), timeout=15)
+        except (OSError, asyncio.TimeoutError, ValueError):
             raise AudiusError("API Audius tidak tersedia.") from None
+
+    async def _curl_request(self, endpoint):
+        # Fixed origin, no curl config files, no metadata redirects, no shell.
+        async with self.slots:
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "--disable", "--fail", "--silent", "--show-error",
+                "--proto", "=https", "--max-time", "10", "--max-filesize",
+                "2097152", "-H", "Accept: application/json", BASE + endpoint,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                raw, _ = await proc.communicate()
+            finally:
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    await proc.wait()
+            if proc.returncode or len(raw) > 2097152:
+                raise AudiusError("API Audius tidak tersedia.")
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise AudiusError("Respons Audius tidak valid.")
+            return data
 
     async def track(self, track_id):
         track_id = checked_id(track_id)

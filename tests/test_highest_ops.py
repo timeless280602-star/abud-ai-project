@@ -132,9 +132,14 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.post(self.a,"/admin/rank",{"name":"Command","position":2}).status_code,200)
         ranks=self.get(self.a,"/admin").json()["ranks"]
         second_rank=next(x["id"] for x in ranks if x["name"]=="Command")
-        self.grant("cases","approve")
+        self.assertEqual(self.post(self.a,"/admin/rank",{"name":"Liaison","position":1}).status_code,200)
+        ranks=self.get(self.a,"/admin").json()["ranks"]
+        delegate_rank=next(x["id"] for x in ranks if x["name"]=="Liaison")
         self.assertEqual(self.post(self.a,"/admin/grants",{
             "module":"cases","rank":second_rank,"level":"approve"
+        }).status_code,200)
+        self.assertEqual(self.post(self.a,"/admin/grants",{
+            "module":"cases","rank":delegate_rank,"level":"approve"
         }).status_code,200)
 
         def new_member(name,rank_id):
@@ -148,7 +153,7 @@ class OpsTest(unittest.TestCase):
             return client,uid
 
         first_reviewer,first_uid=new_member("firstreviewer",self.rank)
-        delegate,delegate_uid=new_member("delegate",self.rank)
+        delegate,delegate_uid=new_member("delegate",delegate_rank)
         second_reviewer,second_uid=new_member("secondreviewer",second_rank)
         self.assertEqual(self.post(self.a,"/admin/approval-policies",{
             "module":"cases","ranks":[self.rank,second_rank]

@@ -4,7 +4,8 @@ import unittest
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.highest import router, init, bootstrap_admin
+from app.highest import router, init, bootstrap_admin, db
+from app.highest_ops import router as ops_router, init as ops_init
 from app.highest_live import check
 
 class HighestTest(unittest.TestCase):
@@ -15,14 +16,51 @@ class HighestTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         init()
+        ops_init()
         app=FastAPI()
         app.include_router(router)
+        app.include_router(ops_router)
         self.admin=TestClient(app,base_url="https://abud.web.id")
         self.user=TestClient(app,base_url="https://abud.web.id")
         for client,name in [(self.admin,"owner"),(self.user,"viewer")]:
             client.headers["Origin"]="https://abud.web.id"
             self.assertEqual(client.post("/highest/api/register",json={"username":name,"display_name":name,"password":"long-test-password"}).status_code,200)
         bootstrap_admin("owner")
+
+    def test_native_clip_upload_is_private_until_published(self):
+        path="/highest/api"
+        png=b"\\x89PNG\\r\\n\\x1a\\n"+b"\\x00"*16
+        response=self.user.post(path+"/clip/upload",data={"title":"Native upload"},files={"file":("native.png",png,"image/png")})
+        self.assertEqual(response.status_code,200,response.text)
+        clip_id=response.json()["id"]
+        self.assertEqual(self.user.get(path+"/media/"+str(clip_id)).status_code,200)
+        self.assertEqual(self.admin.get(path+"/media/"+str(clip_id)).status_code,404)
+        pending=self.admin.get(path+"/admin").json()["clips"]
+        self.assertEqual(pending[0]["media_type"],"image/png")
+        self.assertEqual(self.admin.post(path+f"/admin/clip/{clip_id}/published").status_code,200)
+        public=self.admin.get(path+"/media/"+str(clip_id))
+        self.assertEqual(public.status_code,200)
+        self.assertEqual(public.content,png)
+
+    def test_clip_approval_sends_private_notification(self):
+        path="/highest/api"
+        self.assertEqual(self.user.post(path+"/clip",json={"title":"Approval notice","url":"https://youtu.be/abcdefghijk"}).status_code,200)
+        clip_id=self.admin.get(path+"/admin").json()["clips"][0]["id"]
+        self.assertEqual(self.admin.post(path+f"/admin/clip/{clip_id}/published").status_code,200)
+        notifications=self.user.get(path+"/notifications").json()
+        self.assertTrue(any(x["kind"]=="content_approved" for x in notifications["items"]))
+
+    def test_external_view_stats_do_not_invent_unavailable_values(self):
+        path="/highest/api"
+        self.assertEqual(self.user.post(path+"/clip",json={"title":"No API stats","url":"https://youtu.be/abcdefghijk"}).status_code,200)
+        clip_id=self.admin.get(path+"/admin").json()["clips"][0]["id"]
+        self.assertEqual(self.admin.post(path+f"/admin/clip/{clip_id}/published").status_code,200)
+        with patch.dict(os.environ,{"HIGHEST_YOUTUBE_API_KEY":""}):
+            result=self.admin.post(path+"/admin/clips/stats/refresh").json()
+        self.assertEqual(result["updated"],0)
+        self.assertIn(clip_id,result["unavailable"])
+        with db() as c:
+            self.assertIsNone(c.execute("SELECT views FROM clips WHERE id=?",(clip_id,)).fetchone()["views"])
 
     def test_approval_and_revocation(self):
         u=self.user; a=self.admin; path="/highest/api"

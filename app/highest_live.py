@@ -4,6 +4,9 @@ from urllib.parse import urlsplit
 import httpx
 from app.highest import db
 
+_started = False
+_start_lock = threading.Lock()
+
 def check(s):
     if s["platform"]=="youtube":
         key=os.getenv("HIGHEST_YOUTUBE_API_KEY")
@@ -47,12 +50,19 @@ def poll():
                 followers=[x["uid"] for x in c.execute("SELECT uid FROM hq_follows WHERE streamer=?",(stream["id"],))]
                 for uid in followers:
                     notify(c,uid,"streamer_live",stream["name"]+" is live now","Your followed "+stream["platform"]+" streamer just started a live stream.",url or "/highest/","streamer-live:"+str(stream["id"])+":"+str(time.time_ns()))
+
 def worker():
     while True:
         try: poll()
         except Exception: pass
-        try: interval=max(300,int(os.getenv("HIGHEST_LIVE_INTERVAL","3600")))
-        except ValueError: interval=3600
+        try: interval=max(300,int(os.getenv("HIGHEST_LIVE_INTERVAL","300")))
+        except ValueError: interval=300
         time.sleep(interval)
+
 def start_live_worker():
-    threading.Thread(target=worker,daemon=True,name="highest-live").start()
+    global _started
+    with _start_lock:
+        if _started:
+            return
+        _started = True
+        threading.Thread(target=worker,daemon=True,name="highest-live").start()

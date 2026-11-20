@@ -1,0 +1,25 @@
+name: Highest HQ checks
+on:
+  push:
+    branches: ['feat/highest-hq']
+  pull_request:
+    paths: ['app/highest*','app/highest_web/**','tests/test_highest.py','frontend/**','app/main.py']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -p test_highest.py -v
+      - run: python -m compileall -q app
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check app/highest_web/ui.js
+      - run: npm install --no-audit --no-fund && npm run build
+        working-directory: frontend

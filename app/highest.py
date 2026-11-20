@@ -264,3 +264,13 @@ def bootstrap_admin(username):
     init()
     with db() as c:
         if not c.execute("UPDATE users SET admin=1 WHERE username=?",(username,)).rowcount: raise ValueError("Account not found")
+
+@router.post("/api/admin/rank/delete/{rank_id}")
+def delete_rank(rank_id:int,r:Request):
+    origin(r); u=current(r,admin=True)
+    try:
+        with db() as c:
+            if not c.execute("DELETE FROM ranks WHERE id=?",(rank_id,)).rowcount: fail(404,"Rank not found")
+            audit(c,u["id"],"rank.delete",rank_id)
+    except sqlite3.IntegrityError: fail(409,"Move members and child ranks first")
+    return {"ok":True}

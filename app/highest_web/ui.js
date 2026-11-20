@@ -220,6 +220,12 @@ async function inventoryUI(write){
    field("item","Inventory item","select",options(d.items)),
    field("method","Costing method","select",[["fifo","FIFO · first in, first out"],["weighted_average","Moving weighted average"]])
   ],"Update costing method",v=>postRefresh("/ops/item/"+v.item+"/costing",{method:v.method})));
+  if(d.vaults.length&&d.items.length)p.append(form([
+   field("vault","Legacy stash","select",options(d.vaults)),
+   field("item","Inventory item","select",options(d.items)),
+   field("unit_cost","Opening unit cost","number",null,0),
+   field("note","Valuation basis / note")
+  ],"Value legacy opening stock",v=>postRefresh("/ops/inventory/opening-valuation",{...v,vault:n(v.vault),item:n(v.item),unit_cost:n(v.unit_cost)})));
  }
  p.append(el("h3","Inventory valuation by stash"),lines(d.valuation,v=>v.vault_name+" · "+v.item_name+" · "+v.qty+" units · "+moneyFormat(v.value)+" · avg "+moneyFormat(Math.round(v.average_unit_cost))+" / unit · "+v.costing_method.toUpperCase()+(v.unvalued_qty?" · "+v.unvalued_qty+" unvalued":"")));
  p.append(el("h3","FIFO / weighted-average cost layers"),lines(d.cost_layers,l=>l.vault_name+" · "+l.item_name+" · "+l.qty_remaining+" units · "+moneyFormat(l.value_remaining)+" · "+l.source+" · "+l.reference));

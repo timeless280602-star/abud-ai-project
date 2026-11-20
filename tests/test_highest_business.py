@@ -238,7 +238,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(order["creator"],"cashier")
 
     def test_invoice_is_issued_at_order_creation_and_receipt_at_completion(self):
-        response=self.create(nonce="invoice-document-test-12345")
+        response=self.post(self.u,"/business/orders",{"nonce":"invoice-document-test-12345","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":2}]})
         self.assertEqual(response.status_code,200,response.text)
         oid=response.json()["id"]
         created=self.get(self.u,f"/business/orders/{oid}").json()["order"]
@@ -247,7 +247,7 @@ class BusinessTest(unittest.TestCase):
         self.assertIsNotNone(created["invoice_issued_at"])
         self.assertIsNone(created["receipt_no"])
         self.assertIsNone(created["receipt_issued_at"])
-        second=self.create(nonce="invoice-document-test-67890").json()["id"]
+        second=self.post(self.u,"/business/orders",{"nonce":"invoice-document-test-67890","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":1}]}).json()["id"]
         second_order=self.get(self.u,f"/business/orders/{second}").json()["order"]
         self.assertNotEqual(created["invoice_no"],second_order["invoice_no"])
         self.advance(oid)
@@ -262,7 +262,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual((listed["invoice_no"],listed["receipt_no"]),(completed["invoice_no"],completed["receipt_no"]))
 
     def test_completed_legacy_order_documents_are_backfilled(self):
-        oid=self.create(nonce="legacy-document-backfill-12345").json()["id"]
+        oid=self.post(self.u,"/business/orders",{"nonce":"legacy-document-backfill-12345","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":1}]}).json()["id"]
         self.advance(oid)
         self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
         with sqlite3.connect(self.tmp.name+"/db.sqlite") as conn:

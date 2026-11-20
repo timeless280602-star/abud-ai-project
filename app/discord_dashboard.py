@@ -72,7 +72,7 @@ def reaction_role_check(guild, role, actor, onboarding):
     return {"allowed": True, "reason": ""}
 
 
-def snapshot(guild, level, onboarding, tickets, notify, voice, music, actor=None):
+def snapshot(guild, level, onboarding, tickets, notify, actor=None):
     gid = guild.id
     result = {
         "guild": {"id": str(gid), "name": guild.name},
@@ -83,10 +83,8 @@ def snapshot(guild, level, onboarding, tickets, notify, voice, music, actor=None
         "roles": [{"id": str(r.id), "name": r.name} for r in guild.roles if not r.is_default() and not r.managed],
         "leveling": None, "welcome": None, "ticket": None, "notifications": None,
         "panels": [], "emojis": guild_emojis(guild), "available": {"leveling": available(level), "onboarding": available(onboarding),
-            "ticket": available(tickets), "notifications": available(notify),
-            "voice": voice.configured(), "music": bool(music.enabled)},
+            "ticket": available(tickets), "notifications": available(notify)},
         "providers": {"youtube": bool(notify.key), "tiktok": len(notify.webhook_secret) >= 32},
-        "sessions": {"voice": gid in voice.sessions, "music": gid in music.sessions},
     }
     if available(level):
         result["leveling"] = row_json(level.store.config(gid))
@@ -207,7 +205,7 @@ async def administer(guild, actor, action, data, level, onboarding, tickets, not
     else:
         raise ValueError("Aksi tidak tersedia.")
 
-def install_dashboard_gateway(app, client, key, level, onboarding, tickets, notify, voice, music):
+def install_dashboard_gateway(app, client, key, level, onboarding, tickets, notify):
     async def handle(request):
         if not key or not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + key):
             return web.json_response({"detail": "Unauthorized"}, status=401)
@@ -233,7 +231,7 @@ def install_dashboard_gateway(app, client, key, level, onboarding, tickets, noti
                 await administer(guild, actor, action, data, level, onboarding, tickets, notify)
                 log.info("Discord dashboard action=%s guild=%s actor=%s", action, guild.id, actor.id)
                 return web.json_response({"ok": True})
-            return web.json_response(snapshot(guild, level, onboarding, tickets, notify, voice, music, actor))
+            return web.json_response(snapshot(guild, level, onboarding, tickets, notify, actor))
         except discord.NotFound:
             return web.json_response({"detail": "Server atau anggota tidak ditemukan."}, status=403)
         except SAFE_ERRORS as exc:

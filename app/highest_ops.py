@@ -1378,7 +1378,8 @@ def _financial_report_data(c,start,end):
     first=_financial_period(start);last=_financial_period(end)
     begin,finish,count=_financial_bounds(start,end)
     previous_last=first-timedelta(days=1)
-    previous_first=date(previous_last.year,previous_last.month,1)
+    previous_index=first.year*12+first.month-1-count
+    previous_first=date(previous_index//12,previous_index%12+1,1)
     previous_start=int(datetime(previous_first.year,previous_first.month,1,tzinfo=timezone(timedelta(hours=7))).timestamp())
     previous_finish=begin
     opening=c.execute("SELECT coalesce(sum(amount),0) FROM hq_money WHERE state='posted' AND created<?",(begin,)).fetchone()[0]
@@ -1411,6 +1412,16 @@ def _financial_report_data(c,start,end):
         GROUP BY category ORDER BY category""",(begin,finish))
     budgets=rows(c,"""SELECT period,division,category,amount FROM hq_financial_budget
         WHERE period>=? AND period<=? ORDER BY period,division,category""",(start,end))
+    for budget in budgets:
+        budget_start,budget_finish,_=_financial_bounds(budget["period"],budget["period"])
+        clauses=["m.state='posted'","m.amount<0","m.created>=?","m.created<?"];params=[budget_start,budget_finish]
+        if budget["division"]:
+            clauses.append("coalesce(r.name,'Unassigned')=?");params.append(budget["division"])
+        if budget["category"]:
+            clauses.append("m.category=?");params.append(budget["category"])
+        budget["actual_expense"]=c.execute("SELECT coalesce(sum(-m.amount),0) FROM hq_money m LEFT JOIN membership mb ON mb.uid=m.actor LEFT JOIN ranks r ON r.id=mb.rank WHERE "+" AND ".join(clauses),params).fetchone()[0]
+        budget["variance"]=budget["amount"]-budget["actual_expense"]
+        budget["utilization_pct"]=round(budget["actual_expense"]*100/budget["amount"],2) if budget["amount"] else None
     budget_total=sum(x["amount"] for x in budgets);expense_total=summary["expense"]
     return {"period":{"start":start,"end":end,"months":count},
         "summary":{"opening_balance":opening,"income":summary["income"],"expense":expense_total,

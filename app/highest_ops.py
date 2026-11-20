@@ -1,5 +1,5 @@
 """Transactional IC ledger, warehouse, crafting and case files for FiveM."""
-import time, hashlib, secrets
+import time, hashlib, secrets, json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -43,7 +43,40 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_batch(id INTEGER PRIMARY KEY,recipe INTEGER REFERENCES hq_recipe(id),vault INTEGER REFERENCES hq_vault(id),actor INTEGER REFERENCES users(id),batches INTEGER NOT NULL,created INTEGER NOT NULL,note TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_case(id INTEGER PRIMARY KEY,title TEXT NOT NULL,summary TEXT NOT NULL,status TEXT NOT NULL,actor INTEGER REFERENCES users(id),created INTEGER NOT NULL,updated INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_case_note(id INTEGER PRIMARY KEY,case_id INTEGER REFERENCES hq_case(id),actor INTEGER REFERENCES users(id),note TEXT NOT NULL,created INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS hq_operation_event(
+        CREATE TABLE IF NOT EXISTS hq_asset(
+            id INTEGER PRIMARY KEY,asset_tag TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            asset_type TEXT NOT NULL CHECK(asset_type IN ('vehicle','property','equipment','other')),
+            name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',make_model TEXT NOT NULL DEFAULT '',
+            serial_number TEXT NOT NULL DEFAULT '',plate_number TEXT NOT NULL DEFAULT '',
+            location TEXT NOT NULL DEFAULT '',condition TEXT NOT NULL DEFAULT 'good',
+            status TEXT NOT NULL CHECK(status IN ('available','assigned','maintenance','retired')),
+            purchase_cost INTEGER NOT NULL DEFAULT 0 CHECK(purchase_cost>=0),purchase_date TEXT NOT NULL DEFAULT '',
+            assigned_to TEXT NOT NULL DEFAULT '',inventory_item_id INTEGER REFERENCES hq_item(id),
+            case_id INTEGER REFERENCES hq_case(id),actor INTEGER REFERENCES users(id),created INTEGER NOT NULL,updated INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS hq_asset_status_type ON hq_asset(status,asset_type,name);
+        CREATE TABLE IF NOT EXISTS hq_asset_request(
+            id INTEGER PRIMARY KEY,request_type TEXT NOT NULL CHECK(request_type IN ('acquisition','disposal')),
+            asset_id INTEGER REFERENCES hq_asset(id),payload TEXT NOT NULL DEFAULT '{}',
+            note TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+            actor INTEGER NOT NULL REFERENCES users(id),reviewer INTEGER REFERENCES users(id),
+            created INTEGER NOT NULL,reviewed INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS hq_asset_request_queue ON hq_asset_request(status,created);
+        CREATE TABLE IF NOT EXISTS hq_asset_history(
+            id INTEGER PRIMARY KEY,asset_id INTEGER NOT NULL REFERENCES hq_asset(id),
+            event TEXT NOT NULL,from_value TEXT NOT NULL DEFAULT '',to_value TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',actor INTEGER REFERENCES users(id),created INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS hq_asset_history_asset ON hq_asset_history(asset_id,created DESC);
+        CREATE TABLE IF NOT EXISTS hq_asset_maintenance(
+            id INTEGER PRIMARY KEY,asset_id INTEGER NOT NULL REFERENCES hq_asset(id),
+            title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',vendor TEXT NOT NULL DEFAULT '',
+            cost INTEGER NOT NULL DEFAULT 0 CHECK(cost>=0),status TEXT NOT NULL CHECK(status IN ('open','completed')),
+            actor INTEGER REFERENCES users(id),created INTEGER NOT NULL,completed INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS hq_asset_maintenance_asset ON hq_asset_maintenance(asset_id,created DESC);
+\n        CREATE TABLE IF NOT EXISTS hq_operation_event(
             id INTEGER PRIMARY KEY,title TEXT NOT NULL,category TEXT NOT NULL,division TEXT NOT NULL DEFAULT '',
             detail TEXT NOT NULL DEFAULT '',owner TEXT NOT NULL DEFAULT '',location TEXT NOT NULL DEFAULT '',
             starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('planned','in_progress','completed','cancelled','archived')),
@@ -166,6 +199,38 @@ class TreasuryReconciliation(BaseModel):
     account_id:int
     counted_balance:int=Field(ge=0,le=1000000000000000)
     note:str=Field(min_length=1,max_length=500)
+class AssetAcquisition(BaseModel):
+    asset_tag:str=Field(min_length=2,max_length=40)
+    asset_type:str
+    name:str=Field(min_length=2,max_length=100)
+    description:str=Field(default='',max_length=2000)
+    make_model:str=Field(default='',max_length=120)
+    serial_number:str=Field(default='',max_length=100)
+    plate_number:str=Field(default='',max_length=30)
+    location:str=Field(default='',max_length=120)
+    condition:str=Field(default='good',max_length=40)
+    purchase_cost:int=Field(default=0,ge=0,le=1000000000000)
+    purchase_date:str=Field(default='',max_length=30)
+    inventory_item_id:int|None=None
+    case_id:int|None=None
+    account_id:int|None=None
+    note:str=Field(min_length=1,max_length=500)
+class AssetDisposal(BaseModel):
+    asset_id:int
+    note:str=Field(min_length=1,max_length=500)
+class AssetRequest(BaseModel):
+    request_type:str
+    acquisition:AssetAcquisition|None=None
+    disposal:AssetDisposal|None=None
+class AssetAssignment(BaseModel):
+    assigned_to:str=Field(default='',max_length=120)
+    location:str=Field(default='',max_length=120)
+    note:str=Field(min_length=1,max_length=500)
+class AssetMaintenance(BaseModel):
+    title:str=Field(min_length=2,max_length=120)
+    description:str=Field(default='',max_length=1500)
+    vendor:str=Field(default='',max_length=120)
+    cost:int=Field(default=0,ge=0,le=1000000000000)
 class Decision(BaseModel):
     approve:bool
 class ApprovalSubmission(BaseModel):
@@ -1047,3 +1112,165 @@ def approval_policy_clear(module:str,r:Request):
         u=privilege(c,r,admin=True);c.execute("DELETE FROM hq_approval_policy WHERE module=?",(module,))
         audit(c,u["id"],"approval.policy.clear."+module,0)
     return {"ok":True}
+
+
+@router.get("/ops/assets")
+def assets(r:Request):
+    with db() as c:
+        privilege(c,r,"assets")
+        return reply({
+            "assets":rows(c,"""SELECT a.*,i.name inventory_item_name,cs.title case_title
+                FROM hq_asset a LEFT JOIN hq_item i ON i.id=a.inventory_item_id
+                LEFT JOIN hq_case cs ON cs.id=a.case_id ORDER BY a.updated DESC,a.id DESC LIMIT 500"""),
+            "requests":rows(c,"""SELECT q.*,u.username,rv.username reviewer_name,a.asset_tag,a.name asset_name
+                FROM hq_asset_request q JOIN users u ON u.id=q.actor
+                LEFT JOIN users rv ON rv.id=q.reviewer LEFT JOIN hq_asset a ON a.id=q.asset_id
+                ORDER BY q.created DESC,q.id DESC LIMIT 200"""),
+            "maintenance":rows(c,"""SELECT m.*,a.asset_tag,a.name asset_name,u.username
+                FROM hq_asset_maintenance m JOIN hq_asset a ON a.id=m.asset_id
+                LEFT JOIN users u ON u.id=m.actor ORDER BY m.created DESC,m.id DESC LIMIT 200"""),
+            "history":rows(c,"""SELECT h.*,a.asset_tag,a.name asset_name,u.username
+                FROM hq_asset_history h JOIN hq_asset a ON a.id=h.asset_id
+                LEFT JOIN users u ON u.id=h.actor ORDER BY h.created DESC,h.id DESC LIMIT 300"""),
+            "inventory_items":rows(c,"SELECT id,name FROM hq_item ORDER BY name"),
+            "cases":rows(c,"SELECT id,title FROM hq_case ORDER BY id DESC LIMIT 300"),
+            "accounts":rows(c,"SELECT id,name FROM hq_treasury_account WHERE active=1 ORDER BY name")
+        })
+
+@router.post("/ops/assets/requests")
+def asset_request(p:AssetRequest,r:Request):
+    origin(r)
+    if p.request_type not in ("acquisition","disposal"): fail(400,"Invalid asset request type")
+    if (p.request_type=="acquisition") != (p.acquisition is not None) or (p.request_type=="disposal") != (p.disposal is not None):
+        fail(400,"Provide exactly one matching acquisition or disposal payload")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"assets","write")
+        asset_id=None;payload={}
+        if p.request_type=="acquisition":
+            a=p.acquisition
+            if a.asset_type not in ("vehicle","property","equipment","other"): fail(400,"Invalid asset type")
+            if a.condition not in ("new","excellent","good","fair","poor"): fail(400,"Invalid asset condition")
+            if c.execute("SELECT 1 FROM hq_asset WHERE asset_tag=?",(a.asset_tag.strip(),)).fetchone(): fail(409,"Asset tag already exists")
+            if a.inventory_item_id is not None and not c.execute("SELECT 1 FROM hq_item WHERE id=?",(a.inventory_item_id,)).fetchone(): fail(404,"Linked inventory item not found")
+            if a.case_id is not None and not c.execute("SELECT 1 FROM hq_case WHERE id=?",(a.case_id,)).fetchone(): fail(404,"Linked case not found")
+            if a.purchase_cost>0:
+                account=c.execute("SELECT id FROM hq_treasury_account WHERE id=? AND active=1",(a.account_id,)).fetchone()
+                if not account: fail(400,"Select an active treasury account for a paid acquisition")
+            payload=a.model_dump()
+            note=clean(a.note,500)
+        else:
+            d=p.disposal
+            asset=c.execute("SELECT * FROM hq_asset WHERE id=? AND status<>'retired'",(d.asset_id,)).fetchone()
+            if not asset: fail(404,"Active asset not found")
+            asset_id=d.asset_id;payload={"asset_tag":asset["asset_tag"],"name":asset["name"]}
+            note=clean(d.note,500)
+        rid=c.execute("""INSERT INTO hq_asset_request(request_type,asset_id,payload,note,status,actor,created)
+            VALUES(?,?,?,?, 'pending',?,?)""",(p.request_type,asset_id,json.dumps(payload,separators=(",",":")),note,u["id"],now())).lastrowid
+        reviewers=rows(c,"""SELECT DISTINCT u.id FROM users u JOIN membership m ON m.uid=u.id
+            JOIN hq_grants g ON g.rank_id=m.rank AND (g.module='assets' OR g.module='*') AND g.level='approve'
+            WHERE m.status='approved' AND u.id<>?""",(u["id"],))
+        for target in reviewers:
+            notify(c,target["id"],"asset_review","Asset request awaits approval",
+                p.request_type.title()+" · "+(payload.get("name") or payload.get("asset_tag",""))+" · "+note,
+                "/highest/internal/","asset-request:"+str(rid)+":review:"+str(target["id"]))
+        audit(c,u["id"],"asset.request."+p.request_type,rid)
+    return {"ok":True,"id":rid}
+
+@router.post("/ops/assets/requests/{request_id}/review")
+def asset_request_review(request_id:int,p:Decision,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"assets","approve")
+        request=c.execute("SELECT * FROM hq_asset_request WHERE id=? AND status='pending'",(request_id,)).fetchone()
+        if not request: fail(409,"No pending asset request")
+        if request["actor"]==u["id"]: fail(403,"Cannot review your own asset request")
+        payload=json.loads(request["payload"]);status="rejected"
+        if p.approve and request["request_type"]=="acquisition":
+            if c.execute("SELECT 1 FROM hq_asset WHERE asset_tag=?",(payload["asset_tag"],)).fetchone(): fail(409,"Asset tag was registered by another request")
+            aid=c.execute("""INSERT INTO hq_asset(asset_tag,asset_type,name,description,make_model,serial_number,plate_number,
+                location,condition,status,purchase_cost,purchase_date,inventory_item_id,case_id,actor,created,updated)
+                VALUES(?,?,?,?,?,?,?,?,?,'available',?,?,?,?,?,?,?)""",
+                (payload["asset_tag"].strip(),payload["asset_type"],clean(payload["name"],100),clean(payload["description"],2000,required=False),
+                 clean(payload["make_model"],120,required=False),clean(payload["serial_number"],100,required=False),
+                 clean(payload["plate_number"],30,required=False),clean(payload["location"],120,required=False),payload["condition"],
+                 payload["purchase_cost"],payload["purchase_date"],payload["inventory_item_id"],payload["case_id"],request["actor"],now(),now())).lastrowid
+            c.execute("INSERT INTO hq_asset_history(asset_id,event,to_value,note,actor,created) VALUES(?,'acquired','available',?,?,?)",
+                (aid,request["note"],u["id"],now()))
+            if payload["purchase_cost"]>0:
+                c.execute("""INSERT INTO hq_money(actor,amount,category,note,state,created,account_id)
+                    VALUES(?,?,'Asset acquisition',?,'pending',?,?)""",
+                    (request["actor"],-payload["purchase_cost"],"Asset "+payload["asset_tag"]+" · "+request["note"],now(),payload["account_id"]))
+                money_id=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+                audit(c,u["id"],"money.request.asset_acquisition",money_id)
+            audit(c,u["id"],"asset.acquire",aid)
+            payload["created_asset_id"]=aid
+            status="approved"
+        elif p.approve and request["request_type"]=="disposal":
+            asset=c.execute("SELECT * FROM hq_asset WHERE id=? AND status<>'retired'",(request["asset_id"],)).fetchone()
+            if not asset: fail(409,"Asset is already retired or unavailable")
+            c.execute("UPDATE hq_asset SET status='retired',updated=? WHERE id=?",(now(),asset["id"]))
+            c.execute("INSERT INTO hq_asset_history(asset_id,event,from_value,to_value,note,actor,created) VALUES(?,'disposed',?,'retired',?,?,?)",
+                (asset["id"],asset["status"],request["note"],u["id"],now()))
+            audit(c,u["id"],"asset.dispose",asset["id"])
+            status="approved"
+        c.execute("UPDATE hq_asset_request SET status=?,reviewer=?,reviewed=? WHERE id=?",(status,u["id"],now(),request_id))
+        notify(c,request["actor"],"asset_decision","Asset request "+status,
+            request["request_type"].title()+" · "+str(request_id),"/highest/internal/",
+            "asset-request:"+str(request_id)+":decision:"+status)
+        audit(c,u["id"],"asset.request."+status,request_id)
+    return {"ok":True,"status":status}
+
+@router.post("/ops/assets/{asset_id}/assignment")
+def asset_assignment(asset_id:int,p:AssetAssignment,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"assets","write")
+        asset=c.execute("SELECT * FROM hq_asset WHERE id=?",(asset_id,)).fetchone()
+        if not asset: fail(404,"Asset not found")
+        if asset["status"] in ("retired","maintenance"): fail(409,"Retired or maintained assets cannot be assigned")
+        assigned=clean(p.assigned_to,120,required=False)
+        status="assigned" if assigned else "available"
+        c.execute("UPDATE hq_asset SET assigned_to=?,location=?,status=?,updated=? WHERE id=?",
+            (assigned,clean(p.location,120,required=False) or asset["location"],status,now(),asset_id))
+        c.execute("""INSERT INTO hq_asset_history(asset_id,event,from_value,to_value,note,actor,created)
+            VALUES(?,'assignment',?,?,?, ?,?)""",(asset_id,asset["assigned_to"],assigned,clean(p.note,500),u["id"],now()))
+        audit(c,u["id"],"asset.assignment",asset_id)
+    return {"ok":True,"status":status}
+
+@router.post("/ops/assets/{asset_id}/maintenance")
+def asset_maintenance(asset_id:int,p:AssetMaintenance,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"assets","write")
+        asset=c.execute("SELECT * FROM hq_asset WHERE id=?",(asset_id,)).fetchone()
+        if not asset: fail(404,"Asset not found")
+        if asset["status"]=="retired": fail(409,"Retired asset cannot enter maintenance")
+        mid=c.execute("""INSERT INTO hq_asset_maintenance(asset_id,title,description,vendor,cost,status,actor,created)
+            VALUES(?,?,?,?,?,'open',?,?)""",
+            (asset_id,clean(p.title,120),clean(p.description,1500,required=False),clean(p.vendor,120,required=False),p.cost,u["id"],now())).lastrowid
+        c.execute("UPDATE hq_asset SET status='maintenance',updated=? WHERE id=?",(now(),asset_id))
+        c.execute("""INSERT INTO hq_asset_history(asset_id,event,from_value,to_value,note,actor,created)
+            VALUES(?,'maintenance',?,'maintenance',?,?,?)""",(asset_id,asset["status"],clean(p.title,120)+" · "+clean(p.description,1500,required=False),u["id"],now()))
+        audit(c,u["id"],"asset.maintenance.open",mid)
+    return {"ok":True,"id":mid}
+
+@router.post("/ops/assets/{asset_id}/maintenance/{maintenance_id}/complete")
+def asset_maintenance_complete(asset_id:int,maintenance_id:int,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"assets","write")
+        asset=c.execute("SELECT * FROM hq_asset WHERE id=?",(asset_id,)).fetchone()
+        record=c.execute("SELECT * FROM hq_asset_maintenance WHERE id=? AND asset_id=? AND status='open'",(maintenance_id,asset_id)).fetchone()
+        if not asset or not record: fail(404,"Open maintenance record not found")
+        status="assigned" if asset["assigned_to"] else "available"
+        c.execute("UPDATE hq_asset_maintenance SET status='completed',completed=? WHERE id=?",(now(),maintenance_id))
+        c.execute("UPDATE hq_asset SET status=?,updated=? WHERE id=?",(status,now(),asset_id))
+        c.execute("""INSERT INTO hq_asset_history(asset_id,event,from_value,to_value,note,actor,created)
+            VALUES(?,'maintenance_completed','maintenance',?,?,?,?)""",(asset_id,status,record["title"],u["id"],now()))
+        audit(c,u["id"],"asset.maintenance.complete",maintenance_id)
+    return {"ok":True,"status":status}

@@ -264,7 +264,7 @@ async def clip_upload(r:Request,title:str=Form(...),file:UploadFile=File(...)):
     limit=50*1024*1024 if content_type.startswith("video/") else 10*1024*1024
     data=await file.read(limit+1)
     if not data or len(data)>limit: fail(413,"Image limit is 10 MB and video limit is 50 MB")
-    valid=(ext in (".jpg",".jpeg") and data.startswith(b"\xff\xd8\xff")) or (ext==".png" and data.startswith(b"\x89PNG\r\n\x1a\n")) or (ext==".gif" and data[:6] in (b"GIF87a",b"GIF89a")) or (ext==".webp" and data[:4]==b"RIFF" and data[8:12]==b"WEBP") or (ext==".mp4" and len(data)>12 and data[4:8]==b"ftyp") or (ext==".webm" and data.startswith(b"\x1a\\x45\xdf\\xa3"))
+    valid=(ext in (".jpg",".jpeg") and data.startswith(b"\xff\xd8\xff")) or (ext==".png" and data.startswith(b"\x89PNG\r\n\x1a\n")) or (ext==".gif" and data[:6] in (b"GIF87a",b"GIF89a")) or (ext==".webp" and data[:4]==b"RIFF" and data[8:12]==b"WEBP") or (ext==".mp4" and len(data)>12 and data[4:8]==b"ftyp") or (ext==".webm" and data.startswith(b"\x1a\x45\xdf\\xa3"))
     if not valid: fail(400,"File content is not a valid supported media file")
     digest_value=hashlib.sha256(data).hexdigest();filename=uuid.uuid4().hex+ext;target=_media_dir()/filename
     target.write_bytes(data);os.chmod(target,0o640)
@@ -297,7 +297,7 @@ def refresh_clip_stats(r:Request):
     updated=0;unavailable=[];yt_ids=[]
     for clip in clips:
         url=clip["url"] or ""
-        match=re.search(r"(?:youtu\.be/|youtube\.com/(?:watch\\?(?:.*&)?v=|embed/|shorts/))([A-Za-z0-9_-]{11})",url)
+        match=re.search(r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/))([A-Za-z0-9_-]{11})",url)
         if match and key: yt_ids.append((clip["id"],match.group(1)))
         elif "tiktok.com/" in url and tik_endpoint and tik_token:
             try:

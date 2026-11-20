@@ -1274,3 +1274,68 @@ def asset_maintenance_complete(asset_id:int,maintenance_id:int,r:Request):
             VALUES(?,'maintenance_completed','maintenance',?,?,?,?)""",(asset_id,status,record["title"],u["id"],now()))
         audit(c,u["id"],"asset.maintenance.complete",maintenance_id)
     return {"ok":True,"status":status}
+\n
+@router.get("/ops/executive")
+def executive_dashboard(r:Request):
+    with db() as c:
+        u=privilege(c,r)
+        grants={x["module"]:x["level"] for x in c.execute(
+            "SELECT module,level FROM hq_grants WHERE rank_id=?",(u["rank"],)).fetchall()}
+        if grants.get("*")=="approve":
+            allowed=set(MODULES)
+        else:
+            allowed={module for module in MODULES if module in grants}
+        data={"generated_at":now(),"membership":{
+            "active":c.execute("SELECT count(*) FROM membership WHERE status='approved'").fetchone()[0],
+            "pending":c.execute("SELECT count(*) FROM membership WHERE status='pending'").fetchone()[0],
+            "ranks":c.execute("SELECT count(DISTINCT rank) FROM membership WHERE status='approved' AND rank IS NOT NULL").fetchone()[0]
+        },"permissions":sorted(allowed),"sections":{}}
+        if allowed & {"treasury","inventory","assets","operations","cases","business","business_analytics"}:
+            visible_modules=sorted(allowed)
+            placeholders=",".join("?" for _ in visible_modules)
+            data["sections"]["approvals"]={
+                "pending":c.execute("SELECT count(*) FROM hq_approval_request WHERE status='pending' AND module IN ("+placeholders+")",visible_modules).fetchone()[0]
+            } if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hq_approval_request'").fetchone() else {"pending":0}
+        if "treasury" in allowed:
+            posted=c.execute("SELECT coalesce(sum(amount),0) FROM hq_money WHERE state='posted'").fetchone()[0]
+            pending=c.execute("SELECT count(*) FROM hq_money WHERE state='pending'").fetchone()[0]
+            flow=c.execute("SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense FROM hq_money WHERE state='posted' AND created>=?",(now()-30*86400,)).fetchone()
+            data["sections"]["treasury"]={"balance":posted,"pending_transactions":pending,
+                "accounts":c.execute("SELECT count(*) FROM hq_treasury_account WHERE active=1").fetchone()[0],
+                "income_30d":flow["income"],"expense_30d":flow["expense"]}
+        if "inventory" in allowed:
+            valuation=_cost_summary(c)
+            data["sections"]["inventory"]={"items":c.execute("SELECT count(*) FROM hq_item").fetchone()[0],
+                "vaults":c.execute("SELECT count(*) FROM hq_vault").fetchone()[0],
+                "stock_units":c.execute("SELECT coalesce(sum(qty),0) FROM hq_stock").fetchone()[0],
+                "low_stock":c.execute("SELECT count(*) FROM (SELECT i.id,coalesce(sum(s.qty),0) total FROM hq_item i LEFT JOIN hq_stock s ON s.item=i.id GROUP BY i.id HAVING total<i.min_stock)").fetchone()[0],
+                "stock_value":sum(x["value"] for x in valuation),
+                "unvalued_units":sum(x["unvalued_qty"] for x in valuation)}
+        if "assets" in allowed:
+            data["sections"]["assets"]={"total":c.execute("SELECT count(*) FROM hq_asset").fetchone()[0],
+                "available":c.execute("SELECT count(*) FROM hq_asset WHERE status='available'").fetchone()[0],
+                "assigned":c.execute("SELECT count(*) FROM hq_asset WHERE status='assigned'").fetchone()[0],
+                "maintenance":c.execute("SELECT count(*) FROM hq_asset WHERE status='maintenance'").fetchone()[0],
+                "retired":c.execute("SELECT count(*) FROM hq_asset WHERE status='retired'").fetchone()[0],
+                "acquisition_cost":c.execute("SELECT coalesce(sum(purchase_cost),0) FROM hq_asset WHERE status<>'retired'").fetchone()[0]}
+        if "operations" in allowed:
+            data["sections"]["operations"]={"upcoming":c.execute("SELECT count(*) FROM hq_operation_event WHERE status IN ('planned','in_progress') AND ends_at>=datetime('now')").fetchone()[0],
+                "in_progress":c.execute("SELECT count(*) FROM hq_operation_event WHERE status='in_progress'").fetchone()[0],
+                "completed":c.execute("SELECT count(*) FROM hq_operation_event WHERE status='completed'").fetchone()[0],
+                "recent":rows(c,"SELECT id,title,category,division,owner,starts_at,ends_at,status FROM hq_operation_event WHERE status NOT IN ('cancelled','archived') ORDER BY starts_at DESC LIMIT 5")}
+        if "cases" in allowed:
+            data["sections"]["cases"]={"total":c.execute("SELECT count(*) FROM hq_case").fetchone()[0],
+                "open":c.execute("SELECT count(*) FROM hq_case WHERE status='open'").fetchone()[0],
+                "review":c.execute("SELECT count(*) FROM hq_case WHERE status='review'").fetchone()[0],
+                "closed":c.execute("SELECT count(*) FROM hq_case WHERE status='closed'").fetchone()[0],
+                "evidence_files":c.execute("SELECT count(*) FROM hq_evidence_file").fetchone()[0],
+                "evidence_events":c.execute("SELECT count(*) FROM hq_evidence_event").fetchone()[0],
+                "integrity_failures":c.execute("SELECT count(*) FROM hq_evidence_event WHERE action='integrity_failed'").fetchone()[0]}
+        if "business_analytics" in allowed:
+            data["sections"]["business_analytics"]={"available":True}
+        if u["admin"]:
+            data["sections"]["security"]={
+                "audit_events_7d":c.execute("SELECT count(*) FROM audit WHERE created>=?",(now()-7*86400,)).fetchone()[0],
+                "flagged_events_7d":c.execute("SELECT count(*) FROM audit WHERE created>=? AND (lower(action) LIKE '%integrity%' OR lower(action) LIKE '%denied%' OR lower(action) LIKE '%failed%')",(now()-7*86400,)).fetchone()[0],
+                "recent":rows(c,"SELECT a.id,a.action,a.target,a.created,u.username FROM audit a LEFT JOIN users u ON u.id=a.actor ORDER BY a.id DESC LIMIT 8")}
+        return reply(data)

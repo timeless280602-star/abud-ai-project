@@ -236,3 +236,38 @@ class BusinessTest(unittest.TestCase):
         order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         self.assertEqual(order["actor"],self.get(self.u,"/me").json()["id"])
         self.assertEqual(order["creator"],"cashier")
+
+    def test_invoice_is_issued_at_order_creation_and_receipt_at_completion(self):
+        response=self.create(nonce="invoice-document-test-12345")
+        self.assertEqual(response.status_code,200,response.text)
+        oid=response.json()["id"]
+        created=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertRegex(created["invoice_no"],r"^INV-\\d{8}-\\d{6}$")
+        self.assertEqual(created["invoice_creator_name"],"cashier")
+        self.assertIsNotNone(created["invoice_issued_at"])
+        self.assertIsNone(created["receipt_no"])
+        self.assertIsNone(created["receipt_issued_at"])
+        second=self.create(nonce="invoice-document-test-67890").json()["id"]
+        second_order=self.get(self.u,f"/business/orders/{second}").json()["order"]
+        self.assertNotEqual(created["invoice_no"],second_order["invoice_no"])
+        self.advance(oid)
+        self.assertEqual(self.post(self.m,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        completed=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertRegex(completed["receipt_no"],r"^RCT-\\d{8}-\\d{6}$")
+        self.assertIsNotNone(completed["receipt_issued_at"])
+        self.assertEqual(completed["receipt_completed_by"],"manager")
+        self.assertEqual(completed["invoice_no"],created["invoice_no"])
+        self.assertEqual(completed["invoice_creator_name"],"cashier")
+        listed=next(x for x in self.get(self.u,"/business/orders").json()["orders"] if x["id"]==oid)
+        self.assertEqual((listed["invoice_no"],listed["receipt_no"]),(completed["invoice_no"],completed["receipt_no"]))
+
+    def test_completed_legacy_order_documents_are_backfilled(self):
+        oid=self.create(nonce="legacy-document-backfill-12345").json()["id"]
+        self.advance(oid)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        with patch("app.highest_business.now",return_value=1900000000):
+            business_init()
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertTrue(order["invoice_no"].startswith("INV-"))
+        self.assertTrue(order["receipt_no"].startswith("RCT-"))
+        self.assertEqual(order["receipt_completed_by"],"cashier")

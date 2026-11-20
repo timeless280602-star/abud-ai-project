@@ -1,4 +1,5 @@
 """Fictional in-game business orders and POS. No real payments."""
+from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from app.highest import db, origin, clean, fail, audit
@@ -6,6 +7,11 @@ from app.highest_ops import privilege, rows, reply, now, change
 
 router=APIRouter(prefix="/highest/api")
 STATES={"pending":{"ready"},"ready":{"completed"},"completed":set()}
+
+def document_number(prefix,timestamp,order_id):
+    day=datetime.fromtimestamp(int(timestamp),timezone.utc).strftime("%Y%m%d")
+    return f"{prefix}-{day}-{int(order_id):06d}"
+
 def init():
     with db() as c:
         c.executescript("""
@@ -13,6 +19,7 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_order(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),nonce TEXT NOT NULL,group_name TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('buy','sell')),status TEXT NOT NULL CHECK(status IN ('pending','ready','completed')),notes TEXT NOT NULL,vault INTEGER REFERENCES hq_vault(id),treasury INTEGER NOT NULL DEFAULT 0,money_id INTEGER REFERENCES hq_money(id),version INTEGER NOT NULL DEFAULT 1,delivery_note TEXT NOT NULL DEFAULT '',completed_at INTEGER,legacy_hidden INTEGER NOT NULL DEFAULT 0,discount_scope TEXT NOT NULL DEFAULT 'none',discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(actor,nonce));
         CREATE TABLE IF NOT EXISTS hq_order_line(order_id INTEGER REFERENCES hq_order(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>0),buy INTEGER NOT NULL,sell INTEGER NOT NULL,discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(order_id,item));
         CREATE TABLE IF NOT EXISTS hq_order_history(id INTEGER PRIMARY KEY,order_id INTEGER REFERENCES hq_order(id),actor INTEGER REFERENCES users(id),status TEXT NOT NULL,note TEXT NOT NULL,created INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS hq_order_documents(order_id INTEGER PRIMARY KEY REFERENCES hq_order(id) ON DELETE CASCADE,invoice_no TEXT NOT NULL UNIQUE,invoice_issued_at INTEGER NOT NULL,invoice_creator_name TEXT NOT NULL DEFAULT '',receipt_no TEXT UNIQUE,receipt_issued_at INTEGER,receipt_completed_by TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS hq_discount_policy(rank_id INTEGER PRIMARY KEY REFERENCES ranks(id) ON DELETE CASCADE,scope TEXT NOT NULL DEFAULT 'none' CHECK(scope IN ('none','all','items','both')),max_percent INTEGER NOT NULL DEFAULT 0 CHECK(max_percent BETWEEN 0 AND 100),max_fixed INTEGER NOT NULL DEFAULT 0 CHECK(max_fixed>=0),updated_by INTEGER REFERENCES users(id),updated INTEGER NOT NULL);
         """)
         order_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_order)")}
@@ -22,8 +29,9 @@ def init():
         for name,definition in (("discount_scope","TEXT NOT NULL DEFAULT 'none'"),("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0"),("discount_state","TEXT NOT NULL DEFAULT 'approved'"),("discount_requested_amount","INTEGER NOT NULL DEFAULT 0"),("discount_reason","TEXT NOT NULL DEFAULT ''"),("discount_reviewed_by","INTEGER REFERENCES users(id)"),("discount_review_note","TEXT NOT NULL DEFAULT ''")):
             if name not in order_columns: c.execute(f"ALTER TABLE hq_order ADD COLUMN {name} {definition}")
         line_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_order_line)")}
-        for name,definition in (("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0"),("requested_discount_amount","INTEGER NOT NULL DEFAULT 0")):
+        for name,definition in (("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0"),("requested_discount_amount","INTEGER NOT NULL DEFAULT 0"),("item_name","TEXT NOT NULL DEFAULT ''")):
             if name not in line_columns: c.execute(f"ALTER TABLE hq_order_line ADD COLUMN {name} {definition}")
+        c.execute("UPDATE hq_order_line SET item_name=(SELECT name FROM hq_item WHERE id=hq_order_line.item) WHERE trim(item_name)=''")
         c.execute("UPDATE hq_order SET completed_at=updated WHERE status='completed' AND completed_at IS NULL")
         c.execute("UPDATE hq_order SET discount_requested_amount=discount_amount WHERE discount_requested_amount=0 AND discount_amount>0")
         c.execute("UPDATE hq_order SET discount_state='none' WHERE discount_amount=0 AND discount_requested_amount=0 AND discount_state='approved'")
@@ -31,6 +39,20 @@ def init():
         c.execute("UPDATE hq_order SET legacy_hidden=1,status='pending' WHERE status='cancelled'")
         c.execute("UPDATE hq_order SET status='pending' WHERE status IN ('confirmed','processing')")
         c.execute("UPDATE hq_order SET delivery_note='Butuh pengantaran' WHERE status='ready' AND trim(delivery_note)=''")
+        legacy_orders=c.execute("""SELECT o.id,o.created,o.status,o.completed_at,o.updated,u.display_name creator,
+            coalesce((SELECT u2.display_name FROM hq_order_history h JOIN users u2 ON u2.id=h.actor
+                WHERE h.order_id=o.id AND h.status='completed' ORDER BY h.id DESC LIMIT 1),u.display_name) completed_by
+            FROM hq_order o JOIN users u ON u.id=o.actor ORDER BY o.id""").fetchall()
+        for legacy in legacy_orders:
+            issued=legacy["created"] or legacy["updated"] or now()
+            c.execute("""INSERT OR IGNORE INTO hq_order_documents(order_id,invoice_no,invoice_issued_at,invoice_creator_name)
+                VALUES(?,?,?,?)""",(legacy["id"],document_number("INV",issued,legacy["id"]),issued,legacy["creator"]))
+            if legacy["status"]=="completed":
+                receipt_at=legacy["completed_at"] or legacy["updated"] or issued
+                c.execute("""UPDATE hq_order_documents SET receipt_no=coalesce(receipt_no,?),
+                    receipt_issued_at=coalesce(receipt_issued_at,?),
+                    receipt_completed_by=CASE WHEN trim(receipt_completed_by)='' THEN ? ELSE receipt_completed_by END
+                    WHERE order_id=?""",(document_number("RCT",receipt_at,legacy["id"]),receipt_at,legacy["completed_by"],legacy["id"]))
 class Price(BaseModel):
     item:int
     buy:int=Field(ge=0,le=1000000000)
@@ -65,12 +87,15 @@ class DiscountReview(BaseModel):
     approve:bool
     note:str=Field(default="",max_length=500)
 def get_order(c,oid):
-    r=c.execute("SELECT o.*,u.display_name creator FROM hq_order o JOIN users u ON u.id=o.actor WHERE o.id=?",(oid,)).fetchone()
+    r=c.execute("""SELECT o.*,u.display_name creator,d.invoice_no,d.invoice_issued_at,
+        d.invoice_creator_name,d.receipt_no,d.receipt_issued_at,d.receipt_completed_by
+        FROM hq_order o JOIN users u ON u.id=o.actor
+        LEFT JOIN hq_order_documents d ON d.order_id=o.id WHERE o.id=?""",(oid,)).fetchone()
     if not r: fail(404,"Order not found")
     return r
 def order_data(c,r):
     out=dict(r)
-    out["lines"]=rows(c,"SELECT l.*,i.name FROM hq_order_line l JOIN hq_item i ON i.id=l.item WHERE order_id=? ORDER BY i.name",(r["id"],))
+    out["lines"]=rows(c,"SELECT l.*,coalesce(nullif(l.item_name,''),i.name) name FROM hq_order_line l JOIN hq_item i ON i.id=l.item WHERE order_id=? ORDER BY name",(r["id"],))
     for line in out["lines"]:
         unit=line["buy"] if r["direction"]=="buy" else line["sell"]
         line["subtotal"]=line["qty"]*unit
@@ -138,7 +163,10 @@ def orders(r:Request):
     with db() as c:
         privilege(c,r,"business")
         u=privilege(c,r,"business")
-        return reply({"orders":[order_data(c,x) for x in c.execute("SELECT o.*,u.display_name creator FROM hq_order o JOIN users u ON u.id=o.actor WHERE o.legacy_hidden=0 ORDER BY o.id DESC LIMIT 500").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name"),"discount_policy":discount_policy(c,u["rank"])})
+        return reply({"orders":[order_data(c,x) for x in c.execute("""SELECT o.*,u.display_name creator,d.invoice_no,d.invoice_issued_at,
+            d.invoice_creator_name,d.receipt_no,d.receipt_issued_at,d.receipt_completed_by
+            FROM hq_order o JOIN users u ON u.id=o.actor LEFT JOIN hq_order_documents d ON d.order_id=o.id
+            WHERE o.legacy_hidden=0 ORDER BY o.id DESC LIMIT 500""").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name"),"discount_policy":discount_policy(c,u["rank"])})
 @router.get("/business/orders/{oid}")
 def order(oid:int,r:Request):
     with db() as c:
@@ -180,9 +208,9 @@ def create(p:Order,r:Request):
         if p.treasury:privilege(c,r,"treasury","write")
         items=[]
         for line in p.lines:
-            price=c.execute("SELECT buy,sell FROM hq_price WHERE item=?",(line.item,)).fetchone()
+            price=c.execute("SELECT p.buy,p.sell,i.name FROM hq_price p JOIN hq_item i ON i.id=p.item WHERE p.item=?",(line.item,)).fetchone()
             if not price:fail(400,"Set item prices before ordering")
-            items.append({"item":line.item,"qty":line.qty,"buy":price["buy"],"sell":price["sell"],"discount_type":line.discount_type,"discount_value":line.discount_value})
+            items.append({"item":line.item,"name":price["name"],"qty":line.qty,"buy":price["buy"],"sell":price["sell"],"discount_type":line.discount_type,"discount_value":line.discount_value})
         subtotals=[x["qty"]*(x["buy"] if p.direction=="buy" else x["sell"]) for x in items]
         subtotal=sum(subtotals)
         if subtotal>1000000000000:fail(400,"Order subtotal exceeds ledger limit")
@@ -228,10 +256,14 @@ def create(p:Order,r:Request):
         total=subtotal-effective_discount
         if total>1000000000000:fail(400,"Order total exceeds ledger limit")
         gid=clean(p.group_name,100)
+        created_at=now()
         oid=c.execute("""INSERT INTO hq_order(actor,nonce,group_name,direction,status,notes,vault,treasury,discount_scope,discount_type,discount_value,discount_amount,discount_state,discount_requested_amount,discount_reason,created,updated)
-            VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?)""",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),p.discount_scope,p.discount_type,p.discount_value,effective_discount,state,requested_discount,p.discount_reason.strip(),now(),now())).lastrowid
-        c.executemany("""INSERT INTO hq_order_line(order_id,item,qty,buy,sell,discount_type,discount_value,discount_amount,requested_discount_amount)
-            VALUES(?,?,?,?,?,?,?,?,?)""",[(oid,x["item"],x["qty"],x["buy"],x["sell"],x["discount_type"],x["discount_value"],x["discount_amount"],x["requested_discount_amount"]) for x in items])
+            VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?)""",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),p.discount_scope,p.discount_type,p.discount_value,effective_discount,state,requested_discount,p.discount_reason.strip(),created_at,created_at)).lastrowid
+        c.executemany("""INSERT INTO hq_order_line(order_id,item,item_name,qty,buy,sell,discount_type,discount_value,discount_amount,requested_discount_amount)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",[(oid,x["item"],x["name"],x["qty"],x["buy"],x["sell"],x["discount_type"],x["discount_value"],x["discount_amount"],x["requested_discount_amount"]) for x in items])
+        creator_name=c.execute("SELECT display_name FROM users WHERE id=?",(u["id"],)).fetchone()["display_name"]
+        c.execute("INSERT INTO hq_order_documents(order_id,invoice_no,invoice_issued_at,invoice_creator_name) VALUES(?,?,?,?)",
+            (oid,document_number("INV",created_at,oid),created_at,creator_name))
         history(c,oid,u["id"],"pending","Order created"+(" · Discount approval requested" if needs_approval else ""))
         audit(c,u["id"],"business.order",oid)
         if needs_approval:audit(c,u["id"],"business.discount.request",oid)
@@ -242,7 +274,9 @@ def create(p:Order,r:Request):
 def discount_requests(r:Request):
     with db() as c:
         privilege(c,r,"business_discounts")
-        pending=rows(c,"""SELECT o.*,u.display_name creator FROM hq_order o JOIN users u ON u.id=o.actor
+        pending=rows(c,"""SELECT o.*,u.display_name creator,d.invoice_no,d.invoice_issued_at,d.invoice_creator_name,
+            d.receipt_no,d.receipt_issued_at,d.receipt_completed_by FROM hq_order o JOIN users u ON u.id=o.actor
+            LEFT JOIN hq_order_documents d ON d.order_id=o.id
             WHERE o.discount_state='pending' AND o.legacy_hidden=0 ORDER BY o.created,o.id LIMIT 200""")
         return reply({"requests":[order_data(c,x) for x in pending]})
 @router.post("/business/orders/{oid}/discount-review")
@@ -299,6 +333,12 @@ def update(oid:int,p:Status,r:Request):
         completed_at=now() if p.status=="completed" else row["completed_at"]
         note=clean(p.note,500) if p.note.strip() else ("Butuh pengantaran" if p.status=="ready" else "Order completed and retained for analytics")
         c.execute("UPDATE hq_order SET status=?,version=version+1,updated=?,delivery_note=?,completed_at=? WHERE id=?",(p.status,now(),delivery_note,completed_at,oid))
+        if p.status=="completed":
+            completed_by=c.execute("SELECT display_name FROM users WHERE id=?",(u["id"],)).fetchone()["display_name"]
+            c.execute("""UPDATE hq_order_documents SET receipt_no=coalesce(receipt_no,?),
+                receipt_issued_at=coalesce(receipt_issued_at,?),receipt_completed_by=CASE
+                WHEN trim(receipt_completed_by)='' THEN ? ELSE receipt_completed_by END WHERE order_id=?""",
+                (document_number("RCT",completed_at,oid),completed_at,completed_by,oid))
         history(c,oid,u["id"],p.status,note)
         audit(c,u["id"],"business."+p.status,oid)
     return {"ok":True,"money_id":mid}

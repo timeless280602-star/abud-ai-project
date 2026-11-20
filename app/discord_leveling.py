@@ -1,3 +1,4 @@
+import asyncio
 """Community leveling integration. Never assigns, edits or removes roles."""
 
 import logging

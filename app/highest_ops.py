@@ -830,6 +830,15 @@ def approval_delegation(p:ApprovalDelegation,r:Request):
         grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(target["rank"],p.module)).fetchone()
         if not grant or grant["level"]!="approve": fail(403,"Delegate must hold approve permission for this module")
         c.execute("INSERT INTO hq_approval_delegation(module,delegator,delegate,active,created,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(module,delegator,delegate) DO UPDATE SET active=excluded.active,updated=excluded.updated",(p.module,u["id"],p.delegate_user_id,int(p.active),now(),now()))
+        if p.active:
+            pending=rows(c,"""SELECT q.id,q.title,q.current_step FROM hq_approval_request q
+                JOIN hq_approval_request_step st ON st.request_id=q.id AND st.step=q.current_step
+                WHERE q.module=? AND q.status='pending' AND st.rank_id=? AND q.requester<>?""",
+                (p.module,target["rank"],u["id"]))
+            for request in pending:
+                notify(c,p.delegate_user_id,"approval_review","Approval requires your review",
+                    request["title"]+" · "+p.module+" · step "+str(request["current_step"]),
+                    "/highest/internal/","approval:"+str(request["id"])+":step:"+str(request["current_step"])+":user:"+str(p.delegate_user_id))
         audit(c,u["id"],"approval.delegation."+("activate" if p.active else "revoke"),p.delegate_user_id)
     return {"ok":True}
 

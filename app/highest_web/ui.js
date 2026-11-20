@@ -216,28 +216,28 @@ async function financialReportsUI(write){
     metric("Net cash flow",fmt(s.net_cash_flow),"Income less expenses"),
     metric("Closing balance",fmt(s.closing_balance),"Opening balance plus period net flow"),
     metric("Budget allocation",fmt(s.budget_total),"Sum of budgets defined in selected months"),
-    metric("Budget remaining",s.budget_remaining==null?"Not configured":fmt(s.budget_remaining),s.budget_utilization_pct==null?"Set monthly budgets to calculate utilization":s.budget_utilization_pct+"% utilized"));
+    metric("Budget allocation",fmt(s.budget_total),"Actual expense is compared against each budget scope below"));
    content.append(g,el("h3","Comparison with previous period"),el("p",c.previous_start+" to "+c.previous_end+" · Income "+fmt(c.income)+" · Expenses "+fmt(c.expense)+" · Net "+fmt(c.net_cash_flow)),el("p","Change · Income "+fmt(c.income_change)+" · Expenses "+fmt(c.expense_change)+" · Net "+fmt(c.net_change)),el("p",data.budget_note,"muted"));
   }else if(tab==="monthly"){
    content.append(el("h3","Monthly cash flow"));
    for(const x of data.monthly)content.append(el("p",x.period+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.net)+" · "+x.transactions+" posted transactions));
   }else if(tab==="divisions"){
    content.append(el("h3","Financial performance by division"));
-   for(const x of data.divisions)content.append(el("article",null,"tile"),el("p",x.division+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
+   for(const x of data.divisions)content.append(el("p",x.division+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
   }else if(tab==="categories"){
    content.append(el("h3","Financial performance by category"));
    for(const x of data.categories)content.append(el("p",x.category+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
   }else{
    content.append(el("h3","Monthly budget plan"),el("p","Budgets are set by month, division and optional category. Actuals are compared against posted expenses.","muted"));
    if(write)content.append(form([field("period","Budget month","month"),field("division","Division / rank (blank = organization-wide)"),field("category","Expense category (blank = all categories)"),field("amount","Budget amount","number")],"Save monthly budget",v=>postRefresh("/ops/financial-reports/budgets",{...v,amount:n(v.amount)})));
-   for(const x of data.budgets)content.append(el("p",x.period+" · "+(x.division||"All divisions")+" · "+(x.category||"All categories")+" · "+fmt(x.amount)));
+   for(const x of data.budgets)content.append(el("p",x.period+" · "+(x.division||"All divisions")+" · "+(x.category||"All categories")+" · Budget "+fmt(x.amount)+" · Actual "+fmt(x.actual_expense)+" · Variance "+fmt(x.variance)+" · "+(x.utilization_pct==null?"—":x.utilization_pct+"% utilized")));
    if(!data.budgets.length)content.append(el("p","No budgets configured for this reporting period.","muted"));
   }
  }
  async function load(){
   if(!from.value||!to.value)throw Error("Choose both reporting months");
   if(to.value<from.value)throw Error("End month must not precede start month");
-  data=await api("/ops/financial-reports?start="+encodeURIComponent(from.value)+"&end="+encodeURIComponent(to.value),"","GET");
+  data=await api("/ops/financial-reports?start="+encodeURIComponent(from.value)+"&end="+encodeURIComponent(to.value),undefined,"GET");
   exports.replaceChildren();
   for(const format of ["pdf","xlsx","csv"])exports.append(link("Export "+format.toUpperCase(),"/highest/api/ops/financial-reports/export?start="+encodeURIComponent(from.value)+"&end="+encodeURIComponent(to.value)+"&format="+format));
   draw();

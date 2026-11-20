@@ -339,7 +339,7 @@ def change(c,uid,kind,vault,item,delta,note,ref,unit_price=None,movement_value=N
             if movement_value is not None: total_value=movement_value
             elif unit_price is not None: total_value=delta*unit_price
             else: total_value=0
-            cost_source="unvalued" if unit_price is None and movement_value is None else ("business_purchase_snapshot" if kind=="business_buy" else "recorded_unit_cost")
+            cost_source="unvalued" if unit_price is None and movement_value is None else ("business_purchase_snapshot" if kind=="business_buy" else ("production_conversion" if kind=="craft_output" else "recorded_unit_cost"))
             _receive_cost(c,vault,item,delta,total_value,cost_source,ref,method)
         unit_price=(total_value+delta//2)//delta
     else:
@@ -462,9 +462,11 @@ def craft(p:Batch,r:Request):
         if not rec: fail(404,"Recipe not found")
         note=clean(p.note,500)
         bid=c.execute("INSERT INTO hq_batch(recipe,vault,actor,batches,created,note) VALUES(?,?,?,?,?,?)",(p.recipe,p.vault,u["id"],p.batches,now(),note)).lastrowid
+        production_cost=0
         for ing in c.execute("SELECT * FROM hq_ingredient WHERE recipe=?",(p.recipe,)).fetchall():
-            change(c,u["id"],"craft_input",p.vault,ing["item"],-ing["qty"]*p.batches,note,"batch:"+str(bid))
-        change(c,u["id"],"craft_output",p.vault,rec["output"],rec["output_qty"]*p.batches,note,"batch:"+str(bid))
+            consumed=change(c,u["id"],"craft_input",p.vault,ing["item"],-ing["qty"]*p.batches,note,"batch:"+str(bid))
+            production_cost+=consumed["value"]
+        change(c,u["id"],"craft_output",p.vault,rec["output"],rec["output_qty"]*p.batches,note,"batch:"+str(bid),movement_value=production_cost)
         audit(c,u["id"],"craft.complete",bid)
     return {"ok":True,"id":bid}
 

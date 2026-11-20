@@ -17,6 +17,9 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_item(id INTEGER PRIMARY KEY,name TEXT UNIQUE COLLATE NOCASE NOT NULL,category TEXT NOT NULL,min_stock INTEGER NOT NULL CHECK(min_stock>=0));
         CREATE TABLE IF NOT EXISTS hq_stock(vault INTEGER REFERENCES hq_vault(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>=0),PRIMARY KEY(vault,item));
         CREATE TABLE IF NOT EXISTS hq_movement(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),kind TEXT NOT NULL,vault INTEGER REFERENCES hq_vault(id),item INTEGER REFERENCES hq_item(id),delta INTEGER NOT NULL,after_qty INTEGER NOT NULL,note TEXT NOT NULL,ref TEXT NOT NULL,unit_price INTEGER,value INTEGER,created INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS hq_cost_layer(id INTEGER PRIMARY KEY,vault INTEGER NOT NULL REFERENCES hq_vault(id),item INTEGER NOT NULL REFERENCES hq_item(id),qty_remaining INTEGER NOT NULL CHECK(qty_remaining>=0),value_remaining INTEGER NOT NULL CHECK(value_remaining>=0),source TEXT NOT NULL,reference TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS hq_cost_layer_fifo ON hq_cost_layer(vault,item,created,id);
+
         CREATE TABLE IF NOT EXISTS hq_recipe(id INTEGER PRIMARY KEY,name TEXT UNIQUE COLLATE NOCASE NOT NULL,output INTEGER REFERENCES hq_item(id),output_qty INTEGER NOT NULL CHECK(output_qty>0));
         CREATE TABLE IF NOT EXISTS hq_ingredient(recipe INTEGER REFERENCES hq_recipe(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>0),PRIMARY KEY(recipe,item));
         CREATE TABLE IF NOT EXISTS hq_batch(id INTEGER PRIMARY KEY,recipe INTEGER REFERENCES hq_recipe(id),vault INTEGER REFERENCES hq_vault(id),actor INTEGER REFERENCES users(id),batches INTEGER NOT NULL,created INTEGER NOT NULL,note TEXT NOT NULL);
@@ -43,9 +46,15 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_approval_request_step(request_id INTEGER NOT NULL REFERENCES hq_approval_request(id) ON DELETE CASCADE,step INTEGER NOT NULL,rank_id INTEGER NOT NULL REFERENCES ranks(id),PRIMARY KEY(request_id,step));
         CREATE TABLE IF NOT EXISTS hq_approval_action(id INTEGER PRIMARY KEY,request_id INTEGER NOT NULL REFERENCES hq_approval_request(id) ON DELETE CASCADE,step INTEGER NOT NULL,actor INTEGER NOT NULL REFERENCES users(id),delegated_from INTEGER REFERENCES users(id),decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL,UNIQUE(request_id,step));
         CREATE TABLE IF NOT EXISTS hq_approval_delegation(id INTEGER PRIMARY KEY,module TEXT NOT NULL,delegator INTEGER NOT NULL REFERENCES users(id),delegate INTEGER NOT NULL REFERENCES users(id),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(module,delegator,delegate));        """)
+        item_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_item)")}
+        if "costing_method" not in item_columns: c.execute("ALTER TABLE hq_item ADD COLUMN costing_method TEXT NOT NULL DEFAULT 'fifo'")
         movement_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_movement)")}
         if "unit_price" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN unit_price INTEGER")
         if "value" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN value INTEGER")
+        if "counterparty_vault" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN counterparty_vault INTEGER REFERENCES hq_vault(id)")
+        if "cost_method" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN cost_method TEXT")
+        if "cost_source" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'unvalued'")
+
 
 def now(): return int(time.time())
 def rows(c,sql,args=()): return [dict(x) for x in c.execute(sql,args)]

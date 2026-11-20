@@ -411,9 +411,47 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             FROM hq_item i LEFT JOIN hq_stock s ON s.item=i.id
             GROUP BY i.id HAVING coalesce(sum(s.qty),0)<i.min_stock
             ORDER BY i.name LIMIT 100""")
+        member_activity=rows(c,"""SELECT o.actor,u.display_name,
+            count(DISTINCT o.id) transactions_created,
+            count(DISTINCT CASE WHEN o.status='pending' THEN o.id END) pending_orders,
+            count(DISTINCT CASE WHEN o.status='ready' THEN o.id END) ready_orders,
+            count(DISTINCT CASE WHEN o.status='completed' THEN o.id END) completed_orders_created,
+            count(DISTINCT CASE WHEN o.direction='sell' THEN o.id END) sales_orders_created,
+            count(DISTINCT CASE WHEN o.direction='buy' THEN o.id END) purchase_orders_created
+            FROM hq_order o JOIN users u ON u.id=o.actor
+            WHERE o.legacy_hidden=0 AND o.created>=? AND o.created<?
+            GROUP BY o.actor,u.display_name ORDER BY transactions_created DESC,u.display_name""",args)
+        member_finance=rows(c,"""SELECT o.actor,
+            count(DISTINCT CASE WHEN o.direction='sell' THEN o.id END) completed_sales_orders,
+            count(DISTINCT CASE WHEN o.direction='buy' THEN o.id END) completed_purchase_orders,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy-l.discount_amount ELSE 0 END),0) purchase_spend,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.discount_amount ELSE 0 END),0) sales_discounts,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.discount_amount ELSE 0 END),0) purchase_discounts,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount-l.qty*l.buy ELSE 0 END),0) estimated_gross_profit
+            FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
+            WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?
+            GROUP BY o.actor""",args)
+        finance_by_actor={x["actor"]:x for x in member_finance}
+        members=[]
+        for member in member_activity:
+            member.update(finance_by_actor.get(member["actor"],{"completed_sales_orders":0,"completed_purchase_orders":0,"sales_revenue":0,"purchase_spend":0,"sales_discounts":0,"purchase_discounts":0,"estimated_gross_profit":0}))
+            member["completed_order_count"]=member["completed_sales_orders"]+member["completed_purchase_orders"]
+            members.append(member)
+        finance_actors={x["actor"] for x in member_finance}
+        known_actors={x["actor"] for x in members}
+        if finance_actors-known_actors:
+            for actor in finance_actors-known_actors:
+                detail=finance_by_actor[actor]
+                user=c.execute("SELECT display_name FROM users WHERE id=?",(actor,)).fetchone()
+                members.append({"actor":actor,"display_name":user["display_name"] if user else "Former member",
+                    "transactions_created":0,"pending_orders":0,"ready_orders":0,"completed_orders_created":0,
+                    "sales_orders_created":0,"purchase_orders_created":0,
+                    **detail,"completed_order_count":detail["completed_sales_orders"]+detail["completed_purchase_orders"]})
+        members.sort(key=lambda x:(-x["transactions_created"],-x["sales_revenue"],x["display_name"].lower()))
         return reply({"period":{"start":start,"end":end},"summary":summary,
             "groups":groups,"products":products,"trend":trend,"flow":flow,
-            "stock":stock,"low_stock":low_stock,
+            "members":members,"stock":stock,"low_stock":low_stock,
             "data_quality":{"unvalued_movement_qty":flow["unvalued_movement_qty"],
             "gross_profit_basis":"Estimated from the buy-price snapshot stored on completed sales orders; not FIFO/weighted-average accounting.",
             "flow_valuation":"Only movements with a recorded unit-price snapshot contribute to valued input/output totals."}})

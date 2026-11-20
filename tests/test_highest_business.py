@@ -211,3 +211,26 @@ class BusinessTest(unittest.TestCase):
         order=self.get(self.u,f"/business/orders/{response.json()['id']}").json()["order"]
         self.assertEqual(order["creator"],"cashier")
         self.assertEqual(order["discount_reason"],"IC loyalty promotion")
+
+
+    def test_member_analytics_attributes_orders_to_creator_not_status_editor(self):
+        self.post(self.u,"/business/orders",{"nonce":"member-created-sale-12345","group_name":"Member A Group","direction":"sell","lines":[{"item":self.item,"qty":2}]})
+        self.post(self.m,"/business/orders",{"nonce":"member-created-buy-12345","group_name":"Member B Group","direction":"buy","lines":[{"item":self.item,"qty":1}]})
+        oid=self.get(self.u,"/business/orders").json()["orders"][0]["id"]
+        self.advance(oid)
+        self.assertEqual(self.post(self.m,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        analytics=self.get(self.a,"/business/analytics").json()
+        member_u=next(x for x in analytics["members"] if x["actor"]==self.get(self.u,"/me").json()["id"])
+        member_m=next(x for x in analytics["members"] if x["actor"]==self.get(self.m,"/me").json()["id"])
+        self.assertEqual((member_u["transactions_created"],member_u["completed_orders_created"],member_u["sales_revenue"]),(1,1,70))
+        self.assertEqual((member_m["transactions_created"],member_m["purchase_orders_created"],member_m["sales_revenue"]),(1,1,0))
+        detail=self.get(self.u,f"/business/orders/{oid}").json()
+        self.assertEqual(detail["order"]["creator"],"cashier")
+        self.assertEqual(detail["history"][-1]["display_name"],"manager")
+
+    def test_order_creator_cannot_be_overridden_by_request_payload(self):
+        payload={"nonce":"immutable-creator-12345","group_name":"Member A Group","direction":"sell","lines":[{"item":self.item,"qty":1}],"actor":99999,"creator":"Forged User"}
+        oid=self.post(self.u,"/business/orders",payload).json()["id"]
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual(order["actor"],self.get(self.u,"/me").json()["id"])
+        self.assertEqual(order["creator"],"cashier")

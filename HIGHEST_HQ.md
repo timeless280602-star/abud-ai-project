@@ -35,3 +35,5 @@ This is the initial feature branch, not a production deployment. Do not replace 
 - Discount approvals use the separate `business_discounts` rank permission module. All Access includes the module but does not bypass the rank's discount policy.
 
 - A pending discount request hides order progression controls in the POS as well as being blocked by the API. Rejection resets the effective order total to full price while preserving the requested discount amount for review history.
+
+- No cashier shifts, opening/closing sessions, or shift reconciliation. Every order is automatically and immutably attributed to the authenticated account that created it (`actor`). Later status changes are separately recorded in order history under the acting account. Business order lists can be filtered by creator, and Business Intelligence includes per-member transaction counts, status breakdown, completed sales/purchase values, discounts, and estimated gross profit. Financial contribution remains attributed to the original order creator, not the person who later updates its status.

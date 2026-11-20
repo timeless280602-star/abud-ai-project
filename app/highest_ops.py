@@ -257,6 +257,10 @@ def create_case(p:Case,r:Request):
         c.execute("BEGIN IMMEDIATE")
         u=privilege(c,r,"cases","write")
         cid=c.execute("INSERT INTO hq_case(title,summary,status,actor,created,updated) VALUES(?,?,'open',?,?,?)",(clean(p.name,80),clean(p.summary,4000),u["id"],now(),now())).lastrowid
+        if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hq_case_entity'").fetchone():
+            case_ref="TH-"+str(int(cid)).zfill(4)
+            c.execute("""INSERT OR IGNORE INTO hq_case_entity(case_id,entity_type,name,description,reference,x,y,actor,created,updated)
+                VALUES(?,'case',?,?,?,500,60,?,?,?)""",(cid,case_ref+" · "+clean(p.name,80),clean(p.summary,2000),case_ref,u["id"],now(),now()))
         audit(c,u["id"],"case.create",cid)
     return {"ok":True,"id":cid}
 

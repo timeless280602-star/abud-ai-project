@@ -46,6 +46,32 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(self.get(self.v,"/social").json()["clips"][0]["likes"],1)
         self.assertEqual(self.post(self.v,f"/social/clip/{cid}/bookmark",{"enabled":True}).status_code,200)
         self.assertEqual(len(self.get(self.v,"/social/studio").json()["bookmarks"]),1)
+    def test_report_takedown_restore_and_boundaries(self):
+        self.assertEqual(self.post(self.u,"/clip",{"title":"Reportable clip","url":"https://youtu.be/reportable"}).status_code,200)
+        cid=self.get(self.a,"/admin").json()["clips"][0]["id"]
+        self.assertEqual(self.post(self.a,f"/admin/clip/{cid}/published",{}).status_code,200)
+        report={"content_type":"clip","content_id":cid,"reason":"spam","details":"This looks like a scam link"}
+        self.assertEqual(self.post(self.v,"/social/report",report).status_code,200)
+        self.assertEqual(self.post(self.v,"/social/report",report).status_code,409)
+        self.assertEqual(self.post(self.u,"/social/report",report).status_code,403)
+        self.assertEqual(self.post(self.v,"/social/report",{**report,"reason":"unknown"}).status_code,400)
+        queue=self.get(self.a,"/admin/social/reports").json()
+        self.assertEqual(len(queue["reports"]),1)
+        self.assertEqual(queue["reports"][0]["reporter_username"],"viewer")
+        self.assertEqual(queue["reports"][0]["content"]["author_username"],"clipper")
+        rid=queue["reports"][0]["id"]
+        self.assertEqual(self.post(self.a,f"/admin/social/report/{rid}",{"action":"remove","note":"Confirmed spam"}).status_code,200)
+        self.assertNotIn(cid,[x["id"] for x in self.get(self.v,"/social").json()["clips"]])
+        mine=self.get(self.v,"/social/reports").json()["reports"][0]
+        self.assertEqual(mine["status"],"actioned")
+        self.assertEqual(mine["action"],"removed")
+        self.assertEqual(self.post(self.a,f"/admin/social/report/{rid}",{"action":"dismiss"}).status_code,409)
+        self.assertEqual(self.post(self.a,f"/admin/social/content/clip/{cid}/restore",{"action":"restore","note":"False positive"}).status_code,200)
+        self.assertIn(cid,[x["id"] for x in self.get(self.v,"/social").json()["clips"]])
+        self.assertEqual(self.get(self.a,"/admin/social/reports").json()["removed"],[])
+        self.assertEqual(self.post(self.v,"/social/report",{"content_type":"clip","content_id":cid,"reason":"other"}).status_code,200)
+        self.assertEqual(self.post(self.a,f"/admin/social/report/{self.get(self.a,'/admin/social/reports').json()['reports'][0]['id']}",{"action":"dismiss","note":"No violation"}).status_code,200)
+        self.assertEqual(self.get(self.v,"/social/reports").json()["reports"][0]["status"],"dismissed")
     def test_creator_wiki_feed(self):
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://evil.example/a"}).status_code,400)
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://www.tiktok.com/@test"}).status_code,200)

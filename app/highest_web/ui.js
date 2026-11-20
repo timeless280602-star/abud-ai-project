@@ -234,7 +234,7 @@ async function financialReportsUI(write){
    }
   }else{
    content.append(el("h3","Monthly budget plan"),el("p","Budgets are set by month, division and optional category. Actuals are compared against posted expenses.","muted"));
-   if(write)content.append(form([field("period","Budget month","month"),field("division","Division / rank (blank = organization-wide)"),field("category","Expense category (blank = all categories)"),field("amount","Budget amount","number")],"Save monthly budget",v=>postRefresh("/ops/financial-reports/budgets",{...v,amount:n(v.amount)})));
+   if(write)content.append(form([field("period","Budget month","month"),field("division","Division / rank","select",[["","Organization-wide"],...data.available_divisions.map(x=>[x.name,x.name])]),field("category","Expense category (blank = all categories)"),field("amount","Budget amount","number")],"Save monthly budget",v=>postRefresh("/ops/financial-reports/budgets",{...v,amount:n(v.amount)})));
    for(const x of data.budgets)content.append(el("p",x.period+" · "+(x.division||"All divisions")+" · "+(x.category||"All categories")+" · Budget "+fmt(x.amount)+" · Actual "+fmt(x.actual_expense)+" · Variance "+fmt(x.variance)+" · "+(x.utilization_pct==null?"—":x.utilization_pct+"% utilized")));
    if(!data.budgets.length)content.append(el("p","No budgets configured for this reporting period.","muted"));
   }

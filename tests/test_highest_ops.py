@@ -111,4 +111,8 @@ class OpsTest(unittest.TestCase):
         history=self.get(self.u,"/ops/calendar/"+str(event_id)+"/history").json()
         self.assertEqual([x["version"] for x in history],[2,1])
         self.assertEqual(history[0]["title"],"Updated HQ briefing")
+        # Members sharing the same rank inherit the same module grant.
+        reviewer_id=self.get(self.v,"/me").json()["id"]
+        self.assertEqual(self.get(self.v,"/ops/calendar/"+str(event_id)+"/history").status_code,200)
+        self.assertEqual(self.post(self.a,f"/admin/revoke/{reviewer_id}",{}).status_code,200)
         self.assertEqual(self.get(self.v,"/ops/calendar/"+str(event_id)+"/history").status_code,403)

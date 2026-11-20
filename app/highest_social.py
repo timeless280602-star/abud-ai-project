@@ -159,6 +159,9 @@ def review(kind:str,cid:int,p:Review,r:Request):
     if not table: fail(400,"Invalid type")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
+        submission=c.execute("SELECT uid FROM "+table+" WHERE id=? AND state='pending'",(cid,)).fetchone()
+        if not submission: fail(409,"Not pending")
+        if int(submission["uid"])==u["id"]: fail(403,"Cannot review your own community submission")
         if p.approve and kind=="pov" and not c.execute("SELECT 1 FROM hq_pov p JOIN hq_moment m ON p.moment=m.id JOIN clips cl ON p.clip=cl.id WHERE p.id=? AND m.state='published' AND cl.state='published'",(cid,)).fetchone(): fail(409,"Approve moment and clip first")
         if not c.execute("UPDATE "+table+" SET state=? WHERE id=? AND state='pending'",("published" if p.approve else "rejected",cid)).rowcount: fail(409,"Not pending")
         audit(c,u["id"],"social."+kind+(".publish" if p.approve else ".reject"),cid)

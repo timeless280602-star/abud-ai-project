@@ -89,7 +89,7 @@ def _notify_approval_step(c,request_id,step):
             JOIN hq_grants dg ON dg.rank_id=dm.rank AND (dg.module=d.module OR dg.module='*') AND dg.level='approve'
             JOIN hq_grants og ON og.rank_id=om.rank AND (og.module=d.module OR og.module='*') AND og.level='approve'
             WHERE d.module=? AND d.active=1 AND dm.status='approved' AND om.status='approved'
-              AND om.rank=? AND dm.rank=? AND du.id<>?""",(item["module"],configured["rank_id"],configured["rank_id"],item["requester"]))
+              AND om.rank=? AND du.id<>?""",(item["module"],configured["rank_id"],item["requester"]))
         candidates.extend(delegated)
     else:
         candidates=rows(c,"""SELECT u.id FROM users u JOIN membership m ON m.uid=u.id

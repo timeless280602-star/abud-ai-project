@@ -170,7 +170,7 @@ async function operationsCalendarUI(write,level){
   if(calendarMode==="month"){start.setDate(1);start.setDate(start.getDate()-((start.getDay()+6)%7));end.setDate(1);end.setMonth(end.getMonth()+1);end.setDate(end.getDate()+6)}
   else if(calendarMode==="week"){start.setDate(start.getDate()-((start.getDay()+6)%7));end.setDate(start.getDate()+6)}
   else {start.setDate(start.getDate()-180);end.setDate(end.getDate()+365)}
-  if(calendarMode==="month")end.setDate(start.getDate()+41);\n  const endBoundary=new Date(end);endBoundary.setHours(23,59,59,999);\n  const params=new URLSearchParams({start:calIso(start),end:calIso(endBoundary)});
+  if(calendarMode==="month")end.setDate(start.getDate()+41);\n  const endBoundary=new Date(end);endBoundary.setHours(23,59,59,999);\n  const params=new URLSearchParams({start:calIso(start),end:calDate(endBoundary)+"T23:59:59+07:00"});
   if(division.value)params.set("division",division.value);if(category.value)params.set("category",category.value);if(status.value)params.set("status",status.value);
   const data=await api("/ops/calendar?"+params.toString());
   const oldDivision=division.value,oldCategory=category.value;

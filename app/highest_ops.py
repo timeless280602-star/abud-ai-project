@@ -423,3 +423,140 @@ def operation_event_history(event_id:int,r:Request):
         if not c.execute("SELECT 1 FROM hq_operation_event WHERE id=?",(event_id,)).fetchone(): fail(404,"Operation event not found")
         return reply(rows(c,"""SELECT h.*,coalesce(u.display_name,u.username) actor_name FROM hq_operation_revision h
             LEFT JOIN users u ON u.id=h.actor WHERE h.event_id=? ORDER BY h.version DESC""",(event_id,)))
+
+
+def _approval_reviewer(c,uid,module,step):
+    configured=c.execute("SELECT rank_id FROM hq_approval_policy WHERE module=? AND step=?",(module,step)).fetchone()
+    user=c.execute("SELECT m.rank,m.status FROM users u JOIN membership m ON m.uid=u.id WHERE u.id=?",(uid,)).fetchone()
+    if not user or user["status"]!="approved" or user["rank"] is None: return False,None
+    if configured:
+        if user["rank"]==configured["rank_id"]: return True,None
+        delegated=c.execute("""SELECT d.delegator FROM hq_approval_delegation d JOIN users du ON du.id=d.delegator JOIN membership dm ON dm.uid=du.id WHERE d.module=? AND d.delegate=? AND d.active=1 AND dm.status='approved' AND dm.rank=? ORDER BY d.updated DESC LIMIT 1""",(module,uid,configured["rank_id"])).fetchone()
+        return (True,delegated["delegator"]) if delegated else (False,None)
+    grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(user["rank"],module)).fetchone()
+    if grant and grant["level"]=="approve": return True,None
+    delegated=c.execute("""SELECT d.delegator FROM hq_approval_delegation d JOIN users du ON du.id=d.delegator JOIN membership dm ON dm.uid=du.id WHERE d.module=? AND d.delegate=? AND d.active=1 AND dm.status='approved' ORDER BY d.updated DESC LIMIT 1""",(module,uid)).fetchone()
+    if delegated:
+        grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=(SELECT rank FROM membership WHERE uid=?) AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(delegated["delegator"],module)).fetchone()
+        if grant and grant["level"]=="approve": return True,delegated["delegator"]
+    return False,None
+
+@router.get("/ops/approvals")
+def approval_list(r:Request,scope:str="all"):
+    if scope not in ("all","mine","inbox"): fail(400,"Invalid approval scope")
+    with db() as c:
+        u=privilege(c,r)
+        candidates=rows(c,"SELECT a.*,u.username requester_name FROM hq_approval_request a JOIN users u ON u.id=a.requester ORDER BY a.created DESC LIMIT 300")
+        if scope=="mine": result=[a for a in candidates if a["requester"]==u["id"]]
+        elif scope=="inbox": result=[a for a in candidates if a["status"]=="pending" and a["requester"]!=u["id"] and _approval_reviewer(c,u["id"],a["module"],a["current_step"])[0]]
+        else: result=[a for a in candidates if a["requester"]==u["id"] or _approval_reviewer(c,u["id"],a["module"],a["current_step"])[0]]
+        return reply(result)
+
+@router.post("/ops/approvals")
+def approval_submit(p:ApprovalSubmission,r:Request):
+    origin(r)
+    if p.module not in MODULES: fail(400,"Unknown approval module")
+    import json
+    payload=json.dumps(p.payload,ensure_ascii=False,separators=(",",":"))
+    if len(payload)>12000: fail(400,"Approval payload is too large")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,p.module,"write")
+        policy=rows(c,"SELECT step FROM hq_approval_policy WHERE module=? ORDER BY step",(p.module,))
+        if policy and [x["step"] for x in policy]!=list(range(1,len(policy)+1)): fail(409,"Approval route is misconfigured")
+        total=len(policy) or 1
+        rid=c.execute("INSERT INTO hq_approval_request(module,reference_type,reference_id,title,description,payload,requester,status,current_step,total_steps,created,updated) VALUES(?,?,?,?,?,?,?,'pending',1,?,?,?)",(p.module,clean(p.reference_type,80,required=False),clean(p.reference_id,120,required=False),clean(p.title,160),clean(p.description,4000,required=False),payload,u["id"],total,now(),now())).lastrowid
+        audit(c,u["id"],"approval.submit",rid)
+    return {"ok":True,"id":rid,"steps":total}
+
+@router.post("/ops/approvals/{request_id}/review")
+def approval_review(request_id:int,p:ApprovalDecision,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r)
+        item=c.execute("SELECT * FROM hq_approval_request WHERE id=?",(request_id,)).fetchone()
+        if not item: fail(404,"Approval request not found")
+        if item["status"]!="pending": fail(409,"Approval request is no longer pending")
+        if item["requester"]==u["id"]: fail(403,"Cannot review your own request")
+        eligible,delegator=_approval_reviewer(c,u["id"],item["module"],item["current_step"])
+        if not eligible: fail(403,"You are not assigned to the current approval step")
+        decision="approved" if p.approve else "rejected"
+        c.execute("INSERT INTO hq_approval_action(request_id,step,actor,delegated_from,decision,note,created) VALUES(?,?,?,?,?,?,?)",(request_id,item["current_step"],u["id"],delegator,decision,clean(p.note,1000,required=False),now()))
+        if not p.approve: state="rejected";step=item["current_step"]
+        elif item["current_step"]<item["total_steps"]: state="pending";step=item["current_step"]+1
+        else: state="approved";step=item["current_step"]
+        c.execute("UPDATE hq_approval_request SET status=?,current_step=?,updated=? WHERE id=?",(state,step,now(),request_id))
+        audit(c,u["id"],"approval."+decision,request_id)
+    return {"ok":True,"status":state,"next_step":step}
+
+@router.post("/ops/approvals/{request_id}/cancel")
+def approval_cancel(request_id:int,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r)
+        item=c.execute("SELECT * FROM hq_approval_request WHERE id=?",(request_id,)).fetchone()
+        if not item: fail(404,"Approval request not found")
+        if item["requester"]!=u["id"]: fail(403,"Only the requester can cancel")
+        if item["status"]!="pending": fail(409,"Only pending requests can be cancelled")
+        c.execute("UPDATE hq_approval_request SET status='cancelled',updated=? WHERE id=?",(now(),request_id))
+        audit(c,u["id"],"approval.cancel",request_id)
+    return {"ok":True}
+
+@router.get("/ops/approvals/{request_id}/history")
+def approval_history(request_id:int,r:Request):
+    with db() as c:
+        u=privilege(c,r);item=c.execute("SELECT * FROM hq_approval_request WHERE id=?",(request_id,)).fetchone()
+        if not item: fail(404,"Approval request not found")
+        previous=c.execute("SELECT 1 FROM hq_approval_action WHERE request_id=? AND actor=?",(request_id,u["id"])).fetchone()
+        if item["requester"]!=u["id"] and not previous and not _approval_reviewer(c,u["id"],item["module"],item["current_step"])[0]: fail(403,"Approval history access denied")
+        return reply({"request":dict(item),"actions":rows(c,"SELECT a.*,u.username actor_name,du.username delegated_from_name FROM hq_approval_action a JOIN users u ON u.id=a.actor LEFT JOIN users du ON du.id=a.delegated_from WHERE a.request_id=? ORDER BY a.step",(request_id,))})
+
+@router.post("/ops/approvals/delegations")
+def approval_delegation(p:ApprovalDelegation,r:Request):
+    origin(r)
+    if p.module not in MODULES: fail(400,"Unknown approval module")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,p.module,"approve")
+        if p.delegate_user_id==u["id"]: fail(400,"Cannot delegate to yourself")
+        target=c.execute("SELECT u.id,m.rank,m.status FROM users u JOIN membership m ON m.uid=u.id WHERE u.id=?",(p.delegate_user_id,)).fetchone()
+        if not target or target["status"]!="approved": fail(404,"Delegate must be an approved member")
+        grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(target["rank"],p.module)).fetchone()
+        if not grant or grant["level"]!="approve": fail(403,"Delegate must hold approve permission for this module")
+        c.execute("INSERT INTO hq_approval_delegation(module,delegator,delegate,active,created,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(module,delegator,delegate) DO UPDATE SET active=excluded.active,updated=excluded.updated",(p.module,u["id"],p.delegate_user_id,int(p.active),now(),now()))
+        audit(c,u["id"],"approval.delegation."+("activate" if p.active else "revoke"),p.delegate_user_id)
+    return {"ok":True}
+
+@router.get("/ops/approvals/delegations")
+def approval_delegations(r:Request,module:str|None=None):
+    with db() as c:
+        u=privilege(c,r)
+        return reply(rows(c,"SELECT d.*,du.username delegator_name,eu.username delegate_name FROM hq_approval_delegation d JOIN users du ON du.id=d.delegator JOIN users eu ON eu.id=d.delegate WHERE d.delegator=? AND (? IS NULL OR d.module=?) ORDER BY d.module,d.id DESC",(u["id"],module,module)))
+
+@router.get("/admin/approval-policies")
+def approval_policies(r:Request):
+    with db() as c:
+        privilege(c,r,admin=True)
+        return reply({"ranks":rows(c,"SELECT id,name,position FROM ranks ORDER BY position DESC,name"),"policies":rows(c,"SELECT p.module,p.step,p.rank_id,r.name rank_name FROM hq_approval_policy p JOIN ranks r ON r.id=p.rank_id ORDER BY p.module,p.step")})
+
+@router.post("/admin/approval-policies")
+def approval_policy_save(p:ApprovalPolicy,r:Request):
+    origin(r)
+    if p.module not in MODULES or len(set(p.ranks))!=len(p.ranks): fail(400,"Invalid module or duplicate approval rank")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,admin=True)
+        for rank_id in p.ranks:
+            if not c.execute("SELECT 1 FROM ranks WHERE id=?",(rank_id,)).fetchone(): fail(404,"Approval rank not found")
+            grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(rank_id,p.module)).fetchone()
+            if not grant or grant["level"]!="approve": fail(409,"Every approval rank must have approve permission for this module")
+        c.execute("DELETE FROM hq_approval_policy WHERE module=?",(p.module,))
+        c.executemany("INSERT INTO hq_approval_policy(module,step,rank_id) VALUES(?,?,?)",[(p.module,i,rank_id) for i,rank_id in enumerate(p.ranks,1)])
+        audit(c,u["id"],"approval.policy.update."+p.module,len(p.ranks))
+    return {"ok":True,"steps":len(p.ranks)}
+
+@router.delete("/admin/approval-policies/{module}")
+def approval_policy_clear(module:str,r:Request):
+    origin(r)
+    if module not in MODULES: fail(400,"Unknown approval module")
+    with db() as c:
+        u=privilege(c,r,admin=True);c.execute("DELETE FROM hq_approval_policy WHERE module=?",(module,))
+        audit(c,u["id"],"approval.policy.clear."+module,0)
+    return {"ok":True}

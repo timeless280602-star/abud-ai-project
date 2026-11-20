@@ -349,6 +349,25 @@ def money(p:Money,r:Request):
         audit(c,u["id"],"money.request",mid)
     return {"ok":True,"id":mid}
 
+@router.post("/ops/treasury/{mid}/review")
+def money_review(mid:int,p:Decision,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"treasury","approve")
+        row=c.execute("SELECT * FROM hq_money WHERE id=? AND state='pending'",(mid,)).fetchone()
+        if not row: fail(409,"No pending transaction")
+        if row["actor"]==u["id"]: fail(403,"Cannot approve or reject own submission")
+        if p.approve and balance(c,row["account_id"])+row["amount"]<0:
+            fail(409,"Insufficient treasury account balance")
+        state="posted" if p.approve else "rejected"
+        c.execute("UPDATE hq_money SET state=?,reviewer=? WHERE id=?",(state,u["id"],mid))
+        notify(c,row["actor"],"treasury_decision","Treasury transaction "+state,
+            row["category"]+" · "+str(abs(row["amount"])),"/highest/internal/",
+            "treasury:"+str(mid)+":decision:"+state)
+        audit(c,u["id"],"money."+state,mid)
+    return {"ok":True}
+
 @router.post("/ops/treasury/transfers")
 def treasury_transfer_create(p:TreasuryTransfer,r:Request):
     origin(r)

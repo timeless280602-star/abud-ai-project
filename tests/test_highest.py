@@ -137,6 +137,9 @@ class HighestTest(unittest.TestCase):
 
     def test_origin_and_unconfigured_live(self):
         self.assertEqual(self.user.post("/highest/api/logout",json={},headers={"Origin":"https://other.example"}).status_code,403)
+        no_origin=TestClient(self.admin.app,base_url="https://abud.web.id")
+        no_origin.cookies.update(self.admin.cookies)
+        self.assertEqual(no_origin.post("/highest/api/admin/clips/stats/refresh").status_code,403)
         with patch.dict(os.environ,{"HIGHEST_YOUTUBE_API_KEY":"","HIGHEST_TIKTOK_STATUS_URL":"","HIGHEST_TIKTOK_STATUS_TOKEN":""}):
             self.assertEqual(check({"platform":"youtube","channel":"UCtest"}),("unknown",None))
             self.assertEqual(check({"platform":"tiktok","channel":"test"}),("unknown",None))

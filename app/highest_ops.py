@@ -365,7 +365,7 @@ def operation_calendar(r:Request,start:str|None=None,end:str|None=None,division:
         sql+=" ORDER BY e.starts_at,e.id LIMIT 500"
         return reply({"events":rows(c,sql,args),
             "divisions":[x["division"] for x in rows(c,"SELECT DISTINCT division FROM hq_operation_event WHERE division<>'' ORDER BY division")],
-            "categories":[x["category"] for x in rows(c,"SELECT DISTINCT category FROM hq_operation_event ORDER BY category")]})
+            "categories":[x["category"] for x in rows(c,"SELECT DISTINCT category FROM hq_operation_event ORDER BY category")],\n            "organizational_units":[x["name"] for x in rows(c,"SELECT name FROM ranks ORDER BY position DESC,name")]})
 
 @router.post("/ops/calendar")
 def create_operation_event(p:OperationEvent,r:Request):

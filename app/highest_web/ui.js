@@ -215,7 +215,6 @@ async function financialReportsUI(write){
     metric("Total expenses",fmt(s.expense),"Posted cash-out transactions"),
     metric("Net cash flow",fmt(s.net_cash_flow),"Income less expenses"),
     metric("Closing balance",fmt(s.closing_balance),"Opening balance plus period net flow"),
-    metric("Budget allocation",fmt(s.budget_total),"Sum of budgets defined in selected months"),
     metric("Budget allocation",fmt(s.budget_total),"Actual expense is compared against each budget scope below"));
    content.append(g,el("h3","Comparison with previous period"),el("p",c.previous_start+" to "+c.previous_end+" · Income "+fmt(c.income)+" · Expenses "+fmt(c.expense)+" · Net "+fmt(c.net_cash_flow)),el("p","Change · Income "+fmt(c.income_change)+" · Expenses "+fmt(c.expense_change)+" · Net "+fmt(c.net_change)),el("p",data.budget_note,"muted"));
   }else if(tab==="monthly"){

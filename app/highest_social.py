@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from app.highest import db, current, origin, clean, fail, audit, throttle
+from app.highest_ops import notify
 
 router=APIRouter(prefix="/highest/api")
 def now(): return int(time.time())
@@ -25,6 +26,18 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_reports(id INTEGER PRIMARY KEY,reporter INTEGER NOT NULL REFERENCES users(id),content_type TEXT NOT NULL CHECK(content_type IN ('clip','moment','pov','wiki','post')),content_id INTEGER NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('harassment','personal_info','spam','inappropriate','copyright','other')),details TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','actioned','dismissed')),action TEXT NOT NULL DEFAULT '',reviewed_by INTEGER REFERENCES users(id),reviewed_at INTEGER,review_note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS hq_reports_queue ON hq_reports(status,created DESC);
         CREATE UNIQUE INDEX IF NOT EXISTS hq_reports_one_open ON hq_reports(reporter,content_type,content_id) WHERE status='open';
+        CREATE TABLE IF NOT EXISTS hq_comment(
+            id INTEGER PRIMARY KEY,content_type TEXT NOT NULL CHECK(content_type IN ('clip','moment','pov','wiki','post')),
+            content_id INTEGER NOT NULL,parent_id INTEGER REFERENCES hq_comment(id),uid INTEGER NOT NULL REFERENCES users(id),
+            body TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'published' CHECK(state IN ('published','deleted')),
+            created INTEGER NOT NULL,updated INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS hq_comment_content ON hq_comment(content_type,content_id,state,created);
+        CREATE INDEX IF NOT EXISTS hq_comment_parent ON hq_comment(parent_id,created);
+        CREATE TABLE IF NOT EXISTS hq_comment_like(
+            uid INTEGER NOT NULL REFERENCES users(id),comment_id INTEGER NOT NULL REFERENCES hq_comment(id),
+            created INTEGER NOT NULL,PRIMARY KEY(uid,comment_id)
+        );
         """)
 def valid_link(value):
     try: p=urlsplit(value)
@@ -63,6 +76,14 @@ class ContentReport(BaseModel):
 class ReportDecision(BaseModel):
     action:str
     note:str=Field(default="",max_length=500)
+class CommentCreate(BaseModel):
+    content_type:str
+    content_id:int=Field(ge=1)
+    body:str=Field(min_length=1,max_length=1000)
+class CommentReply(BaseModel):
+    body:str=Field(min_length=1,max_length=1000)
+class CommentToggle(BaseModel):
+    enabled:bool
 
 @router.get("/social")
 def social(r:Request):
@@ -151,6 +172,123 @@ def follow(sid:int,p:Toggle,r:Request):
         if p.enabled: c.execute("INSERT OR IGNORE INTO hq_follows VALUES(?,?)",(u["id"],sid))
         else: c.execute("DELETE FROM hq_follows WHERE uid=? AND streamer=?",(u["id"],sid))
     return {"ok":True}
+def _published_owner(c,kind,cid):
+    tables={"clip":"clips","moment":"hq_moment","pov":"hq_pov","wiki":"hq_wiki","post":"hq_posts"}
+    table=tables.get(kind)
+    if not table: fail(400,"Invalid content type")
+    target=c.execute("SELECT uid FROM "+table+" WHERE id=? AND state='published'",(cid,)).fetchone()
+    if not target: fail(404,"Published content unavailable")
+    return int(target["uid"])
+
+def _comment_payload(c,comment,uid):
+    item=dict(comment)
+    item["likes"]=c.execute("SELECT count(*) FROM hq_comment_like WHERE comment_id=?",(item["id"],)).fetchone()[0]
+    item["liked"]=bool(c.execute("SELECT 1 FROM hq_comment_like WHERE comment_id=? AND uid=?",(item["id"],uid)).fetchone())
+    item["mine"]=int(item["uid"])==uid
+    item["replies"]=rows(c,"""SELECT x.id,x.parent_id,x.uid,x.body,x.state,x.created,x.updated,u.display_name
+        FROM hq_comment x JOIN users u ON u.id=x.uid
+        WHERE x.parent_id=? ORDER BY x.created,x.id""",(item["id"],))
+    for reply_item in item["replies"]:
+        reply_item["mine"]=int(reply_item["uid"])==uid
+        reply_item["likes"]=c.execute("SELECT count(*) FROM hq_comment_like WHERE comment_id=?",(reply_item["id"],)).fetchone()[0]
+        reply_item["liked"]=bool(c.execute("SELECT 1 FROM hq_comment_like WHERE comment_id=? AND uid=?",(reply_item["id"],uid)).fetchone())
+    return item
+
+@router.get("/social/comments/{kind}/{cid}")
+def list_comments(kind:str,cid:int,r:Request):
+    u=current(r)
+    with db() as c:
+        _published_owner(c,kind,cid)
+        comments=rows(c,"""SELECT x.id,x.parent_id,x.uid,x.body,x.state,x.created,x.updated,u.display_name
+            FROM hq_comment x JOIN users u ON u.id=x.uid
+            WHERE x.content_type=? AND x.content_id=? AND x.parent_id IS NULL
+            ORDER BY x.created DESC,x.id DESC LIMIT 100""",(kind,cid))
+        return reply({"comments":[_comment_payload(c,x,u["id"]) for x in comments],
+            "count":c.execute("SELECT count(*) FROM hq_comment WHERE content_type=? AND content_id=? AND state='published'",(kind,cid)).fetchone()[0]})
+
+@router.post("/social/comments")
+def create_comment(p:CommentCreate,r:Request):
+    origin(r);u=current(r);throttle(r,"comment:"+str(u["id"]))
+    body=clean(p.body,1000)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        owner=_published_owner(c,p.content_type,p.content_id)
+        cid=c.execute("INSERT INTO hq_comment(content_type,content_id,uid,body,created,updated) VALUES(?,?,?,?,?,?)",
+            (p.content_type,p.content_id,u["id"],body,now(),now())).lastrowid
+        if owner!=u["id"]:
+            notify(c,owner,"social_comment","New community comment",u["display_name"]+" commented: "+body[:180],"/highest/","social:comment:"+str(cid))
+        audit(c,u["id"],"social.comment.create",cid)
+    return {"ok":True,"id":cid}
+
+@router.post("/social/comments/{comment_id}/reply")
+def reply_comment(comment_id:int,p:CommentReply,r:Request):
+    origin(r);u=current(r);throttle(r,"comment:"+str(u["id"]))
+    body=clean(p.body,1000)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        parent=c.execute("SELECT * FROM hq_comment WHERE id=? AND parent_id IS NULL AND state='published'",(comment_id,)).fetchone()
+        if not parent: fail(404,"Top-level comment unavailable")
+        _published_owner(c,parent["content_type"],parent["content_id"])
+        rid=c.execute("INSERT INTO hq_comment(content_type,content_id,parent_id,uid,body,created,updated) VALUES(?,?,?,?,?,?,?)",
+            (parent["content_type"],parent["content_id"],comment_id,u["id"],body,now(),now())).lastrowid
+        if int(parent["uid"])!=u["id"]:
+            notify(c,int(parent["uid"]),"social_reply","New reply to your comment",u["display_name"]+" replied: "+body[:180],"/highest/","social:reply:"+str(rid))
+        audit(c,u["id"],"social.comment.reply",rid)
+    return {"ok":True,"id":rid}
+
+@router.post("/social/comments/{comment_id}/like")
+def toggle_comment_like(comment_id:int,p:CommentToggle,r:Request):
+    origin(r);u=current(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        comment=c.execute("SELECT * FROM hq_comment WHERE id=? AND state='published'",(comment_id,)).fetchone()
+        if not comment: fail(404,"Comment unavailable")
+        _published_owner(c,comment["content_type"],comment["content_id"])
+        if p.enabled:
+            inserted=c.execute("INSERT OR IGNORE INTO hq_comment_like(uid,comment_id,created) VALUES(?,?,?)",(u["id"],comment_id,now()))
+            if inserted.rowcount and int(comment["uid"])!=u["id"]:
+                notify(c,int(comment["uid"]),"social_comment_like","Someone liked your comment",u["display_name"]+" liked your comment.","/highest/","social:comment-like:"+str(comment_id)+":"+str(u["id"]))
+        else:
+            c.execute("DELETE FROM hq_comment_like WHERE uid=? AND comment_id=?",(u["id"],comment_id))
+    return {"ok":True}
+
+@router.post("/social/comments/{comment_id}/delete")
+def delete_comment(comment_id:int,r:Request):
+    origin(r);u=current(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        comment=c.execute("SELECT * FROM hq_comment WHERE id=? AND state='published'",(comment_id,)).fetchone()
+        if not comment: fail(404,"Comment unavailable")
+        if int(comment["uid"])!=u["id"] and not u.get("admin"): fail(403,"You can only delete your own comment")
+        c.execute("UPDATE hq_comment SET state='deleted',body='',updated=? WHERE id=?",(now(),comment_id))
+        c.execute("DELETE FROM hq_comment_like WHERE comment_id=?",(comment_id,))
+        audit(c,u["id"],"social.comment.delete",comment_id)
+    return {"ok":True}
+
+@router.get("/social/activity")
+def social_activity(r:Request,limit:int=50):
+    u=current(r)
+    if limit<1 or limit>100: fail(400,"Invalid activity limit")
+    with db() as c:
+        items=rows(c,"SELECT id,kind,title,body,href,created,read_at FROM hq_notification WHERE uid=? AND kind LIKE 'social_%' ORDER BY created DESC,id DESC LIMIT ?",(u["id"],limit))
+        unread=c.execute("SELECT count(*) FROM hq_notification WHERE uid=? AND kind LIKE 'social_%' AND read_at IS NULL",(u["id"],)).fetchone()[0]
+        return reply({"items":items,"unread_count":unread})
+
+@router.post("/social/activity/{notification_id}/read")
+def social_activity_read(notification_id:int,r:Request):
+    origin(r);u=current(r)
+    with db() as c:
+        cur=c.execute("UPDATE hq_notification SET read_at=? WHERE id=? AND uid=? AND kind LIKE 'social_%' AND read_at IS NULL",(now(),notification_id,u["id"]))
+        if not cur.rowcount and not c.execute("SELECT 1 FROM hq_notification WHERE id=? AND uid=? AND kind LIKE 'social_%'",(notification_id,u["id"])).fetchone(): fail(404,"Activity notification not found")
+    return {"ok":True}
+
+@router.post("/social/activity/read-all")
+def social_activity_read_all(r:Request):
+    origin(r);u=current(r)
+    with db() as c:
+        c.execute("UPDATE hq_notification SET read_at=? WHERE uid=? AND kind LIKE 'social_%' AND read_at IS NULL",(now(),u["id"]))
+    return {"ok":True}
+
 @router.post("/social/report")
 def create_report(p:ContentReport,r:Request):
     origin(r); u=current(r); throttle(r,"report:"+str(u["id"]))

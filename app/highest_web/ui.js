@@ -132,7 +132,7 @@ async function boot(){if(streamSafe){safeScreen();return}try{me=await api("/me")
 boot();
 setInterval(async()=>{if(streamSafe||!me||view!=="community"||document.hidden)return;let focused=document.activeElement;if(focused&&["INPUT","SELECT","BUTTON"].includes(focused.tagName))return;try{let fresh=await api("/me");me=fresh;await render()}catch(e){if(e.status===401&&!streamSafe){me=null;auth()}}},60000);
 
-const opsNames={treasury:"Treasury",inventory:"Vault & Inventory",crafting:"Crafting & Production",cases:"Intelligence & Case Files",syndicates:"Syndicate Directory",operations:"Operations Calendar",assets:"Assets & Vehicles",documents:"Documents & SOP",business:"Business Orders & POS",business_prices:"Business Price Catalog",business_analytics:"Business Intelligence & Analytics",business_discounts:"Discount Approval"};
+const opsNames={treasury:"Treasury",inventory:"Vault & Inventory",crafting:"Crafting & Production",cases:"Intelligence & Case Files",syndicates:"Syndicate Directory",operations:"Operations Calendar",assets:"Assets & Vehicles",documents:"Documents & SOP",business:"Business Orders & POS",business_prices:"Business Price Catalog",business_analytics:"Business Intelligence & Analytics",business_discounts:"Discount Approval",financial_reports:"Financial Reporting"};
 let opsTab="";
 const options=(rows,label="name")=>rows.map(x=>[String(x.id),x[label]]);
 const n=x=>Number(x);
@@ -189,7 +189,62 @@ async function assetsUI(write,level){
  p.append(el("h3","Maintenance history"),lines(d.maintenance,m=>m.asset_tag+" · "+m.title+" · "+m.status+" · "+moneyFormat(m.cost)+" · "+dateFormat(m.created)));
  return p
 }
-async function opsPanel(){let rights=await api("/ops/access"),p=panel("Internal operations");let mods=Object.keys(opsNames).filter(k=>rights[k]);if(!mods.length){p.append(el("p","No module permissions assigned. Contact an administrator.","muted"));return p}if(!mods.includes(opsTab))opsTab=mods[0];let nav=el("nav");for(const k of mods)nav.append(button(opsNames[k],async()=>{opsTab=k;await render()},k!==opsTab));p.append(nav);let canWrite=rights[opsTab]!=="view";let handler={treasury:treasuryUI,inventory:inventoryUI,crafting:craftingUI,cases:casesUI,operations:operationsCalendarUI,business:businessUI,business_prices:pricesUI,business_analytics:businessAnalyticsUI,business_discounts:discountApprovalUI,assets:assetsUI}[opsTab];p.append(handler?await handler(canWrite,rights[opsTab],rights):await recordUI(opsTab,canWrite,rights[opsTab]));p.append(await approvalUI());return p}
+
+async function financialReportsUI(write){
+ const p=panel("Advanced Financial Reporting");
+ p.append(el("p","Consolidated management reporting from posted Treasury transactions. Pending entries and internal account transfers are excluded.","muted"));
+ const controls=el("div",null,"row"),from=el("input"),to=el("input"),apply=button("Generate report",load,true);
+ from.type="month";to.type="month";
+ const today=new Date(),prior=new Date(today.getFullYear(),today.getMonth()-2,1);
+ const monthValue=d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+ from.value=monthValue(prior);to.value=monthValue(today);
+ controls.append(el("label","From month"),from,el("label","To month"),to,apply);p.append(controls);
+ const exports=el("div",null,"row"),content=el("div"),tabs=el("nav");p.append(exports,tabs,content);
+ let data=null,tab="summary";
+ const fmt=x=>moneyFormat(x||0);
+ function metric(label,value,sub){let card=el("article",null,"tile");add(card,el("small",label),el("h2",String(value)),el("p",sub||""));return card}
+ function draw(){
+  content.replaceChildren();tabs.replaceChildren();
+  for(const [key,label] of [["summary","Executive summary"],["monthly","Monthly cash flow"],["divisions","By division"],["categories","By category"],["budgets","Budget plan"]]){
+   tabs.append(button(label,()=>{tab=key;draw()},key!==tab));
+  }
+  if(tab==="summary"){
+   let g=el("div",null,"grid"),s=data.summary,c=data.comparison;
+   g.append(metric("Opening balance",fmt(s.opening_balance),"Posted ledger balance before selected period"),
+    metric("Total income",fmt(s.income),"Posted cash-in transactions"),
+    metric("Total expenses",fmt(s.expense),"Posted cash-out transactions"),
+    metric("Net cash flow",fmt(s.net_cash_flow),"Income less expenses"),
+    metric("Closing balance",fmt(s.closing_balance),"Opening balance plus period net flow"),
+    metric("Budget allocation",fmt(s.budget_total),"Sum of budgets defined in selected months"),
+    metric("Budget remaining",s.budget_remaining==null?"Not configured":fmt(s.budget_remaining),s.budget_utilization_pct==null?"Set monthly budgets to calculate utilization":s.budget_utilization_pct+"% utilized"));
+   content.append(g,el("h3","Comparison with previous period"),el("p",c.previous_start+" to "+c.previous_end+" · Income "+fmt(c.income)+" · Expenses "+fmt(c.expense)+" · Net "+fmt(c.net_cash_flow)),el("p","Change · Income "+fmt(c.income_change)+" · Expenses "+fmt(c.expense_change)+" · Net "+fmt(c.net_change)),el("p",data.budget_note,"muted"));
+  }else if(tab==="monthly"){
+   content.append(el("h3","Monthly cash flow"));
+   for(const x of data.monthly)content.append(el("p",x.period+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.net)+" · "+x.transactions+" posted transactions));
+  }else if(tab==="divisions"){
+   content.append(el("h3","Financial performance by division"));
+   for(const x of data.divisions)content.append(el("article",null,"tile"),el("p",x.division+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
+  }else if(tab==="categories"){
+   content.append(el("h3","Financial performance by category"));
+   for(const x of data.categories)content.append(el("p",x.category+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
+  }else{
+   content.append(el("h3","Monthly budget plan"),el("p","Budgets are set by month, division and optional category. Actuals are compared against posted expenses.","muted"));
+   if(write)content.append(form([field("period","Budget month","month"),field("division","Division / rank (blank = organization-wide)"),field("category","Expense category (blank = all categories)"),field("amount","Budget amount","number")],"Save monthly budget",v=>postRefresh("/ops/financial-reports/budgets",{...v,amount:n(v.amount)})));
+   for(const x of data.budgets)content.append(el("p",x.period+" · "+(x.division||"All divisions")+" · "+(x.category||"All categories")+" · "+fmt(x.amount)));
+   if(!data.budgets.length)content.append(el("p","No budgets configured for this reporting period.","muted"));
+  }
+ }
+ async function load(){
+  if(!from.value||!to.value)throw Error("Choose both reporting months");
+  if(to.value<from.value)throw Error("End month must not precede start month");
+  data=await api("/ops/financial-reports?start="+encodeURIComponent(from.value)+"&end="+encodeURIComponent(to.value),"","GET");
+  exports.replaceChildren();
+  for(const format of ["pdf","xlsx","csv"])exports.append(link("Export "+format.toUpperCase(),"/highest/api/ops/financial-reports/export?start="+encodeURIComponent(from.value)+"&end="+encodeURIComponent(to.value)+"&format="+format));
+  draw();
+ }
+ await load();return p
+}
+async function opsPanel(){let rights=await api("/ops/access"),p=panel("Internal operations");let mods=Object.keys(opsNames).filter(k=>rights[k]);if(!mods.length){p.append(el("p","No module permissions assigned. Contact an administrator.","muted"));return p}if(!mods.includes(opsTab))opsTab=mods[0];let nav=el("nav");for(const k of mods)nav.append(button(opsNames[k],async()=>{opsTab=k;await render()},k!==opsTab));p.append(nav);let canWrite=rights[opsTab]!=="view";let handler={treasury:treasuryUI,inventory:inventoryUI,crafting:craftingUI,cases:casesUI,operations:operationsCalendarUI,business:businessUI,business_prices:pricesUI,business_analytics:businessAnalyticsUI,business_discounts:discountApprovalUI,financial_reports:financialReportsUI,assets:assetsUI}[opsTab];p.append(handler?await handler(canWrite,rights[opsTab],rights):await recordUI(opsTab,canWrite,rights[opsTab]));p.append(await approvalUI());return p}
 
 let calendarMode="month",calendarAnchor=new Date(),calendarSelected=new Date(),calendarDivisions=[];
 const calDate=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-");

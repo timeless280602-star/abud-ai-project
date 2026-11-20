@@ -11,7 +11,7 @@ class OpsTest(unittest.TestCase):
         self.env=patch.dict(os.environ,{"HIGHEST_DATABASE_PATH":self.tmp.name+"/db.sqlite","HIGHEST_ORIGIN":"https://abud.web.id"})
         self.env.start();self.addCleanup(self.env.stop)
         init();ops_init()
-        app=FastAPI();app.include_router(router);app.include_router(ops)
+        app=FastAPI();app.include_router(router);app.include_router(ops);self.app=app
         self.path="/highest/api"
         self.a,self.u,self.v=[TestClient(app,base_url="https://abud.web.id",headers={"Origin":"https://abud.web.id"}) for _ in range(3)]
         for c,name in [(self.a,"admin"),(self.u,"member"),(self.v,"reviewer")]:

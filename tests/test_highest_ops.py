@@ -116,3 +116,86 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.get(self.v,"/ops/calendar/"+str(event_id)+"/history").status_code,200)
         self.assertEqual(self.post(self.a,f"/admin/revoke/{reviewer_id}",{}).status_code,200)
         self.assertEqual(self.get(self.v,"/ops/calendar/"+str(event_id)+"/history").status_code,403)
+
+    def test_full_approval_workflow_routes_delegation_and_history(self):
+        self.assertEqual(self.post(self.u,"/ops/approvals",{
+            "module":"cases","title":"Case review","description":"Approve case brief"
+        }).status_code,403)
+        self.grant("cases","write")
+        self.assertEqual(self.get(self.u,"/ops/approvals").status_code,200)
+        self.assertEqual(self.post(self.u,"/ops/approvals",{
+            "module":"cases","title":"Case review","description":"Approve case brief"
+        }).status_code,200)
+
+        # Configure two distinct approval ranks; both must hold cases:approve.
+        self.grant("cases","approve")
+        self.assertEqual(self.post(self.a,"/admin/rank",{"name":"Command","position":2}).status_code,200)
+        ranks=self.get(self.a,"/admin").json()["ranks"]
+        second_rank=next(x["id"] for x in ranks if x["name"]=="Command")
+        self.grant("cases","approve")
+        self.assertEqual(self.post(self.a,"/admin/grants",{
+            "module":"cases","rank":second_rank,"level":"approve"
+        }).status_code,200)
+
+        def new_member(name,rank_id):
+            client=TestClient(self.app,base_url="https://abud.web.id",headers={"Origin":"https://abud.web.id"})
+            self.assertEqual(self.post(client,"/register",{"username":name,"display_name":name,"password":"long-test-password"}).status_code,200)
+            self.assertEqual(self.post(client,"/apply",{"character":name}).status_code,200)
+            uid=self.get(client,"/me").json()["id"]
+            self.assertEqual(self.post(self.a,f"/admin/review/{uid}",{
+                "approve":True,"rank":rank_id,"position":"Officer"
+            }).status_code,200)
+            return client,uid
+
+        first_reviewer,first_uid=new_member("firstreviewer",self.rank)
+        delegate,delegate_uid=new_member("delegate",self.rank)
+        second_reviewer,second_uid=new_member("secondreviewer",second_rank)
+        self.assertEqual(self.post(self.a,"/admin/approval-policies",{
+            "module":"cases","ranks":[self.rank,second_rank]
+        }).status_code,200)
+
+        submitted=self.post(self.u,"/ops/approvals",{
+            "module":"cases","reference_type":"case","reference_id":"CASE-7",
+            "title":"Approve case file","description":"Two-step approval",
+            "payload":{"classification":"internal"}
+        })
+        self.assertEqual(submitted.status_code,200)
+        request_id=submitted.json()["id"]
+        self.assertEqual(self.post(self.u,f"/ops/approvals/{request_id}/review",{
+            "approve":True,"note":"Self approval must fail"
+        }).status_code,403)
+        self.assertEqual(self.post(second_reviewer,f"/ops/approvals/{request_id}/review",{
+            "approve":True,"note":"Wrong step"
+        }).status_code,403)
+
+        self.assertEqual(self.post(first_reviewer,"/ops/approvals/delegations",{
+            "module":"cases","delegate_user_id":delegate_uid,"active":True
+        }).status_code,200)
+        self.assertEqual(self.post(delegate,f"/ops/approvals/{request_id}/review",{
+            "approve":True,"note":"Delegated first step"
+        }).status_code,200)
+        self.assertEqual(self.get(self.u,"/ops/approvals?scope=mine").json()[0]["current_step"],2)
+        self.assertEqual(self.post(delegate,f"/ops/approvals/{request_id}/review",{
+            "approve":True
+        }).status_code,403)
+        self.assertEqual(self.post(second_reviewer,f"/ops/approvals/{request_id}/review",{
+            "approve":True,"note":"Final approval"
+        }).status_code,200)
+        history=self.get(self.u,f"/ops/approvals/{request_id}/history").json()
+        self.assertEqual(history["request"]["status"],"approved")
+        self.assertEqual([a["step"] for a in history["actions"]],[1,2])
+        self.assertEqual(history["actions"][0]["delegated_from"],first_uid)
+
+        rejected=self.post(self.u,"/ops/approvals",{
+            "module":"cases","title":"Reject test","description":"Should be rejected"
+        }).json()["id"]
+        self.assertEqual(self.post(first_reviewer,f"/ops/approvals/{rejected}/review",{
+            "approve":False,"note":"Insufficient evidence"
+        }).status_code,200)
+        self.assertEqual(self.get(self.u,f"/ops/approvals/{rejected}/history").json()["request"]["status"],"rejected")
+
+        cancelled=self.post(self.u,"/ops/approvals",{
+            "module":"cases","title":"Cancel test","description":"Requester may cancel"
+        }).json()["id"]
+        self.assertEqual(self.post(self.u,f"/ops/approvals/{cancelled}/cancel",{}).status_code,200)
+        self.assertEqual(self.get(self.u,f"/ops/approvals/{cancelled}/history").json()["request"]["status"],"cancelled")

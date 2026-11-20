@@ -1,126 +1,75 @@
-# Community leveling (draft, without role rewards)
+# Community leveling
 
-Abud awards community XP, displays level/rank cards and a leaderboard, and can announce
-level-ups. **There are no role rewards:** no role mappings, automatic role grants/removals,
-role-based XP boosts or Manage Roles permission requirement. This is independent of the
-music player's existing DJ access controls.
+Abud's Discord leveling is chat-only. It awards XP for eligible community messages,
+provides rank cards and a per-server leaderboard, and can announce level-ups.
+There are no role rewards, automatic role changes, voice-channel XP, audio capture,
+transcription, or Discord music playback.
 
-The feature defaults off globally and each guild must opt in. No guild setting, role,
-Discord message, live bot session or VPS deployment is changed by creating this draft.
+The feature defaults off globally. Each server must opt in using an administrator-only
+setup command. Creating or updating this configuration does not change live VPS
+settings or guild state.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `/rank [member]` | Public PNG rank card with XP progress, total/chat/voice XP and server rank |
-| `/leaderboard [page]` | Public per-guild XP ranking, ten participants per page |
-| `/leveling setup enabled:true` | Administrator enables the guild with chat + voice defaults |
-| `/leveling setup enabled:true chat:false` | Disable chat XP; preserve other existing options |
-| `/leveling setup enabled:true announcement:#levels` | Opt into level-up notifications in that channel |
-| `/leveling setup enabled:true notify:false` | Disable level-up notifications without disabling XP |
-| `/leveling setup enabled:false` | Pause earning XP; retain saved totals and rank queries |
-| `/leveling exclude channel:#channel` | Exclude a normal text/voice channel from XP |
-| `/leveling include channel:#channel` | Remove that exclusion |
-| `/leveling config` | Administrator sees settings, fixed XP limits and excluded channels |
+| `/rank [member]` | Public PNG rank card with total/chat XP and server rank |
+| `/leaderboard [page]` | Public per-server XP ranking, ten participants per page |
+| `/leveling setup enabled:true` | Enable chat XP and configure announcements |
+| `/leveling setup enabled:true chat:false` | Disable chat XP |
+| `/leveling setup enabled:true announcement:#levels` | Opt into level-up notifications |
+| `/leveling setup enabled:true notify:false` | Disable level-up notifications |
+| `/leveling setup enabled:false` | Pause XP earning without deleting totals |
+| `/leveling exclude channel:#channel` | Exclude a text channel and its threads |
+| `/leveling include channel:#channel` | Remove a channel exclusion |
+| `/leveling config` | View settings, XP limits and excluded channels |
 
-Rank cards use an original dark/red Abud design rendered in memory with Pillow. No
-avatar fetch, remote image service or message-content screenshot is involved. The bot
-needs Send Messages, Attach Files and View Channel where `/rank` is used; Embed Links
-for leaderboard/announcements. Missing delivery permissions produce a safe error; they
-do not modify XP. Commands are guild-only; bots never receive XP/ranks. Administrator
-permissions are enforced at runtime for setup/config/exclusions, beyond Discord's default
-command visibility.
+Rank cards are rendered in memory with Pillow and DejaVu fonts. The bot needs Send
+Messages, Attach Files and View Channel where `/rank` is used, and Embed Links for
+leaderboards and announcements. Commands are guild-only; bots do not receive XP.
+Administrator permissions are enforced at runtime for setup, config and exclusions.
 
-Announcements are off until a text channel is selected. They include the name and new
-level without pinging users, roles, here or everyone. Failures do not roll back committed
-XP and are not retried, avoiding duplicate awards. No notification is posted for an
-existing level after a restart. Multiple thresholds crossed in one award would produce
-one notice for the final level.
+Announcements are disabled until a text channel is selected. Notifications do not ping
+users or roles. Delivery failure does not roll back committed XP or retry the award.
 
-## XP rules and anti-farming
+## XP and anti-farming
 
-- Chat: random **15–25 XP**, at most once every **60 seconds** per member/guild.
-- Voice: **5 XP** for an observed continuous eligible minute, checked every 15 seconds.
-- Daily caps: **1,000 chat XP** and **600 voice XP**, separately, reset at midnight WIB.
-- Level `L` starts at `100 × L²` total XP: level 1 at 100, level 2 at 400, level 3 at 900.
-  There are no rewards/role assignments associated with a level threshold.
-- Bot, webhook, DM and system messages do not count. Ordinary message replies count.
-  Slash/prefix-style commands, URL-only, mention-only, emoji-only, very short, numeric-only
-  and highly repetitive content is rejected. At least eight alphanumeric characters,
-  four distinct normalized characters and one letter must remain after removing URLs,
-  mentions and custom emoji.
-- Text is normalized for case/spacing/punctuation. The same normalized message cannot
-  earn again within ten minutes. Only ten hashes and award timestamps per participant
-  are retained, not raw message text. Cooldowns and hashes survive restart. Edits are
-  not processed as new messages. This heuristic does not determine semantic quality
-  and cannot prevent coordinated farming or all variations of spam.
-- Excluding a text channel also excludes its threads via parent ID. Voice exclusions
-  refer to normal voice channels; category exclusions are not part of this version.
-- Voice requires **at least two eligible humans in the same regular voice channel**.
-  Bots, AFK channel, self/server mute, self/server deaf, AFK and suppressed members are
-  excluded. A solo eligible user earns nothing even if a bot or muted user is present.
-  Stage channels are not included. Abud does not need to join a voice channel for XP.
-- Voice tracks presence/state, not actual speech: no recording/transcription or audio
-  analysis is added. Two unmuted accounts can still remain idle; caps limit earning,
-  but this is not proof of human activity. Members who self-mute while listening to
-  music do not earn voice XP under these rules.
-- Ineligible periods, channel moves, guild unavailable states, disconnects, reconnects
-  and startup reset continuity. There is no credit for offline time or backfilling
-  long tick delays. Repeated ticks have a persisted source cooldown as an extra guard.
+- Chat awards **15–25 XP** with a per-member, per-server 60-second cooldown.
+- The daily chat cap is **1,000 XP**, resetting at midnight WIB.
+- Bot, webhook, DM and system messages do not count. Short, command-like, URL-only,
+  mention-only, emoji-only and repetitive content is rejected.
+- Normalized message fingerprints prevent the same message earning repeatedly within
+  ten minutes. At most ten hashes per member are retained; raw message text is not stored
+  by the leveling feature.
+- Excluded text channels also exclude their threads through the parent channel ID.
+- Level thresholds use total XP: level L starts at 100 × L².
+- The heuristic reduces obvious farming but cannot prevent every coordinated or
+  semantically varied spam attempt.
 
-## Persistence and integration
+Historical voice-related XP columns remain in the SQLite schema for compatibility with
+existing databases, but Discord leveling no longer awards, displays or processes voice XP.
+The setup path explicitly disables the legacy voice source.
 
-SQLite WAL database in dedicated Compose volume `abud-leveling` at
+## Persistence and deployment
+
+SQLite WAL database in the dedicated `abud-leveling` volume at
 `/app/leveling/levels.db`, owned by bot UID 10001. Back up the volume before replacing
 it. Non-Compose installs must set `ABUD_LEVELING_DB` to a writable persistent path.
-Settings, exclusions, per-guild member IDs/display names, totals/source breakdowns,
-WIB daily counters, cooldowns and duplicate hashes are stored. No raw chat text is
-stored by this feature. Each guild's totals and ranking are independent; ties use
-member ID order. Historical participants remain on the leaderboard after leaving;
-names are snapshots refreshed when XP is awarded, not an authoritative current roster.
-The version has no XP imports, manual adjustments, reset, seasonal wipe or scheduled
-competition. Pausing does not erase data.
+Settings, exclusions, per-server member IDs/display names, totals, chat counters,
+cooldowns and duplicate hashes are stored. No raw chat text is stored by this feature.
 
-Run one bot process per database; the implementation serializes transactions within
-one event loop, not across competing bot replicas. Rank-card rendering runs in a worker
-thread using an immutable snapshot, without sharing SQLite connections with that thread.
-The bot image includes DejaVu fonts and Pillow; no generated cards are saved to disk.
+Set `ABUD_LEVELING_ENABLED=true` only when ready to enable the module globally. Then
+an administrator opts the server in with `/leveling setup enabled:true`. Keep
+announcements disabled or use a test channel during initial acceptance. This branch
+does not change the VPS or enable the feature.
 
-Community messages reach leveling before the bot-name/music/AI dispatch gate, so members
-do not need to call Abud to earn chat XP. Existing chat/music/AI behavior follows afterward.
-Voice-state processing updates XP eligibility before music/AI cleanup. Gateway disconnection
-clears XP timing without changing existing voice managers. The XP worker is singleton on
-reconnect; module errors are sanitized and do not prevent other chat/voice handlers.
-Existing Message Content and Voice States intents are used; no privileged Members or
-Presence intent is added. The bot relies on Discord's cached voice members and must
-have access to the channels being tracked.
+## Acceptance checks
 
-## Enable only when the batch is ready
-
-```dotenv
-ABUD_LEVELING_ENABLED=true
-```
-
-Rebuild the bot image to install Pillow/fonts and include the writable leveling volume.
-Then an administrator opts the guild in with `/leveling setup enabled:true`. Keep
-announcements off or use a test channel for initial acceptance. This branch does not
-perform those steps or change the VPS. Global disable stops earning and hides runtime
-queries behind a clear disabled response; guild pause preserves visible historical ranks.
-
-## Later acceptance
-
-1. Build the image, validate merged Compose and verify UID 10001 can open the persistent
-   leveling database and read fonts. Ensure rank, leaderboard, leveling, play, music,
-   notify and existing voice commands register together.
-2. In a test guild, confirm no XP before opt-in. Enable chat and send varied messages
-   over several minutes, spam duplicates, edit old messages and try excluded threads.
-   Check cooldown, source caps and an opt-in level-up notice without pings.
-3. Exercise two real human voice accounts: eligible minute, solo, bot companion, muted/
-   deafened/AFK, move, disconnect/reconnect and unavailable channels. Verify continuity
-   resets and that no audio capture or bot voice join is started by leveling.
-4. Check `/rank` including a never-active member and `/leaderboard` pagination/ties.
-   Restart the bot; verify settings, XP, exclusions and anti-farm state remain.
-5. Verify a non-admin cannot change settings and a configured announcement channel
-   with removed permissions does not lose/duplicate XP. Test two guilds for isolation.
-6. Check music/chat/AI still function alongside XP, and inspect guild roles before/after
-   level-ups: **no role is granted, removed, edited or rewarded**.
+1. Verify the bot image includes Pillow/fonts and UID 10001 can write the persistent DB.
+2. Confirm no XP before global and per-server opt-in.
+3. Test chat cooldowns, duplicate messages, excluded channels and threads.
+4. Confirm level-up announcements are opt-in and never ping members.
+5. Restart the bot and verify settings, totals and anti-farming state persist.
+6. Confirm non-admins cannot change settings and XP never grants, edits or removes roles.
+7. Confirm the Discord bot no longer registers music or voice playback commands. The
+   separate browser-based Voice Chat feature remains independent.

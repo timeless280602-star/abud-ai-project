@@ -41,6 +41,49 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.post(self.v,f"/ops/treasury/{mid}/review",{"approve":True}).status_code,409)
         self.grant("treasury","none")
         self.assertEqual(self.get(self.u,"/ops/treasury").status_code,403)
+    def test_multi_account_transfers_and_reconciliation(self):
+        self.grant("treasury","approve")
+        created=self.post(self.u,"/ops/treasury/accounts",{
+            "name":"Operations Reserve","description":"Dedicated reserve account"
+        })
+        self.assertEqual(created.status_code,200,created.text)
+        data=self.get(self.u,"/ops/treasury").json()
+        accounts={x["name"]:x["id"] for x in data["accounts"]}
+        general=accounts["General Treasury"];reserve=accounts["Operations Reserve"]
+        income=self.post(self.u,"/ops/treasury",{
+            "account_id":general,"amount":1000,"direction":"income","category":"Funding","note":"Initial funding"
+        })
+        self.assertEqual(income.status_code,200,income.text)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/{income.json()['id']}/review",{"approve":True}).status_code,200)
+        self.assertEqual(self.get(self.u,"/ops/treasury").json()["balance"],1000)
+        transfer=self.post(self.u,"/ops/treasury/transfers",{
+            "source_account":general,"destination_account":reserve,"amount":400,"note":"Move to reserve"
+        })
+        self.assertEqual(transfer.status_code,200,transfer.text)
+        tid=transfer.json()["id"]
+        self.assertEqual(self.post(self.u,f"/ops/treasury/transfers/{tid}/review",{"approve":True}).status_code,403)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/transfers/{tid}/review",{"approve":True}).status_code,200)
+        data=self.get(self.u,"/ops/treasury").json()
+        balances={x["name"]:x["balance"] for x in data["accounts"]}
+        self.assertEqual(balances,{"General Treasury":600,"Operations Reserve":400})
+        self.assertEqual(data["balance"],1000)
+        paired=[x for x in data["entries"] if x["transfer_ref"]==transfer.json()["reference"]]
+        self.assertEqual(len(paired),2)
+        self.assertEqual(sum(x["amount"] for x in paired),0)
+        recon=self.post(self.u,"/ops/treasury/reconciliations",{
+            "account_id":reserve,"counted_balance":350,"note":"Physical count; 50 discrepancy under review"
+        })
+        self.assertEqual(recon.status_code,200,recon.text)
+        self.assertEqual(recon.json()["expected_balance"],400)
+        self.assertEqual(recon.json()["difference"],-50)
+        rid=recon.json()["id"]
+        self.assertEqual(self.post(self.u,f"/ops/treasury/reconciliations/{rid}/review",{"approve":True}).status_code,403)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/reconciliations/{rid}/review",{"approve":True}).status_code,200)
+        after=self.get(self.u,"/ops/treasury").json()
+        self.assertEqual(next(x for x in after["accounts"] if x["id"]==reserve)["balance"],400)
+        record=next(x for x in after["reconciliations"] if x["id"]==rid)
+        self.assertEqual((record["status"],record["difference"]),("approved",-50))
+        self.assertEqual(self.get(self.a,"/ops/treasury").status_code,403)
     def test_stock_rollback_and_crafting(self):
         self.grant("inventory");self.grant("crafting")
         for name in ("A","B"):

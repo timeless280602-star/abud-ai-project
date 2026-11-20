@@ -77,9 +77,8 @@ def snapshot(guild, level, onboarding, tickets, notify, actor=None):
     result = {
         "guild": {"id": str(gid), "name": guild.name},
         "channels": [{"id": str(c.id), "name": c.name,
-                      "type": "text" if isinstance(c, discord.TextChannel) else
-                      "voice" if isinstance(c, discord.VoiceChannel) else "category"}
-                     for c in guild.channels if isinstance(c, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel))],
+                      "type": "text" if isinstance(c, discord.TextChannel) else "category"}
+                     for c in guild.channels if isinstance(c, (discord.TextChannel, discord.CategoryChannel))],
         "roles": [{"id": str(r.id), "name": r.name} for r in guild.roles if not r.is_default() and not r.managed],
         "leveling": None, "welcome": None, "ticket": None, "notifications": None,
         "panels": [], "emojis": guild_emojis(guild), "available": {"leveling": available(level), "onboarding": available(onboarding),
@@ -116,10 +115,9 @@ async def administer(guild, actor, action, data, level, onboarding, tickets, not
         level.store.configure(gid, toggle(data, "enabled"), toggle(data, "chat"),
                               toggle(data, "voice"), channel.id if channel else None)
         level.forget(gid)
-        level.sync_voice(guild)
     elif action == "leveling.exclude":
         level.require(guild)
-        channel = resource(guild, data, "channel", (discord.TextChannel, discord.VoiceChannel))
+        channel = resource(guild, data, "channel", discord.TextChannel)
         level.store.exclude(gid, channel.id, toggle(data, "excluded"))
         level.sync_voice(guild)
     elif action == "welcome.save":

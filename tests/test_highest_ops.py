@@ -103,7 +103,7 @@ class OpsTest(unittest.TestCase):
         }).status_code,200)
         for fmt,signature in (("csv","THE HIGHEST HQ"),("xlsx",b"PK"),("pdf",b"%PDF")):
             response=self.get(self.u,f"/ops/financial-reports/export?start={period}&end={period}&format={fmt}")
-            self.assertEqual(response.status_code,200,response.text[:300])
+            self.assertEqual(response.status_code,200,response.content[:300])
             if fmt=="csv": self.assertIn(signature,response.text)
             else: self.assertTrue(response.content.startswith(signature))
 

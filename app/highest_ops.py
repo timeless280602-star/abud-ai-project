@@ -22,6 +22,20 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_batch(id INTEGER PRIMARY KEY,recipe INTEGER REFERENCES hq_recipe(id),vault INTEGER REFERENCES hq_vault(id),actor INTEGER REFERENCES users(id),batches INTEGER NOT NULL,created INTEGER NOT NULL,note TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_case(id INTEGER PRIMARY KEY,title TEXT NOT NULL,summary TEXT NOT NULL,status TEXT NOT NULL,actor INTEGER REFERENCES users(id),created INTEGER NOT NULL,updated INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_case_note(id INTEGER PRIMARY KEY,case_id INTEGER REFERENCES hq_case(id),actor INTEGER REFERENCES users(id),note TEXT NOT NULL,created INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS hq_operation_event(
+            id INTEGER PRIMARY KEY,title TEXT NOT NULL,category TEXT NOT NULL,division TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',owner TEXT NOT NULL DEFAULT '',location TEXT NOT NULL DEFAULT '',
+            starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('planned','in_progress','completed','cancelled','archived')),
+            reminder_minutes INTEGER NOT NULL DEFAULT 0 CHECK(reminder_minutes IN (0,5,15,30,60,1440)),
+            version INTEGER NOT NULL DEFAULT 1,actor INTEGER REFERENCES users(id),created INTEGER NOT NULL,updated INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS hq_operation_event_dates ON hq_operation_event(starts_at,ends_at,status);
+        CREATE TABLE IF NOT EXISTS hq_operation_revision(
+            event_id INTEGER REFERENCES hq_operation_event(id) ON DELETE CASCADE,version INTEGER,title TEXT NOT NULL,
+            category TEXT NOT NULL,division TEXT NOT NULL,detail TEXT NOT NULL,owner TEXT NOT NULL,location TEXT NOT NULL,
+            starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,status TEXT NOT NULL,reminder_minutes INTEGER NOT NULL,
+            actor INTEGER REFERENCES users(id),created INTEGER NOT NULL,PRIMARY KEY(event_id,version)
+        );
         """)
         movement_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_movement)")}
         if "unit_price" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN unit_price INTEGER")
@@ -289,3 +303,100 @@ def logs(r:Request):
     with db() as c:
         privilege(c,r,admin=True)
         return reply(rows(c,"SELECT a.*,u.username FROM audit a LEFT JOIN users u ON a.actor=u.id ORDER BY a.id DESC LIMIT 500"))
+
+
+# Visual Operations Calendar — normalized, persistent WIB schedule records.
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+HQ_TZ=ZoneInfo("Asia/Jakarta")
+OP_EVENT_STATUSES=("planned","in_progress","completed","cancelled","archived")
+OP_REMINDERS=(0,5,15,30,60,1440)
+
+def _calendar_time(value):
+    try: parsed=datetime.fromisoformat(value)
+    except (TypeError,ValueError): fail(400,"Use a valid ISO date/time")
+    if parsed.tzinfo is None: parsed=parsed.replace(tzinfo=HQ_TZ)
+    return parsed.astimezone(HQ_TZ)
+
+class OperationEvent(BaseModel):
+    title:str=Field(min_length=1,max_length=140)
+    category:str=Field(min_length=1,max_length=80)
+    division:str=Field(default="",max_length=100)
+    detail:str=Field(default="",max_length=4000)
+    owner:str=Field(default="",max_length=120)
+    location:str=Field(default="",max_length=240)
+    starts_at:str=Field(min_length=16,max_length=40)
+    ends_at:str=Field(min_length=16,max_length=40)
+    status:str="planned"
+    reminder_minutes:int=Field(default=0,ge=0,le=1440)
+
+def _event_values(p):
+    if p.status not in OP_EVENT_STATUSES: fail(400,"Invalid operation status")
+    if p.reminder_minutes not in OP_REMINDERS: fail(400,"Unsupported reminder interval")
+    start=_calendar_time(p.starts_at);end=_calendar_time(p.ends_at)
+    if end<=start: fail(400,"End time must be after start time")
+    if end-start>timedelta(days=30): fail(400,"An event cannot exceed 30 days")
+    return (clean(p.title,140),clean(p.category,80),clean(p.division,100,required=False),
+        clean(p.detail,4000,required=False),clean(p.owner,120,required=False),
+        clean(p.location,240,required=False),start.isoformat(),end.isoformat(),
+        p.status,p.reminder_minutes)
+
+def _event_snapshot(c,event_id,version,uid):
+    c.execute("""INSERT INTO hq_operation_revision(event_id,version,title,category,division,detail,owner,location,
+        starts_at,ends_at,status,reminder_minutes,actor,created)
+        SELECT id,?,title,category,division,detail,owner,location,starts_at,ends_at,status,reminder_minutes,?,?
+        FROM hq_operation_event WHERE id=?""",(version,uid,now(),event_id))
+
+@router.get("/ops/calendar")
+def operation_calendar(r:Request,start:str|None=None,end:str|None=None,division:str|None=None,
+    category:str|None=None,status:str|None=None):
+    with db() as c:
+        privilege(c,r,"operations")
+        sql="""SELECT e.*,coalesce(u.display_name,u.username) creator_name
+            FROM hq_operation_event e LEFT JOIN users u ON u.id=e.actor WHERE 1=1"""
+        args=[]
+        if start: sql+=" AND e.ends_at>=?";args.append(_calendar_time(start).isoformat())
+        if end: sql+=" AND e.starts_at<=?";args.append(_calendar_time(end).isoformat())
+        if division: sql+=" AND e.division=?";args.append(clean(division,100))
+        if category: sql+=" AND e.category=?";args.append(clean(category,80))
+        if status:
+            if status not in OP_EVENT_STATUSES: fail(400,"Invalid operation status filter")
+            sql+=" AND e.status=?";args.append(status)
+        sql+=" ORDER BY e.starts_at,e.id LIMIT 500"
+        return reply({"events":rows(c,sql,args),
+            "divisions":[x["division"] for x in rows(c,"SELECT DISTINCT division FROM hq_operation_event WHERE division<>'' ORDER BY division")],
+            "categories":[x["category"] for x in rows(c,"SELECT DISTINCT category FROM hq_operation_event ORDER BY category")]})
+
+@router.post("/ops/calendar")
+def create_operation_event(p:OperationEvent,r:Request):
+    origin(r);values=_event_values(p)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"operations","write")
+        event_id=c.execute("""INSERT INTO hq_operation_event(title,category,division,detail,owner,location,starts_at,ends_at,status,
+            reminder_minutes,version,actor,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)""",
+            (*values,u["id"],now(),now())).lastrowid
+        _event_snapshot(c,event_id,1,u["id"]);audit(c,u["id"],"operations.event.create",event_id)
+    return {"ok":True,"id":event_id}
+
+@router.put("/ops/calendar/{event_id}")
+def update_operation_event(event_id:int,p:OperationEvent,r:Request):
+    origin(r);values=_event_values(p)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"operations","write")
+        old=c.execute("SELECT * FROM hq_operation_event WHERE id=?",(event_id,)).fetchone()
+        if not old: fail(404,"Operation event not found")
+        if p.status=="archived" or old["status"]=="archived": privilege(c,r,"operations","approve")
+        version=old["version"]+1
+        c.execute("""UPDATE hq_operation_event SET title=?,category=?,division=?,detail=?,owner=?,location=?,starts_at=?,ends_at=?,
+            status=?,reminder_minutes=?,version=?,actor=?,updated=? WHERE id=?""",
+            (*values,version,u["id"],now(),event_id))
+        _event_snapshot(c,event_id,version,u["id"]);audit(c,u["id"],"operations.event.update",event_id)
+    return {"ok":True,"version":version}
+
+@router.get("/ops/calendar/{event_id}/history")
+def operation_event_history(event_id:int,r:Request):
+    with db() as c:
+        privilege(c,r,"operations")
+        if not c.execute("SELECT 1 FROM hq_operation_event WHERE id=?",(event_id,)).fetchone(): fail(404,"Operation event not found")
+        return reply(rows(c,"""SELECT h.*,coalesce(u.display_name,u.username) actor_name FROM hq_operation_revision h
+            LEFT JOIN users u ON u.id=h.actor WHERE h.event_id=? ORDER BY h.version DESC""",(event_id,)))

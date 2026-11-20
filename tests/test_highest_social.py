@@ -1,10 +1,11 @@
 import os,tempfile,unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.highest import router,init,bootstrap_admin,db
 from app.highest_ops import init as ops_init
 from app.highest_social import router as social,init as social_init
+from app.highest_live import poll
 class SocialTest(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
@@ -139,6 +140,45 @@ class SocialTest(unittest.TestCase):
         with db() as c:
             c.execute("UPDATE hq_moment SET state='removed' WHERE id=?",(moment_id,))
         self.assertEqual(self.get(self.v,f"/social/comments/pov/{pov_id}").status_code,404)
+
+    def test_youtube_channel_ownership_challenge_auto_verifies(self):
+        started=self.post(self.v,"/social/channel-verification",{"kind":"streamer","platform":"youtube","channel":"UC"+"a"*22,"profile_url":"https://www.youtube.com/channel/UC"+"a"*22})
+        self.assertEqual(started.status_code,200,started.text)
+        verification_id=started.json()["id"]
+        challenge=started.json()["challenge"]
+        response=MagicMock()
+        response.json.return_value={"items":[{"snippet":{"description":"Official channel\\n"+challenge}}]}
+        response.raise_for_status.return_value=None
+        with patch("app.highest_social.httpx.Client") as client:
+            client.return_value.__enter__.return_value.get.return_value=response
+            checked=self.post(self.v,f"/social/channel-verification/{verification_id}/check",{})
+        self.assertEqual(checked.status_code,200,checked.text)
+        self.assertEqual(checked.json()["status"],"verified")
+        studio=self.get(self.v,"/social/studio").json()
+        self.assertEqual(studio["verification"][0]["status"],"approved")
+        with db() as c:
+            self.assertEqual(c.execute("SELECT status FROM hq_channel_verification WHERE id=?",(verification_id,)).fetchone()["status"],"verified")
+
+    def test_streamer_live_transition_notifies_followers_once_per_session(self):
+        self.assertEqual(self.post(self.a,"/admin/streamer",{"name":"Live Test","platform":"youtube","channel":"UC"+"b"*22}).status_code,200)
+        with db() as c:
+            sid=c.execute("SELECT id FROM streamers WHERE channel=?",("UC"+"b"*22,)).fetchone()["id"]
+        self.assertEqual(self.post(self.v,f"/social/follow/{sid}",{"enabled":True}).status_code,200)
+        with patch("app.highest_live.check",side_effect=[("live","https://youtube.com/watch?v=abcdefghijk"),("live","https://youtube.com/watch?v=abcdefghijk"),("offline",None),("live","https://youtube.com/watch?v=abcdefghijk")]):
+            poll();poll();poll();poll()
+        with db() as c:
+            notices=c.execute("SELECT count(*) FROM hq_notification WHERE uid=? AND kind='streamer_live'",(self.v.get("/highest/api/me").json()["id"],)).fetchone()[0]
+        self.assertEqual(notices,2)
+
+    def test_social_content_approval_notifies_author(self):
+        self.assertEqual(self.post(self.v,"/social/post",{"category":"general","body":"Pending community post","spoiler":False}).status_code,200)
+        with db() as c:
+            post_id=c.execute("SELECT id FROM hq_posts ORDER BY id DESC LIMIT 1").fetchone()["id"]
+        self.assertEqual(self.post(self.a,f"/admin/social/post/{post_id}",{"approve":True}).status_code,200)
+        with db() as c:
+            notice=c.execute("SELECT kind,title FROM hq_notification WHERE uid=? AND kind='content_approved'",(self.v.get("/highest/api/me").json()["id"],)).fetchone()
+        self.assertIsNotNone(notice)
+        self.assertIn("approved",notice["title"].lower())
 
     def test_creator_wiki_feed(self):
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://evil.example/a"}).status_code,400)

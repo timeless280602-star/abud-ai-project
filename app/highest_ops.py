@@ -112,6 +112,15 @@ class Movement(BaseModel):
     item:int
     qty:int=Field(gt=0,le=1000000000)
     destination:int|None=None
+    unit_cost:int|None=Field(default=None,ge=0,le=1000000000)
+    note:str=Field(min_length=1,max_length=500)
+class CostingMethod(BaseModel):
+    method:str
+class StockAdjustment(BaseModel):
+    vault:int
+    item:int
+    counted_qty:int=Field(ge=0,le=1000000000000)
+    unit_cost:int|None=Field(default=None,ge=0,le=1000000000)
     note:str=Field(min_length=1,max_length=500)
 class Ingredient(BaseModel):
     item:int
@@ -226,14 +235,176 @@ def item(p:Item,r:Request):
         audit(c,u["id"],"item.create",iid)
     return {"ok":True}
 
-def change(c,uid,kind,vault,item,delta,note,ref,unit_price=None,movement_value=None):
+def _item_method(c,item):
+    row=c.execute("SELECT costing_method FROM hq_item WHERE id=?",(item,)).fetchone()
+    if not row: fail(404,"Item not found")
+    return row["costing_method"] if row["costing_method"] in ("fifo","weighted_average") else "fifo"
+
+def _ensure_cost_layers(c,vault=None,item=None):
+    sql="""SELECT s.vault,s.item,s.qty-coalesce(l.layer_qty,0) missing
+        FROM hq_stock s LEFT JOIN (
+            SELECT vault,item,sum(qty_remaining) layer_qty FROM hq_cost_layer GROUP BY vault,item
+        ) l ON l.vault=s.vault AND l.item=s.item
+        WHERE s.qty>coalesce(l.layer_qty,0)"""
+    args=()
+    if vault is not None: sql+=" AND s.vault=?";args+=(vault,)
+    if item is not None: sql+=" AND s.item=?";args+=(item,)
+    for row in c.execute(sql,args).fetchall():
+        c.execute("""INSERT INTO hq_cost_layer(vault,item,qty_remaining,value_remaining,source,reference,created)
+            VALUES(?,?,?,0,'legacy_unvalued','opening-migration',?)""",(row["vault"],row["item"],row["missing"],now()))
+
+def _active_layers(c,vault,item):
+    return rows(c,"SELECT * FROM hq_cost_layer WHERE vault=? AND item=? AND qty_remaining>0 ORDER BY created,id",(vault,item))
+
+def _layer_cost_source(slices):
+    sources={x["source"] for x in slices if x["qty"]>0}
+    return next(iter(sources)) if len(sources)==1 else ("mixed" if sources else "unvalued")
+
+def _receive_cost(c,vault,item,qty,total_value,source,ref,method=None):
+    method=method or _item_method(c,item)
+    if method=="weighted_average":
+        active=_active_layers(c,vault,item)
+        total_qty=sum(x["qty_remaining"] for x in active)+qty
+        value=sum(x["value_remaining"] for x in active)+total_value
+        layer_source=source if not active else ("weighted_average_pool" if any(x["source"]!=source for x in active) else source)
+        if active:
+            keep=active[0]["id"]
+            c.execute("UPDATE hq_cost_layer SET qty_remaining=?,value_remaining=?,source=?,reference=?,created=? WHERE id=?",
+                (total_qty,value,layer_source,ref,now(),keep))
+            for old in active[1:]:
+                c.execute("UPDATE hq_cost_layer SET qty_remaining=0,value_remaining=0 WHERE id=?",(old["id"],))
+        else:
+            c.execute("INSERT INTO hq_cost_layer(vault,item,qty_remaining,value_remaining,source,reference,created) VALUES(?,?,?,?,?,?,?)",
+                (vault,item,total_qty,value,layer_source,ref,now()))
+    else:
+        c.execute("INSERT INTO hq_cost_layer(vault,item,qty_remaining,value_remaining,source,reference,created) VALUES(?,?,?,?,?,?,?)",
+            (vault,item,qty,total_value,source,ref,now()))
+
+def _consume_cost(c,vault,item,qty,ref):
+    _ensure_cost_layers(c,vault,item)
+    layers=_active_layers(c,vault,item)
+    available=sum(x["qty_remaining"] for x in layers)
+    if available<qty: fail(409,"Stock costing layers are incomplete; reconcile opening stock before withdrawal")
+    method=_item_method(c,item)
+    if method=="weighted_average":
+        total_qty=sum(x["qty_remaining"] for x in layers)
+        total_value=sum(x["value_remaining"] for x in layers)
+        unit_value=(total_value+total_qty//2)//total_qty if total_qty else 0
+        take_value=total_value if qty==total_qty else (total_value*qty+total_qty//2)//total_qty
+        source=_layer_cost_source([{"source":x["source"],"qty":x["qty_remaining"]} for x in layers])
+        keep=layers[0]["id"]
+        c.execute("UPDATE hq_cost_layer SET qty_remaining=?,value_remaining=? WHERE id=?",(total_qty-qty,total_value-take_value,keep))
+        for old in layers[1:]: c.execute("UPDATE hq_cost_layer SET qty_remaining=0,value_remaining=0 WHERE id=?",(old["id"],))
+        return take_value,[{"qty":qty,"value":take_value,"source":source,"unit_cost":unit_value}]
+    remaining=qty;total=0;slices=[]
+    for layer in layers:
+        if remaining<=0: break
+        take=min(remaining,layer["qty_remaining"])
+        take_value=layer["value_remaining"] if take==layer["qty_remaining"] else (layer["value_remaining"]*take+layer["qty_remaining"]//2)//layer["qty_remaining"]
+        c.execute("UPDATE hq_cost_layer SET qty_remaining=?,value_remaining=? WHERE id=?",
+            (layer["qty_remaining"]-take,layer["value_remaining"]-take_value,layer["id"]))
+        slices.append({"qty":take,"value":take_value,"source":layer["source"],"unit_cost":(take_value+take//2)//take})
+        total+=take_value;remaining-=take
+    return total,slices
+
+def _cost_summary(c):
+    _ensure_cost_layers(c)
+    return rows(c,"""SELECT v.id vault_id,v.name vault_name,i.id item_id,i.name item_name,i.costing_method,
+        coalesce(sum(l.qty_remaining),0) qty,coalesce(sum(l.value_remaining),0) value,
+        CASE WHEN coalesce(sum(l.qty_remaining),0)>0 THEN round(sum(l.value_remaining)*1.0/sum(l.qty_remaining),2) ELSE 0 END average_unit_cost,
+        coalesce(sum(CASE WHEN l.source='legacy_unvalued' THEN l.qty_remaining ELSE 0 END),0) unvalued_qty
+        FROM hq_vault v CROSS JOIN hq_item i LEFT JOIN hq_cost_layer l ON l.vault=v.id AND l.item=i.id AND l.qty_remaining>0
+        LEFT JOIN hq_stock st ON st.vault=v.id AND st.item=i.id
+        WHERE coalesce(st.qty,0)>0 OR coalesce(i.min_stock,0)>0
+        GROUP BY v.id,i.id ORDER BY v.name,i.name""")
+
+def change(c,uid,kind,vault,item,delta,note,ref,unit_price=None,movement_value=None,counterparty_vault=None,cost_slices=None):
     if not c.execute("SELECT 1 FROM hq_vault WHERE id=?",(vault,)).fetchone() or not c.execute("SELECT 1 FROM hq_item WHERE id=?",(item,)).fetchone(): fail(404,"Vault or item not found")
     row=c.execute("SELECT qty FROM hq_stock WHERE vault=? AND item=?",(vault,item)).fetchone()
     qty=(row["qty"] if row else 0)+delta
     if qty<0: fail(409,"Insufficient stock")
     if qty>1000000000000: fail(409,"Stock limit exceeded")
+    method=_item_method(c,item);total_value=0;slices=[]
+    if delta<0:
+        total_value,slices=_consume_cost(c,vault,item,-delta,ref)
+        unit_price=(total_value+(-delta)//2)//(-delta)
+        cost_source=_layer_cost_source(slices)
+    elif delta>0:
+        if cost_slices is not None:
+            slices=cost_slices
+            total_value=sum(x["value"] for x in slices)
+            for part in slices: _receive_cost(c,vault,item,part["qty"],part["value"],part["source"],ref,method)
+            cost_source=_layer_cost_source(slices)
+        else:
+            if movement_value is not None: total_value=movement_value
+            elif unit_price is not None: total_value=delta*unit_price
+            else: total_value=0
+            cost_source="unvalued" if unit_price is None and movement_value is None else ("business_purchase_snapshot" if kind=="business_buy" else "recorded_unit_cost")
+            _receive_cost(c,vault,item,delta,total_value,cost_source,ref,method)
+        unit_price=(total_value+delta//2)//delta
+    else:
+        cost_source="no_quantity_change"
     c.execute("INSERT INTO hq_stock VALUES(?,?,?) ON CONFLICT(vault,item) DO UPDATE SET qty=excluded.qty",(vault,item,qty))
-    c.execute("INSERT INTO hq_movement(actor,kind,vault,item,delta,after_qty,note,ref,unit_price,value,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid,kind,vault,item,delta,qty,note,ref,unit_price,movement_value if movement_value is not None else (abs(delta)*unit_price if unit_price is not None else None),now()))
+    c.execute("""INSERT INTO hq_movement(actor,kind,vault,item,delta,after_qty,note,ref,unit_price,value,created,counterparty_vault,cost_method,cost_source)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid,kind,vault,item,delta,qty,note,ref,unit_price,total_value,now(),counterparty_vault,method,cost_source))
+    return {"value":total_value,"unit_cost":unit_price,"cost_source":cost_source,"slices":slices}
+
+@router.get("/ops/inventory")
+def inventory(r:Request):
+    with db() as c:
+        privilege(c,r,"inventory")
+        _ensure_cost_layers(c)
+        return reply({**catalog(c),
+            "stock":rows(c,"SELECT s.*,v.name vault_name,i.name item_name,i.costing_method FROM hq_stock s JOIN hq_vault v ON v.id=s.vault JOIN hq_item i ON i.id=s.item ORDER BY v.name,i.name"),
+            "movements":rows(c,"""SELECT m.*,v.name vault_name,i.name item_name,u.username,cv.name counterparty_vault_name
+                FROM hq_movement m JOIN hq_vault v ON v.id=m.vault JOIN hq_item i ON i.id=m.item
+                JOIN users u ON u.id=m.actor LEFT JOIN hq_vault cv ON cv.id=m.counterparty_vault
+                ORDER BY m.id DESC LIMIT 500"""),
+            "low":rows(c,"SELECT i.id,i.name,i.min_stock,coalesce(sum(s.qty),0) total FROM hq_item i LEFT JOIN hq_stock s ON s.item=i.id GROUP BY i.id HAVING total<i.min_stock"),
+            "valuation":_cost_summary(c),
+            "cost_layers":rows(c,"""SELECT l.*,v.name vault_name,i.name item_name FROM hq_cost_layer l
+                JOIN hq_vault v ON v.id=l.vault JOIN hq_item i ON i.id=l.item
+                WHERE l.qty_remaining>0 ORDER BY l.created DESC,l.id DESC LIMIT 500""")})
+
+@router.post("/ops/item/{iid}/costing")
+def item_costing(iid:int,p:CostingMethod,r:Request):
+    origin(r)
+    if p.method not in ("fifo","weighted_average"): fail(400,"Use fifo or weighted_average")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"inventory","write")
+        if not c.execute("SELECT 1 FROM hq_item WHERE id=?",(iid,)).fetchone(): fail(404,"Item not found")
+        _ensure_cost_layers(c,item=iid)
+        if p.method=="weighted_average":
+            for vault_row in c.execute("SELECT id FROM hq_vault").fetchall():
+                layers=_active_layers(c,vault_row["id"],iid)
+                if len(layers)>1:
+                    qty=sum(x["qty_remaining"] for x in layers);value=sum(x["value_remaining"] for x in layers)
+                    source=_layer_cost_source([{"source":x["source"],"qty":x["qty_remaining"]} for x in layers])
+                    keep=layers[0]["id"]
+                    c.execute("UPDATE hq_cost_layer SET qty_remaining=?,value_remaining=?,source=?,created=? WHERE id=?",(qty,value,source,now(),keep))
+                    for old in layers[1:]: c.execute("UPDATE hq_cost_layer SET qty_remaining=0,value_remaining=0 WHERE id=?",(old["id"],))
+        c.execute("UPDATE hq_item SET costing_method=? WHERE id=?",(p.method,iid))
+        audit(c,u["id"],"inventory.costing_method",iid)
+    return {"ok":True,"method":p.method}
+
+@router.post("/ops/inventory/adjust")
+def stock_adjust(p:StockAdjustment,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"inventory","write")
+        _ensure_cost_layers(c,p.vault,p.item)
+        row=c.execute("SELECT qty FROM hq_stock WHERE vault=? AND item=?",(p.vault,p.item)).fetchone()
+        if not c.execute("SELECT 1 FROM hq_vault WHERE id=?",(p.vault,)).fetchone() or not c.execute("SELECT 1 FROM hq_item WHERE id=?",(p.item,)).fetchone(): fail(404,"Vault or item not found")
+        current_qty=row["qty"] if row else 0
+        delta=p.counted_qty-current_qty
+        if delta>0 and p.unit_cost is None: fail(400,"Unit cost is required for a positive stock adjustment")
+        if delta==0: return {"ok":True,"delta":0}
+        import secrets
+        ref=secrets.token_hex(12)
+        result=change(c,u["id"],"stock_adjustment",p.vault,p.item,delta,clean(p.note,500),ref,unit_price=p.unit_cost if delta>0 else None)
+        audit(c,u["id"],"stock.adjust",p.item)
+    return {"ok":True,"reference":ref,"delta":delta,"value":result["value"]}
 
 @router.post("/ops/move")
 def move(p:Movement,r:Request):
@@ -241,12 +412,19 @@ def move(p:Movement,r:Request):
     origin(r)
     if p.kind not in ("deposit","withdraw","transfer"): fail(400,"Invalid movement")
     if p.kind=="transfer" and (p.destination is None or p.destination==p.vault): fail(400,"Different destination required")
+    if p.kind=="deposit" and p.unit_cost is None: fail(400,"Unit cost is required for deposits")
     with db() as c:
-        c.execute("BEGIN IMMEDIATE")
-        u=privilege(c,r,"inventory","write")
-        ref=secrets.token_hex(12); note=clean(p.note,500)
-        change(c,u["id"],p.kind,p.vault,p.item,p.qty if p.kind=="deposit" else -p.qty,note,ref)
-        if p.kind=="transfer": change(c,u["id"],p.kind,p.destination,p.item,p.qty,note,ref)
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"inventory","write")
+        ref=secrets.token_hex(12);note=clean(p.note,500)
+        if p.kind=="transfer":
+            src=c.execute("SELECT name FROM hq_vault WHERE id=?",(p.vault,)).fetchone()
+            dst=c.execute("SELECT name FROM hq_vault WHERE id=?",(p.destination,)).fetchone()
+            if not src or not dst: fail(404,"Vault not found")
+            result=change(c,u["id"],"transfer",p.vault,p.item,-p.qty,note,ref,counterparty_vault=p.destination)
+            change(c,u["id"],"transfer",p.destination,p.item,p.qty,note,ref,counterparty_vault=p.vault,cost_slices=result["slices"])
+        else:
+            change(c,u["id"],p.kind,p.vault,p.item,p.qty if p.kind=="deposit" else -p.qty,note,ref,
+                unit_price=p.unit_cost if p.kind=="deposit" else None)
         audit(c,u["id"],"stock."+p.kind,p.item)
     return {"ok":True,"reference":ref}
 

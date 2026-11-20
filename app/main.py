@@ -4,7 +4,6 @@ import re
 import json
 import urllib.request
 import urllib.error
-from typing import Literal
 
 from datetime import datetime, timedelta, timezone
 import hmac
@@ -337,7 +336,6 @@ class ChatRequest(BaseModel):
     can_manage_guild_memory: bool = False
     mentioned_users: list[dict] = Field(default_factory=list)
     mentioned_roles: list[dict] = Field(default_factory=list)
-    response_mode: Literal["text", "voice"] = "text"
 
 
 class AutoSaveRequest(ChatRequest):
@@ -1235,17 +1233,6 @@ def chat(request: ChatRequest):
         }
     ]
 
-    if request.response_mode == "voice":
-        messages[0]["content"] += (
-            "\n\nMODE VOICE CHANNEL: Jawaban akan dibacakan kepada anggota channel. "
-            "Jawab ringkas dalam 1–3 kalimat natural, sesuai bahasa pembicara. "
-            "Hindari Markdown, tabel, kode, URL, promosi profil, dan catatan internal. "
-            "Jangan mengaku sudah mengirim teks atau melakukan ping melalui suara. "
-            "Jika tujuan permintaan belum jelas, tanyakan satu hal yang diperlukan. "
-            "Jangan mengungkap Personal Memory yang tidak diminta dalam channel bersama. "
-            "Jika transkrip tidak jelas, minta pembicara mengulangi tanpa menebak."
-        )
-
     # GLOBAL MEMORY: berlaku untuk semua pengguna dan server.
     global_memories = database.get_global_memories(limit=100)
 
@@ -1465,9 +1452,6 @@ def chat(request: ChatRequest):
         "temperature": 0.7,
         "messages": messages
     }
-
-    if request.response_mode == "voice":
-        payload["max_tokens"] = 350
 
     available_tools = list(abud_tools.GENERAL_TOOLS)
 

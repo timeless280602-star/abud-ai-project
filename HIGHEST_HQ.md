@@ -105,3 +105,14 @@ This is the initial feature branch, not a production deployment. Do not replace 
 - Completed POS orders are shown in a separate operating-performance section, not added to Treasury cash flow. Sales, purchases and estimated gross profit are based on completed orders; estimated COGS uses the order-line buy price. POS totals are not asserted to be settled cash.
 - Exports are available as PDF, XLSX and CSV. Reports cover up to 36 months and use WIB month boundaries.
 - The Excel export uses openpyxl; install it from requirements.txt.
+
+
+## Advanced Intelligence Analytics
+
+- The Case Files workspace includes a read-only, permission-scoped intelligence analytics view for fictional in-character roleplay records.
+- Overview metrics summarize case statuses, case-scoped graph entities and links, Evidence Vault files, custody events, recorded integrity failures and assets linked to cases.
+- Recurring-entity analysis uses exact normalized entity type and name matches across different cases. These are candidate overlaps for manual review, not identity resolution or proof that two records refer to the same character, vehicle or organization.
+- Candidate case overlaps, relationship-label patterns, within-case node degree, most-active case files and a WIB activity timeline are surfaced for analyst review.
+- Timeline counts are derived from persisted case creation, case notes, graph node/link creation, evidence upload and custody events. No missing activity or event chronology is inferred.
+- The analytics endpoint requires the existing cases view permission and is read-only. It does not create cross-case links, modify evidence, or change case records.
+- Analytics are limited to fictional IC roleplay records. Do not enter or infer real-world personal information.

@@ -40,6 +40,7 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_approval_policy(module TEXT NOT NULL,step INTEGER NOT NULL CHECK(step>0),rank_id INTEGER NOT NULL REFERENCES ranks(id) ON DELETE CASCADE,PRIMARY KEY(module,step));
         CREATE TABLE IF NOT EXISTS hq_approval_request(id INTEGER PRIMARY KEY,module TEXT NOT NULL,reference_type TEXT NOT NULL DEFAULT '',reference_id TEXT NOT NULL DEFAULT '',title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',payload TEXT NOT NULL DEFAULT '{}',requester INTEGER NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled')),current_step INTEGER NOT NULL DEFAULT 1,total_steps INTEGER NOT NULL DEFAULT 1,created INTEGER NOT NULL,updated INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS hq_approval_queue ON hq_approval_request(status,module,current_step,created);
+        CREATE TABLE IF NOT EXISTS hq_approval_request_step(request_id INTEGER NOT NULL REFERENCES hq_approval_request(id) ON DELETE CASCADE,step INTEGER NOT NULL,rank_id INTEGER NOT NULL REFERENCES ranks(id),PRIMARY KEY(request_id,step));
         CREATE TABLE IF NOT EXISTS hq_approval_action(id INTEGER PRIMARY KEY,request_id INTEGER NOT NULL REFERENCES hq_approval_request(id) ON DELETE CASCADE,step INTEGER NOT NULL,actor INTEGER NOT NULL REFERENCES users(id),delegated_from INTEGER REFERENCES users(id),decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL,UNIQUE(request_id,step));
         CREATE TABLE IF NOT EXISTS hq_approval_delegation(id INTEGER PRIMARY KEY,module TEXT NOT NULL,delegator INTEGER NOT NULL REFERENCES users(id),delegate INTEGER NOT NULL REFERENCES users(id),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(module,delegator,delegate));        """)
         movement_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_movement)")}
@@ -425,8 +426,8 @@ def operation_event_history(event_id:int,r:Request):
             LEFT JOIN users u ON u.id=h.actor WHERE h.event_id=? ORDER BY h.version DESC""",(event_id,)))
 
 
-def _approval_reviewer(c,uid,module,step):
-    configured=c.execute("SELECT rank_id FROM hq_approval_policy WHERE module=? AND step=?",(module,step)).fetchone()
+def _approval_reviewer(c,uid,module,step,request_id=None):
+    configured=(c.execute("SELECT rank_id FROM hq_approval_request_step WHERE request_id=? AND step=?",(request_id,step)).fetchone() if request_id is not None else c.execute("SELECT rank_id FROM hq_approval_policy WHERE module=? AND step=?",(module,step)).fetchone())
     user=c.execute("SELECT m.rank,m.status FROM users u JOIN membership m ON m.uid=u.id WHERE u.id=?",(uid,)).fetchone()
     if not user or user["status"]!="approved" or user["rank"] is None: return False,None
     grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(user["rank"],module)).fetchone()
@@ -449,7 +450,7 @@ def approval_list(r:Request,scope:str="all"):
         u=privilege(c,r)
         candidates=rows(c,"SELECT a.*,u.username requester_name FROM hq_approval_request a JOIN users u ON u.id=a.requester ORDER BY a.created DESC LIMIT 300")
         if scope=="mine": result=[a for a in candidates if a["requester"]==u["id"]]
-        elif scope=="inbox": result=[a for a in candidates if a["status"]=="pending" and a["requester"]!=u["id"] and _approval_reviewer(c,u["id"],a["module"],a["current_step"])[0]]
+        elif scope=="inbox": result=[a for a in candidates if a["status"]=="pending" and a["requester"]!=u["id"] and _approval_reviewer(c,u["id"],a["module"],a["current_step"],a["id"])[0]]
         else: result=[a for a in candidates if a["requester"]==u["id"] or _approval_reviewer(c,u["id"],a["module"],a["current_step"])[0]]
         return reply(result)
 
@@ -466,6 +467,9 @@ def approval_submit(p:ApprovalSubmission,r:Request):
         if policy and [x["step"] for x in policy]!=list(range(1,len(policy)+1)): fail(409,"Approval route is misconfigured")
         total=len(policy) or 1
         rid=c.execute("INSERT INTO hq_approval_request(module,reference_type,reference_id,title,description,payload,requester,status,current_step,total_steps,created,updated) VALUES(?,?,?,?,?,?,?,'pending',1,?,?,?)",(p.module,clean(p.reference_type,80,required=False),clean(p.reference_id,120,required=False),clean(p.title,160),clean(p.description,4000,required=False),payload,u["id"],total,now(),now())).lastrowid
+        if policy:
+            route=rows(c,"SELECT rank_id FROM hq_approval_policy WHERE module=? ORDER BY step",(p.module,))
+            c.executemany("INSERT INTO hq_approval_request_step(request_id,step,rank_id) VALUES(?,?,?)",[(rid,index,x["rank_id"]) for index,x in enumerate(route,1)])
         audit(c,u["id"],"approval.submit",rid)
     return {"ok":True,"id":rid,"steps":total}
 
@@ -478,7 +482,7 @@ def approval_review(request_id:int,p:ApprovalDecision,r:Request):
         if not item: fail(404,"Approval request not found")
         if item["status"]!="pending": fail(409,"Approval request is no longer pending")
         if item["requester"]==u["id"]: fail(403,"Cannot review your own request")
-        eligible,delegator=_approval_reviewer(c,u["id"],item["module"],item["current_step"])
+        eligible,delegator=_approval_reviewer(c,u["id"],item["module"],item["current_step"],request_id)
         if not eligible: fail(403,"You are not assigned to the current approval step")
         decision="approved" if p.approve else "rejected"
         c.execute("INSERT INTO hq_approval_action(request_id,step,actor,delegated_from,decision,note,created) VALUES(?,?,?,?,?,?,?)",(request_id,item["current_step"],u["id"],delegator,decision,clean(p.note,1000,required=False),now()))

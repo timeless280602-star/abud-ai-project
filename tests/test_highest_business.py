@@ -12,15 +12,23 @@ class BusinessTest(unittest.TestCase):
         self.env=patch.dict(os.environ,{"HIGHEST_DATABASE_PATH":self.tmp.name+"/db.sqlite","HIGHEST_ORIGIN":"https://abud.web.id"});self.env.start();self.addCleanup(self.env.stop)
         init();ops_init();business_init()
         app=FastAPI();app.include_router(router);app.include_router(ops);app.include_router(business)
-        self.a,self.u,self.v=[TestClient(app,base_url="https://abud.web.id",headers={"Origin":"https://abud.web.id"}) for _ in range(3)]
-        for c,name in ((self.a,"owner"),(self.u,"cashier"),(self.v,"viewer")):
+        self.a,self.u,self.v,self.m=[TestClient(app,base_url="https://abud.web.id",headers={"Origin":"https://abud.web.id"}) for _ in range(4)]
+        for c,name in ((self.a,"owner"),(self.u,"cashier"),(self.v,"viewer"),(self.m,"manager")):
             self.assertEqual(self.post(c,"/register",{"username":name,"display_name":name,"password":"long-test-password"}).status_code,200)
         bootstrap_admin("owner");self.post(self.a,"/admin/rank",{"name":"Cashier"})
-        self.rank=self.get(self.a,"/admin").json()["ranks"][0]["id"]
+        self.post(self.a,"/admin/rank",{"name":"Manager","position":1})
+        ranks=self.get(self.a,"/admin").json()["ranks"]
+        self.rank=next(x["id"] for x in ranks if x["name"]=="Cashier")
+        self.manager_rank=next(x["id"] for x in ranks if x["name"]=="Manager")
         self.post(self.u,"/apply",{"character":"Cashier IC"})
         uid=self.get(self.u,"/me").json()["id"]
         self.assertEqual(self.post(self.a,f"/admin/review/{uid}",{"approve":True,"rank":self.rank,"position":"Cashier"}).status_code,200)
+        self.post(self.m,"/apply",{"character":"Manager IC"})
+        manager_uid=self.get(self.m,"/me").json()["id"]
+        self.assertEqual(self.post(self.a,f"/admin/review/{manager_uid}",{"approve":True,"rank":self.manager_rank,"position":"Manager"}).status_code,200)
         self.grant("*","approve")
+        self.grant_rank(self.manager_rank,"business_discounts","approve")
+        self.set_discount_policy("both",100,1000000000000)
         self.post(self.u,"/ops/item",{"name":"RP Item","category":"IC"})
         self.post(self.u,"/ops/vault",{"name":"Store"})
         data=self.get(self.u,"/ops/inventory").json();self.item=data["items"][0]["id"];self.vault=data["vaults"][0]["id"]
@@ -28,7 +36,11 @@ class BusinessTest(unittest.TestCase):
     def post(self,c,p,d):return c.post("/highest/api"+p,json=d)
     def get(self,c,p):return c.get("/highest/api"+p)
     def grant(self,m,l):
-        self.assertEqual(self.post(self.a,"/admin/grants",{"rank":self.rank,"module":m,"level":l}).status_code,200)
+        self.grant_rank(self.rank,m,l)
+    def grant_rank(self,rank,m,l):
+        self.assertEqual(self.post(self.a,"/admin/grants",{"rank":rank,"module":m,"level":l}).status_code,200)
+    def set_discount_policy(self,scope="both",max_percent=100,max_fixed=1000000000000,rank=None):
+        self.assertEqual(self.post(self.a,"/admin/discount-policies",{"rank":rank or self.rank,"scope":scope,"max_percent":max_percent,"max_fixed":max_fixed}).status_code,200)
     def create(self,direction="sell",nonce="test-nonce-123456789"):
         data={"nonce":nonce,"group_name":"IC Group","direction":direction,"lines":[{"item":self.item,"qty":3}],"vault":self.vault,"treasury":True}
         return self.post(self.u,"/business/orders",data)
@@ -148,3 +160,43 @@ class BusinessTest(unittest.TestCase):
         payload["lines"][0]["discount_value"]=101
         payload["lines"][0]["discount_type"]="percent"
         self.assertEqual(self.post(self.u,"/business/orders",payload).status_code,400)
+
+
+    def test_rank_discount_policy_direct_limit_and_manager_approval(self):
+        self.set_discount_policy("all",10,1000)
+        denied_scope={"nonce":"scope-denied-123456789","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":1,"discount_type":"percent","discount_value":5}],"discount_scope":"items"}
+        self.assertEqual(self.post(self.u,"/business/orders",denied_scope).status_code,403)
+        direct={"nonce":"direct-discount-12345678","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"discount_scope":"all","discount_type":"percent","discount_value":5}
+        direct_id=self.post(self.u,"/business/orders",direct).json()["id"]
+        direct_order=self.get(self.u,f"/business/orders/{direct_id}").json()["order"]
+        self.assertEqual((direct_order["discount_state"],direct_order["discount_amount"],direct_order["total"]),("approved",5,100))
+        request={"nonce":"approval-discount-12345","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"discount_scope":"all","discount_type":"percent","discount_value":20,"discount_reason":"Promotional price approved by business manager"}
+        request_id=self.post(self.u,"/business/orders",request).json()["id"]
+        pending=self.get(self.u,f"/business/orders/{request_id}").json()["order"]
+        self.assertEqual((pending["discount_state"],pending["discount_amount"],pending["requested_discount_amount"],pending["total"]),("pending",0,21,105))
+        self.assertEqual(self.post(self.u,f"/business/orders/{request_id}/status",{"version":1,"status":"ready"}).status_code,409)
+        self.assertEqual(self.post(self.u,f"/business/orders/{request_id}/discount-review",{"approve":True,"note":"Approved for this order"}).status_code,403)
+        queue=self.get(self.m,"/business/discount-requests").json()["requests"]
+        self.assertTrue(any(x["id"]==request_id for x in queue))
+        self.assertEqual(self.post(self.m,f"/business/orders/{request_id}/discount-review",{"approve":True,"note":"Approved for this order"}).status_code,200)
+        approved=self.get(self.u,f"/business/orders/{request_id}").json()["order"]
+        self.assertEqual((approved["discount_state"],approved["discount_amount"],approved["total"]),("approved",21,84))
+        self.assertEqual(self.post(self.u,f"/business/orders/{request_id}/status",{"version":2,"status":"ready"}).status_code,200)
+
+    def test_discount_rejection_removes_discount_but_keeps_order_usable(self):
+        self.set_discount_policy("both",5,5)
+        request={"nonce":"rejected-discount-123456","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"discount_scope":"all","discount_type":"fixed","discount_value":20,"discount_reason":"Request a one-time promotion"}
+        oid=self.post(self.u,"/business/orders",request).json()["id"]
+        self.assertEqual(self.post(self.m,f"/business/orders/{oid}/discount-review",{"approve":False,"note":"Exceeds approved promotion budget"}).status_code,200)
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual((order["discount_state"],order["discount_amount"],order["requested_discount_amount"],order["total"]),("rejected",0,20,105))
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":1,"status":"ready"}).status_code,200)
+
+    def test_discount_requires_reason_and_policy_admin_is_protected(self):
+        self.assertEqual(self.get(self.u,"/admin/discount-policies").status_code,403)
+        self.set_discount_policy("all",5,5)
+        payload={"nonce":"reason-required-123456","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"discount_scope":"all","discount_type":"percent","discount_value":20}
+        self.assertEqual(self.post(self.u,"/business/orders",payload).status_code,400)
+        policies=self.get(self.a,"/admin/discount-policies").json()
+        cashier=next(x for x in policies if x["rank_id"]==self.rank)
+        self.assertEqual((cashier["scope"],cashier["max_percent"],cashier["max_fixed"]),("all",5,5))

@@ -397,7 +397,7 @@ async function approvalUI(){
   box.append(el("h3","Approval route configuration · administrator"),el("p","Enter rank IDs in approval order, separated by commas. Every selected rank must already have Approve permission for that module. Leave a module unconfigured to allow any member with that module's Approve permission to act as the single-step reviewer.","muted"));
   box.append(form([field("module","Module","select",Object.keys(opsNames).map(x=>[x,opsNames[x]])),field("ranks","Sequential rank IDs","text",null,"")],"Save approval route",async v=>{const ranks=v.ranks.split(",").map(x=>Number(x.trim())).filter(Boolean);if(!ranks.length)throw Error("Enter at least one rank ID");await api("/admin/approval-policies",{module:v.module,ranks});await render()}));
   box.append(lines(config.policies,x=>x.module+" · Step "+x.step+" → "+x.rank_name+" (rank "+x.rank_id+")"));
-  box.append(form([field("module","Clear route","select",Object.keys(opsNames).map(x=>[x,opsNames[x]]))],"Remove route · use single-step approval",async v=>{await api("/admin/approval-policies/"+v.module,undefined,"DELETE");await render()}));
+  box.append(form([field("module","Clear route","select",Object.keys(opsNames).map(x=>[x,opsNames[x]]))],"Remove route · use single-step approval",async v=>{await api("/admin/approval-policies/"+v.module,{},"DELETE");await render()}));
  }
  p.append(box);return p
 }

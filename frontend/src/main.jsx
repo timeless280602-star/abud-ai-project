@@ -190,6 +190,7 @@ function Login({ error }) {
           </>}
           <label className="remember-row"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)}/> <span>Ingat saya di perangkat ini</span></label>
           <div className="login-foot"><ShieldCheck size={13}/> Identity verification enabled <span>•</span> Session protected</div>
+          <a href="/highest/" target="_blank" rel="noopener noreferrer" style={{display:'flex',alignItems:'center',gap:12,padding:'15px',marginTop:14,border:'1px solid #c9a86a',borderRadius:8,background:'#20190f',color:'#e0ba77',textDecoration:'none'}}><span><strong>THE HIGHEST HQ</strong><br/><small>Official Headquarters &amp; Community</small></span><ArrowUpRight size={18}/></a>
         </div>
       </div>
       <div className="login-bottom"><span>ABUD CONTROL CENTER // V1.0</span><span>AUTHORIZED PERSONNEL ONLY</span><span>INDONESIA // UTC+7</span></div>
@@ -2113,6 +2114,7 @@ function App() {
           </div>)}
         </nav>
         <div className="sidebar-bottom">
+          <a href="/highest/" target="_blank" rel="noopener noreferrer" style={{display:'flex',alignItems:'center',gap:12,padding:'15px',marginTop:14,border:'1px solid #c9a86a',borderRadius:8,background:'#20190f',color:'#e0ba77',textDecoration:'none'}}><span><strong>THE HIGHEST HQ</strong><br/><small>Official Headquarters &amp; Community</small></span><ArrowUpRight size={18}/></a>
           <div className="sidebar-user"><div className="user-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{user.display_name || 'Operator'}</strong><small>{user.is_creator ? 'ROOT AUTHORITY' : 'AUTHORIZED USER'}</small></div><button onClick={logout} title="Sign out"><LogOut size={16}/></button></div>
           <div className="sidebar-version">ABUD CONTROL CENTER <span>BUILD 001</span></div>
         </div>

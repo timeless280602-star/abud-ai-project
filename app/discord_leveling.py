@@ -1,6 +1,6 @@
-import asyncio
 """Community leveling integration. Never assigns, edits or removes roles."""
 
+import asyncio
 import logging
 import os
 import random
@@ -74,7 +74,7 @@ class Leveling:
             )
             if award and award.leveled:
                 await self.announce(message.guild, message.author, award)
-        except Exception as error:  # noqa: BLE001 - leveling must not interrupt chat/music
+        except Exception as error:  # noqa: BLE001 - leveling must not interrupt chat/AI
             self.last_error = type(error).__name__
             log.warning("Chat XP failed (%s)", type(error).__name__)
 
@@ -140,7 +140,6 @@ def install_leveling_commands(tree, manager):
             target.display_name,
             row["xp"],
             row["chat_xp"],
-            row["voice_xp"],
             position,
         )
         await interaction.followup.send(

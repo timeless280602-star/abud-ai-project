@@ -176,8 +176,9 @@ async function operationsCalendarUI(write,level){
   if(division.value)params.set("division",division.value);if(category.value)params.set("category",category.value);if(status.value)params.set("status",status.value);
   const data=await api("/ops/calendar?"+params.toString());
   const oldDivision=division.value,oldCategory=category.value;
+  calendarDivisions=Array.from(new Set([...(data.organizational_units||[]),...data.divisions]));
   division.replaceChildren();category.replaceChildren();
-  for(const [v,t] of [["","All divisions"],...data.divisions.map(x=>[x,x])]){const o=el("option",t);o.value=v;division.append(o)}
+  for(const [v,t] of [["","All divisions"],...calendarDivisions.map(x=>[x,x])]){const o=el("option",t);o.value=v;division.append(o)}
   for(const [v,t] of [["","All categories"],...data.categories.map(x=>[x,x])]){const o=el("option",t);o.value=v;category.append(o)}
   division.value=oldDivision;category.value=oldCategory;
   renderEvents(data.events);

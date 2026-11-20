@@ -116,3 +116,22 @@ This is the initial feature branch, not a production deployment. Do not replace 
 - Timeline counts are derived from persisted case creation, case notes, graph node/link creation, evidence upload and custody events. No missing activity or event chronology is inferred.
 - The analytics endpoint requires the existing cases view permission and is read-only. It does not create cross-case links, modify evidence, or change case records.
 - Analytics are limited to fictional IC roleplay records. Do not enter or infer real-world personal information.
+
+
+## Community review — current scope and verified behavior
+
+- Community routes are authenticated but remain separate from approved internal HQ access. Community content is stored in its own social tables and does not query case, evidence, treasury, inventory or other internal IC records.
+- Public clips, moments, POVs, wiki entries, feed posts and verified creator profiles are returned only after publication/approval. Creator verification remains a manual administrator review of the submitted public profile URL.
+- Clip likes and bookmarks are idempotent per member/clip. Streamer follows are stored per member/streamer. The all-time leaderboard counts published clips and website likes only.
+- POV attribution distinguishes the member submitting the POV from the member who owns the linked clip. Wiki entries and moderation queues expose the submitting member for accountability.
+- Moderators cannot approve or reject their own pending community submissions. Creator verification already prevents self-review.
+- CI covers social moderation, creator verification, POV publication prerequisites, clip likes/bookmarks, community permissions, author attribution and self-review boundaries.
+
+Known community limitations retained for a future phase:
+- No user-facing content reporting, published-content takedown workflow, comments/replies, or direct member-to-member messaging.
+- No notifications to authors when content is approved/rejected, and following a streamer does not yet send a live-start notification.
+- Creator channel ownership is not automatically verified; administrators perform manual review.
+- No native media uploads or external-platform view analytics. Clip engagement metrics are website likes only.
+- YouTube live polling uses the Data API search endpoint (100 quota units per channel check); size the interval and roster against the project's API quota. TikTok live status requires an operator-supplied HTTPS provider and bearer token; no provider is bundled.
+- The current moderation queue is a pending-submission review queue, not a full trust-and-safety console for already-published content.
+

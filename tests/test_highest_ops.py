@@ -84,6 +84,83 @@ class OpsTest(unittest.TestCase):
         record=next(x for x in after["reconciliations"] if x["id"]==rid)
         self.assertEqual((record["status"],record["difference"]),("approved",-50))
         self.assertEqual(self.get(self.a,"/ops/treasury").status_code,403)
+    def test_asset_lifecycle_approvals_assignments_and_maintenance(self):
+        self.grant("assets","approve")
+        general=self.get(self.u,"/ops/treasury").json()["accounts"][0]["id"]
+        self.grant("inventory","write")
+        item=self.post(self.u,"/ops/item",{"name":"Fleet Vehicle","category":"Vehicle"}).json()
+        item_id=self.get(self.u,"/ops/inventory").json()["items"][0]["id"]
+        request=self.post(self.u,"/ops/assets/requests",{
+            "request_type":"acquisition",
+            "acquisition":{
+                "asset_tag":"VH-0001","asset_type":"vehicle","name":"Patrol Unit 01",
+                "description":"Organizational roleplay vehicle","make_model":"Sedan",
+                "serial_number":"SERIAL-01","plate_number":"IC-001","location":"Main Garage",
+                "condition":"good","purchase_cost":250,"purchase_date":"2026-11-20",
+                "inventory_item_id":item_id,"account_id":general,"note":"Approved fleet acquisition"
+            }
+        })
+        self.assertEqual(request.status_code,200,request.text)
+        rid=request.json()["id"]
+        self.assertEqual(self.post(self.u,f"/ops/assets/requests/{rid}/review",{"approve":True}).status_code,403)
+        self.assertEqual(self.post(self.v,f"/ops/assets/requests/{rid}/review",{"approve":True}).status_code,200)
+        data=self.get(self.u,"/ops/assets").json()
+        asset=next(x for x in data["assets"] if x["asset_tag"]=="VH-0001")
+        aid=asset["id"]
+        self.assertEqual((asset["status"],asset["inventory_item_name"]),("available","Fleet Vehicle"))
+        money=self.get(self.u,"/ops/treasury").json()
+        pending=[x for x in money["entries"] if x["category"]=="Asset acquisition"]
+        self.assertEqual(len(pending),1)
+        self.assertEqual((pending[0]["amount"],pending[0]["state"]),(-250,"pending"))
+        self.assertEqual(money["balance"],0)
+        assignment=self.post(self.u,f"/ops/assets/{aid}/assignment",{
+            "assigned_to":"Officer One","location":"North Garage","note":"Issued to field unit"
+        })
+        self.assertEqual(assignment.status_code,200,assignment.text)
+        self.assertEqual(self.get(self.u,"/ops/assets").json()["assets"][0]["status"],"assigned")
+        maintenance=self.post(self.u,f"/ops/assets/{aid}/maintenance",{
+            "title":"Engine service","description":"Routine inspection","vendor":"IC Workshop","cost":40
+        })
+        self.assertEqual(maintenance.status_code,200,maintenance.text)
+        self.assertEqual(self.get(self.u,"/ops/assets").json()["assets"][0]["status"],"maintenance")
+        self.assertEqual(self.post(self.u,f"/ops/assets/{aid}/maintenance/{maintenance.json()['id']}/complete",{}).status_code,200)
+        self.assertEqual(self.get(self.u,"/ops/assets").json()["assets"][0]["status"],"assigned")
+        disposal=self.post(self.u,"/ops/assets/requests",{
+            "request_type":"disposal","disposal":{"asset_id":aid,"note":"Vehicle decommissioned"}
+        })
+        self.assertEqual(disposal.status_code,200,disposal.text)
+        did=disposal.json()["id"]
+        self.assertEqual(self.post(self.v,f"/ops/assets/requests/{did}/review",{"approve":True}).status_code,200)
+        final=self.get(self.u,"/ops/assets").json()
+        retired=next(x for x in final["assets"] if x["id"]==aid)
+        self.assertEqual(retired["status"],"retired")
+        self.assertGreaterEqual(len([x for x in final["history"] if x["asset_id"]==aid]),5)
+        self.assertEqual(self.post(self.u,f"/ops/assets/{aid}/assignment",{
+            "assigned_to":"Officer Two","location":"Garage","note":"Should be blocked"
+        }).status_code,409)
+
+    def test_asset_permissions_and_validation(self):
+        self.assertEqual(self.get(self.u,"/ops/assets").status_code,403)
+        self.grant("assets","view")
+        self.assertEqual(self.get(self.u,"/ops/assets").status_code,200)
+        self.assertEqual(self.post(self.u,"/ops/assets/requests",{
+            "request_type":"acquisition","acquisition":{
+                "asset_tag":"INVALID","asset_type":"aircraft","name":"Invalid asset","note":"Test"
+            }
+        }).status_code,403)
+        self.grant("assets","write")
+        self.assertEqual(self.post(self.u,"/ops/assets/requests",{
+            "request_type":"acquisition","acquisition":{
+                "asset_tag":"INVALID","asset_type":"aircraft","name":"Invalid asset","note":"Test"
+            }
+        }).status_code,400)
+        self.assertEqual(self.post(self.u,"/ops/assets/requests",{
+            "request_type":"acquisition","acquisition":{
+                "asset_tag":"VH-NO-ACCOUNT","asset_type":"vehicle","name":"Unfunded vehicle",
+                "purchase_cost":100,"note":"Missing treasury account"
+            }
+        }).status_code,400)
+
     def test_stock_rollback_and_crafting(self):
         self.grant("inventory");self.grant("crafting")
         for name in ("A","B"):

@@ -48,7 +48,7 @@ class OpsTest(unittest.TestCase):
             self.assertEqual(self.post(self.u,"/ops/item",{"name":name,"category":"IC"}).status_code,200)
         d=self.get(self.u,"/ops/inventory").json()
         a,b=[r["id"] for r in d["vaults"]]; item,out=[r["id"] for r in d["items"]]
-        move={"kind":"deposit","vault":a,"item":item,"qty":10,"note":"Test"}
+        move={"kind":"deposit","vault":a,"item":item,"qty":10,"unit_cost":10,"note":"Test"}
         self.assertEqual(self.post(self.u,"/ops/move",move).status_code,200)
         self.assertEqual(self.post(self.u,"/ops/move",{**move,"kind":"transfer","destination":9999,"qty":2}).status_code,404)
         self.assertEqual(self.get(self.u,"/ops/inventory").json()["stock"][0]["qty"],10)
@@ -59,8 +59,17 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.post(self.u,"/ops/craft",craft).status_code,409)
         self.assertEqual(self.get(self.u,"/ops/crafting").json()["batches"],[])
         self.assertEqual(self.post(self.u,"/ops/craft",{**craft,"batches":2}).status_code,200)
-        stock={(s["vault"],s["item"]):s["qty"] for s in self.get(self.u,"/ops/inventory").json()["stock"]}
+        inventory=self.get(self.u,"/ops/inventory").json()
+        stock={(s["vault"],s["item"]):s["qty"] for s in inventory["stock"]}
         self.assertEqual(stock,{(a,item):2,(b,item):2,(a,out):2})
+        valuation={(x["vault_id"],x["item_id"]):(x["qty"],x["value"]) for x in inventory["valuation"]}
+        self.assertEqual(valuation[(a,item)],(2,20))
+        self.assertEqual(valuation[(b,item)],(2,20))
+        self.assertEqual(valuation[(a,out)],(2,60))
+        transfers=[m for m in inventory["movements"] if m["kind"]=="transfer"]
+        self.assertEqual(len(transfers),2)
+        self.assertEqual(transfers[0]["ref"],transfers[1]["ref"])
+        self.assertEqual({m["counterparty_vault_name"] for m in transfers},{"A","B"})
     def test_cases(self):
         self.grant("cases","view")
         self.assertEqual(self.post(self.u,"/ops/cases",{"name":"Case","summary":"IC"}).status_code,403)

@@ -18,6 +18,7 @@ from app import tools as abud_tools
 from app.auth import router as auth_router
 from app.highest import router as highest_router, init as highest_init
 from app.highest_live import start_live_worker
+from app.highest_stats import start_stats_worker
 from app.highest_ops import router as ops_router, init as ops_init
 from app.highest_social import router as social_router, init as social_init
 from app.highest_records import router as records_router, init as records_init
@@ -453,6 +454,7 @@ async def startup():
     records_init()
     business_init()
     start_live_worker()
+    start_stats_worker()
     start_notification_worker()
     print("Abud Multi-Scope Memory Database initialized.")
 

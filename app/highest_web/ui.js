@@ -5,7 +5,7 @@ const add=(p,...nodes)=>{p.append(...nodes);return p};
 const panel=(title)=>add(el("section",null,"panel"),el("h2",title));
 const button=(label,fn,secondary=false)=>{let b=el("button",label,secondary?"secondary":"");b.type="button";b.onclick=async()=>{b.disabled=true;try{await fn()}catch(e){showError(e)}finally{b.disabled=false}};return b};
 const link=(label,url)=>{let a=el("a",label);a.href=url;a.target="_blank";a.rel="noopener noreferrer";return a};
-async function api(path,body){let r=await fetch("/highest/api"+path,{credentials:"same-origin",cache:"no-store",...(body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})});let data=await r.json();if(!r.ok){const e=new Error(typeof data.detail==="string"?data.detail:"Invalid request");e.status=r.status;throw e}return data}
+async function api(path,body,method="POST"){let r=await fetch("/highest/api"+path,{credentials:"same-origin",cache:"no-store",...(body===undefined?{}:{method,headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})});let data=await r.json();if(!r.ok){const e=new Error(typeof data.detail==="string"?data.detail:"Invalid request");e.status=r.status;throw e}return data}
 
 async function uploadApi(path,data){
  let response=await fetch("/highest/api"+path,{method:"POST",credentials:"same-origin",cache:"no-store",body:data});
@@ -14,7 +14,7 @@ async function uploadApi(path,data){
  return result
 }
 function showError(e){if(streamSafe)return;let p=document.getElementById("notice");if(p)p.textContent=e.message;else app.prepend(el("p",e.message,"error"))}
-function form(fields,submit,fn){const f=el("form");const inputs={};for(const [key,label,type,opts,value] of fields){let l=el("label",label);let i=el(type==="select"?"select":type==="textarea"?"textarea":"input");i.name=key;i.required=type!=="optional"&&key!=="parent";if(type==="select"){for(const [val,txt] of opts){let o=el("option",txt);o.value=val;i.append(o)}}else if(type!=="textarea"){i.type=type==="password"?"password":type==="number"?"number":"text";if(type==="password"){i.minLength=12;i.maxLength=128;i.autocomplete=key==="confirm"?"new-password":"current-password"}if(key==="username")i.autocomplete="username"}if(value!=null)i.value=value;inputs[key]=i;l.append(i);f.append(l)}let b=el("button",submit);b.type="submit";f.append(b);f.onsubmit=async e=>{e.preventDefault();b.disabled=true;try{await fn(Object.fromEntries(Object.entries(inputs).map(([k,v])=>[k,v.value]))); }catch(err){showError(err)}finally{b.disabled=false}};return f}
+function form(fields,submit,fn){const f=el("form");const inputs={};for(const [key,label,type,opts,value] of fields){let l=el("label",label);let i=el(type==="select"?"select":type==="textarea"?"textarea":"input");i.name=key;i.required=type!=="optional"&&key!=="parent";if(type==="select"){for(const [val,txt] of opts){let o=el("option",txt);o.value=val;i.append(o)}}else if(type!=="textarea"){i.type=type==="password"?"password":type==="number"?"number":type==="datetime-local"?"datetime-local":"text";if(type==="password"){i.minLength=12;i.maxLength=128;i.autocomplete=key==="confirm"?"new-password":"current-password"}if(key==="username")i.autocomplete="username"}if(value!=null)i.value=value;inputs[key]=i;l.append(i);f.append(l)}let b=el("button",submit);b.type="submit";f.append(b);f.onsubmit=async e=>{e.preventDefault();b.disabled=true;try{await fn(Object.fromEntries(Object.entries(inputs).map(([k,v])=>[k,v.value]))); }catch(err){showError(err)}finally{b.disabled=false}};return f}
 let streamSafe=false;try{streamSafe=sessionStorage.getItem("highest_stream_safe")==="1"}catch{};
 let me=null,view=location.pathname.includes("/internal/")?"internal":location.pathname.includes("/admin/")?"admin":"community";
 function auth(register=false){app.replaceChildren();let p=el("section",null,"panel auth");let img=el("img");img.src="/highest/logo.png";img.alt="The Highest";let fields=[["username","Username","text"],["password","Password · minimal 12 karakter","password"]];if(register)fields.unshift(["display_name","Display name","text"]);if(register)fields.push(["confirm","Confirm password","password"]);add(p,img,el("h1",register?"Create your account":"Welcome to Headquarters"),el("p","Independent account · No Discord login","muted"),form(fields,register?"CREATE ACCOUNT":"SIGN IN",async d=>{if(register&&d.password!==d.confirm)throw Error("Password confirmation mismatch");delete d.confirm;await api(register?"/register":"/login",d);await boot()}),button(register?"Already have an account? Sign in":"New here? Create account",()=>auth(!register),true));let notice=el("p",null,"error");notice.id="notice";p.append(notice,link("Back to ABUD","/"));app.append(p)}
@@ -170,7 +170,7 @@ async function operationsCalendarUI(write,level){
   if(calendarMode==="month"){start.setDate(1);start.setDate(start.getDate()-((start.getDay()+6)%7));end.setDate(1);end.setMonth(end.getMonth()+1);end.setDate(end.getDate()+6)}
   else if(calendarMode==="week"){start.setDate(start.getDate()-((start.getDay()+6)%7));end.setDate(start.getDate()+6)}
   else {start.setDate(start.getDate()-180);end.setDate(end.getDate()+365)}
-  const params=new URLSearchParams({start:calIso(start),end:calIso(end)});
+  if(calendarMode==="month")end.setDate(start.getDate()+41);\n  const endBoundary=new Date(end);endBoundary.setHours(23,59,59,999);\n  const params=new URLSearchParams({start:calIso(start),end:calIso(endBoundary)});
   if(division.value)params.set("division",division.value);if(category.value)params.set("category",category.value);if(status.value)params.set("status",status.value);
   const data=await api("/ops/calendar?"+params.toString());
   const oldDivision=division.value,oldCategory=category.value;
@@ -181,7 +181,7 @@ async function operationsCalendarUI(write,level){
   renderEvents(data.events);
  }
  toolbar.append(previous,next,today,month,week,list);
- if(write)toolbar.append(button("＋ New activity",()=>{calendarSelected=new Date();calendarMode="list";load().then(()=>details.append(calendarEventForm(null,level)))},true));
+ if(write)toolbar.append(button("＋ New activity",()=>{calendarSelected=new Date();calendarMode="list";load()},true));
  p.append(toolbar,filters,heading,content,details);await load();
  for(const control of [division,category,status])control.onchange=load;
  return p

@@ -33,8 +33,7 @@ class BusinessTest(unittest.TestCase):
         data={"nonce":nonce,"group_name":"IC Group","direction":direction,"lines":[{"item":self.item,"qty":3}],"vault":self.vault,"treasury":True}
         return self.post(self.u,"/business/orders",data)
     def advance(self,oid):
-        for version,status in enumerate(("confirmed","processing","ready"),1):
-            self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":version,"status":status}).status_code,200)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":1,"status":"ready"}).status_code,200)
     def test_sale_snapshot_and_atomic_completion(self):
         self.assertEqual(self.get(self.v,"/business/orders").status_code,403)
         oid=self.create().json()["id"]
@@ -44,7 +43,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual((order["total"],order["estimated_margin"]),(105,45))
         self.advance(oid)
         path=f"/business/orders/{oid}/status"
-        self.assertEqual(self.post(self.u,path,{"version":4,"status":"completed"}).status_code,409)
+        self.assertEqual(self.post(self.u,path,{"version":2,"status":"completed"}).status_code,409)
         self.assertEqual(self.get(self.u,"/ops/treasury").json()["entries"],[])
         self.post(self.u,"/ops/move",{"kind":"deposit","vault":self.vault,"item":self.item,"qty":5,"note":"Test"})
         self.assertEqual(self.post(self.u,path,{"version":4,"status":"completed"}).status_code,200)
@@ -53,6 +52,12 @@ class BusinessTest(unittest.TestCase):
         ledger=self.get(self.u,"/ops/treasury").json()
         self.assertEqual((ledger["balance"],len(ledger["entries"]),ledger["entries"][0]["amount"]),(0,1,105))
         self.assertEqual(ledger["entries"][0]["state"],"pending")
+        analytics=self.get(self.u,"/business/analytics").json()
+        self.assertEqual(analytics["summary"]["sales_revenue"],105)
+        self.assertEqual(analytics["summary"]["estimated_cogs"],60)
+        self.assertEqual(analytics["summary"]["estimated_gross_profit"],45)
+        self.assertEqual(analytics["flow"]["output_qty"],3)
+        self.assertEqual(analytics["flow"]["valued_output"],105)
     def test_purchase_and_permissions(self):
         oid=self.create("buy").json()["id"];self.advance(oid)
         self.grant("*","none");self.grant("business","write")
@@ -65,3 +70,31 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(self.post(self.u,path,{"version":4,"status":"completed"}).status_code,200)
         self.assertEqual(self.get(self.u,"/ops/inventory").json()["stock"][0]["qty"],3)
         self.assertEqual(self.get(self.u,"/ops/treasury").json()["entries"][0]["amount"],-60)
+
+    def test_three_status_workflow_and_completed_archive(self):
+        payload={"nonce":"workflow-test-nonce-12345","group_name":"Test Group","direction":"sell","lines":[{"item":self.item,"qty":2}]}
+        oid=self.post(self.u,"/business/orders",payload).json()["id"]
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual(order["status"],"pending")
+        for status in ("confirmed","processing","cancelled"):
+            self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":1,"status":status}).status_code,400)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":1,"status":"ready"}).status_code,200)
+        ready=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual(ready["status"],"ready")
+        self.assertEqual(ready["delivery_note"],"Butuh pengantaran")
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        done=self.get(self.u,f"/business/orders/{oid}").json()
+        self.assertEqual(done["order"]["status"],"completed")
+        self.assertIsNotNone(done["order"]["completed_at"])
+        self.assertEqual([x["status"] for x in done["history"]],["pending","ready","completed"])
+        self.assertTrue(any(x["id"]==oid and x["status"]=="completed" for x in self.get(self.u,"/business/orders").json()["orders"]))
+        self.assertEqual(self.get(self.u,"/business/analytics").json()["summary"]["sales_revenue"],70)
+
+    def test_analytics_requires_own_permission(self):
+        self.grant("*","none")
+        self.grant("business","view")
+        self.assertEqual(self.get(self.u,"/business/analytics").status_code,403)
+        self.grant("business_analytics","view")
+        result=self.get(self.u,"/business/analytics").json()
+        self.assertIn("flow",result)
+        self.assertIn("products",result)

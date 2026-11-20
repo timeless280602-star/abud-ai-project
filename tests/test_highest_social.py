@@ -19,7 +19,7 @@ class SocialTest(unittest.TestCase):
     def post(self,c,p,d):return c.post("/highest/api"+p,json=d)
     def get(self,c,p):return c.get("/highest/api"+p)
     def test_native_post_media_tampering_is_blocked_and_audited(self):
-        png=b"\\x89PNG\\r\\n\\x1a\\n"+b"\\x00"*16
+        png=b"\x89PNG\r\n\x1a\n"+b"\x00"*16
         uploaded=self.u.post("/highest/api/social/post/upload",data={"body":"Native post","category":"general"},files={"file":("post.png",png,"image/png")})
         self.assertEqual(uploaded.status_code,200,uploaded.text)
         post_id=uploaded.json()["id"]

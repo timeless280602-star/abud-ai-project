@@ -135,3 +135,15 @@ Known community limitations retained for a future phase:
 - YouTube live polling uses the Data API search endpoint (100 quota units per channel check); size the interval and roster against the project's API quota. TikTok live status requires an operator-supplied HTTPS provider and bearer token; no provider is bundled.
 - The current moderation queue is a pending-submission review queue, not a full trust-and-safety console for already-published content.
 
+
+
+## Community Trust & Safety — implementation
+
+- Added authenticated member reports for published clips, Moments, POVs, Wiki entries and Community Feed posts. Reports require a category and accept optional context; members cannot report their own content.
+- Added one-open-report-per-member/content enforcement, database uniqueness protection, and per-member rate limiting.
+- Added a moderator-only report queue with reporter identity, content author, content preview, category and report context.
+- Moderators can dismiss reports or remove content from public views. Removed content is soft-hidden (not deleted) and can be restored by an administrator.
+- Report decisions are transactional, audited, and protected against duplicate decisions. Moderators cannot remove or restore their own content.
+- Members can view their own report history and resolution notes in Creator Studio.
+- Added automated tests for duplicate reports, invalid categories, self-report prevention, queue attribution, takedown, restore, dismissal and closed-report behavior.
+- This is an initial moderation workflow, not a full appeal/strike system. It does not yet provide automatic notifications, member appeals, moderator assignment/SLA, or automated content scanning.

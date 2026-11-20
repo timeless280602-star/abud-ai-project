@@ -1024,10 +1024,6 @@ async def on_raw_bulk_message_delete(payload):
 
 
 @client.event
-async def on_disconnect():
-
-
-@client.event
 async def on_resumed():
     await ticket_manager.start()
     await onboarding_manager.start()

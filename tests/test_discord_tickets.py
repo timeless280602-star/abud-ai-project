@@ -592,7 +592,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.panel_channel.send.assert_awaited_once()
         await client.close()
 
-    async def test_ticket_messages_do_not_enter_ai_music_or_leveling(self):
+    async def test_ticket_messages_do_not_enter_ai_or_leveling(self):
         _row, channel = await self.opened()
         with patch.dict(
             os.environ, {"DISCORD_TOKEN": "offline", "ABUD_INTERNAL_API_KEY": "offline"}
@@ -606,12 +606,10 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "ticket_manager", self.manager),
             patch.object(bot.leveling_manager, "message", new=AsyncMock()) as xp,
-            patch.object(bot, "handle_music_message", new=AsyncMock()) as music,
             patch.object(bot, "ask_abud") as ask,
         ):
             await bot.on_message(message)
         xp.assert_not_awaited()
-        music.assert_not_awaited()
         ask.assert_not_called()
         chat_command = SimpleNamespace(name="chat", root_parent=None)
         interaction = self.context(channel=channel)

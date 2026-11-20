@@ -215,6 +215,7 @@ function Login({ error }) {
           </>}
           <label className="remember-row"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)}/> <span>Ingat saya di perangkat ini</span></label>
           <a className="login-button discord" href="/discord/invite" target="_blank" rel="noopener noreferrer"><Bot size={20}/><span>Invite ABUD to your server</span><ArrowUpRight size={16}/></a>
+          <a className="login-button discord" href="/highest/" target="_blank" rel="noopener noreferrer"><ShieldCheck size={20}/><span>THE HIGHEST HQ · Community &amp; Headquarters</span><ArrowUpRight size={16}/></a>
           <div className="login-foot"><ShieldCheck size={13}/> Identity verification enabled <span>•</span> Session protected</div>
         </div>
       </div>
@@ -2569,6 +2570,7 @@ function App() {
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-user"><div className="user-avatar">{user.avatar_url ? <img src={user.avatar_url} alt="Profile"/> : (user.display_name || 'A').slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{user.display_name || 'Operator'}</strong><small>{user.is_creator ? 'ROOT AUTHORITY' : 'AUTHORIZED USER'}</small></div><button onClick={logout} title="Sign out"><LogOut size={16}/></button></div>
+          <a href="/highest/" target="_blank" rel="noopener noreferrer" style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',marginTop:10,border:'1px solid #c9a86a',borderRadius:8,color:'#e0ba77',textDecoration:'none'}}><ShieldCheck size={17}/><span>THE HIGHEST HQ</span><ArrowUpRight size={15}/></a>
           
         </div>
       </aside>

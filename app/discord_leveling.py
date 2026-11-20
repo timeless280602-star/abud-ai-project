@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 
 from app.level_card import rank_card
-from app.leveling import CHAT_CAP, VOICE_CAP, LevelingError, LevelStore, level
+from app.leveling import CHAT_CAP, LevelingError, LevelStore, level
 
 log = logging.getLogger(__name__)
 
@@ -22,8 +22,6 @@ class Leveling:
         self.enabled = os.getenv("ABUD_LEVELING_ENABLED", "false").lower() == "true"
         self.path = os.getenv("ABUD_LEVELING_DB", "/app/leveling/levels.db")
         self.store = None
-        self.task = None
-        self.voice_since = {}
         self.last_error = None
 
     def require(self, guild=None):
@@ -42,26 +40,7 @@ class Leveling:
                 self.last_error = type(error).__name__
                 log.warning("Leveling startup failed (%s)", type(error).__name__)
                 return
-        self.suspend()
-        for guild in self.client.guilds:
-            self.sync_voice(guild)
-        if self.task is None:
-            self.task = asyncio.create_task(self.watch(), name="community-leveling")
-
-    def suspend(self):
-        self.voice_since.clear()
-
-    def forget(self, guild_id):
-        self.voice_since = {
-            key: value for key, value in self.voice_since.items() if key[0] != guild_id
-        }
-
     async def close(self):
-        if self.task:
-            self.task.cancel()
-            await asyncio.gather(self.task, return_exceptions=True)
-        self.task = None
-        self.suspend()
         if self.store:
             self.store.close()
             self.store = None
@@ -95,99 +74,9 @@ class Leveling:
             )
             if award and award.leveled:
                 await self.announce(message.guild, message.author, award)
-        except Exception as error:  # noqa: BLE001 - leveling must not interrupt chat/music
+        except Exception as error:  # noqa: BLE001 - leveling must not interrupt chat/AI
             self.last_error = type(error).__name__
             log.warning("Chat XP failed (%s)", type(error).__name__)
-
-    def eligible(self, guild):
-        if not self.store or getattr(guild, "unavailable", False):
-            return {}
-        config = self.store.config(guild.id)
-        if not (config["enabled"] and config["voice"]):
-            return {}
-        excluded = set(self.store.excludes(guild.id))
-        eligible = {}
-        for channel in guild.voice_channels:
-            if (
-                channel.id == getattr(guild.afk_channel, "id", None)
-                or channel.id in excluded
-            ):
-                continue
-            members = []
-            for member in channel.members:
-                state = member.voice
-                if (
-                    member.bot
-                    or not state
-                    or not state.channel
-                    or state.channel.id != channel.id
-                    or state.self_mute
-                    or state.mute
-                    or state.self_deaf
-                    or state.deaf
-                    or state.afk
-                    or state.suppress
-                ):
-                    continue
-                members.append(member)
-            if len(members) >= 2:
-                eligible.update(
-                    {(guild.id, member.id, channel.id): member for member in members}
-                )
-        return eligible
-
-    def sync_voice(self, guild):
-        if not self.enabled or self.store is None:
-            return {}
-        try:
-            eligible = self.eligible(guild)
-        except Exception as error:  # noqa: BLE001 - optional XP cannot break music/AI voice events
-            self.forget(guild.id)
-            self.last_error = type(error).__name__
-            log.warning("Leveling voice eligibility failed (%s)", type(error).__name__)
-            return {}
-        now = time.monotonic()
-        self.voice_since = {
-            key: value
-            for key, value in self.voice_since.items()
-            if key[0] != guild.id or key in eligible
-        }
-        for key in eligible:
-            self.voice_since.setdefault(key, now)
-        return eligible
-
-    async def tick(self):
-        if not self.client.is_ready():
-            self.suspend()
-            return
-        for guild in self.client.guilds:
-            try:
-                eligible = self.sync_voice(guild)
-                now = time.monotonic()
-                for key, member in eligible.items():
-                    since = self.voice_since.get(key)
-                    if since is None or now - since < 60:
-                        continue
-                    # Award only one observed eligible minute; never backfill downtime.
-                    self.voice_since[key] = now
-                    award = self.store.award(
-                        guild.id,
-                        member.id,
-                        member.display_name,
-                        "voice",
-                        time.time(),
-                        amount=5,
-                    )
-                    if award and award.leveled:
-                        await self.announce(guild, member, award)
-            except Exception as error:  # noqa: BLE001 - one unavailable guild must not stop other guilds
-                self.last_error = type(error).__name__
-                log.warning("Voice XP failed (%s)", type(error).__name__)
-
-    async def watch(self):
-        while True:
-            await asyncio.sleep(15)
-            await self.tick()
 
     async def announce(self, guild, member, award):
         channel_id = self.store.config(guild.id)["announcement"]
@@ -251,7 +140,6 @@ def install_leveling_commands(tree, manager):
             target.display_name,
             row["xp"],
             row["chat_xp"],
-            row["voice_xp"],
             position,
         )
         await interaction.followup.send(
@@ -306,7 +194,6 @@ def install_leveling_commands(tree, manager):
         interaction: discord.Interaction,
         enabled: bool,
         chat: bool | None = None,
-        voice: bool | None = None,
         announcement: discord.TextChannel | None = None,
         notify: bool | None = None,
     ):
@@ -334,11 +221,9 @@ def install_leveling_commands(tree, manager):
             interaction.guild_id,
             enabled,
             chat if chat is not None else config["chat"],
-            voice if voice is not None else config["voice"],
+            False,
             channel_id,
         )
-        manager.forget(interaction.guild_id)
-        manager.sync_voice(interaction.guild)
         await interaction.followup.send(
             "Pengaturan leveling tersimpan. Level dan XP tidak memberikan role apa pun.",
             ephemeral=True,
@@ -346,17 +231,16 @@ def install_leveling_commands(tree, manager):
 
     @group.command(
         name="exclude",
-        description="Kecualikan satu text/voice channel dari perolehan XP",
+        description="Kecualikan satu text channel dari perolehan XP",
     )
     async def exclude(
         interaction: discord.Interaction,
-        channel: discord.TextChannel | discord.VoiceChannel,
+        channel: discord.TextChannel,
     ):
         await guard(interaction, admin=True)
         if channel.guild.id != interaction.guild_id:
             raise LevelingError("Pilih channel dari server ini.")
         manager.store.exclude(interaction.guild_id, channel.id, True)
-        manager.sync_voice(interaction.guild)
         await interaction.followup.send("Channel dikecualikan dari XP.", ephemeral=True)
 
     @group.command(
@@ -365,13 +249,12 @@ def install_leveling_commands(tree, manager):
     )
     async def include(
         interaction: discord.Interaction,
-        channel: discord.TextChannel | discord.VoiceChannel,
+        channel: discord.TextChannel,
     ):
         await guard(interaction, admin=True)
         if channel.guild.id != interaction.guild_id:
             raise LevelingError("Pilih channel dari server ini.")
         manager.store.exclude(interaction.guild_id, channel.id, False)
-        manager.sync_voice(interaction.guild)
         await interaction.followup.send(
             "Channel diizinkan kembali mendapat XP.", ephemeral=True
         )
@@ -384,8 +267,8 @@ def install_leveling_commands(tree, manager):
         await guard(interaction, admin=True)
         settings = manager.store.config(interaction.guild_id)
         description = (
-            f"Leveling: {'aktif' if settings['enabled'] else 'jeda'}\nChat XP: {bool(settings['chat'])} · Voice XP: {bool(settings['voice'])}\n"
-            f"Chat: 15–25 XP/menit, maks {CHAT_CAP}/hari\nVoice: 5 XP/menit, maks {VOICE_CAP}/hari\n"
+            f"Leveling: {'aktif' if settings['enabled'] else 'jeda'}\nChat XP: {bool(settings['chat'])}\n"
+            f"Chat: 15–25 XP/menit, maks {CHAT_CAP}/hari\n"
             f"Notifikasi: {'<#' + str(settings['announcement']) + '>' if settings['announcement'] else 'mati'}\nBatas harian mengikuti WIB. Tidak ada role hadiah."
         )
         excluded = manager.store.excludes(interaction.guild_id)

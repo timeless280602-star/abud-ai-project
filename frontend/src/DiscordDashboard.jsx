@@ -1,5 +1,5 @@
 import React, {useEffect, useState} from 'react';
-import {Bot, Trophy, Ticket, Hand, Users, Bell, Mic, Music, RefreshCw, ChevronRight} from 'lucide-react';
+import {Bot, Trophy, Ticket, Hand, Users, Bell, RefreshCw, ChevronRight} from 'lucide-react';
 import './discord-dashboard.css';
 
 const modules = [
@@ -8,8 +8,6 @@ const modules = [
  ['welcome', 'Welcome', 'Sambut anggota baru', Hand],
  ['reaction', 'Reaction Roles', 'Role pilihan melalui emoji', Users],
  ['notifications', 'Notifikasi kreator', 'YouTube dan TikTok', Bell],
- ['voice', 'AI Voice', 'Percakapan di voice channel', Mic],
- ['music', 'Music Player', 'Putar musik di Discord', Music]
 ];
 const linked = {welcome:'onboarding',reaction:'onboarding'};
 const btn = (text, fn, disabled=false) => <button type="button" disabled={disabled} onClick={fn}>{text}</button>;
@@ -23,8 +21,8 @@ function useFields(initial){const [v,set]=useState(initial);return [v,(k,x)=>set
 function Section({title,children}){return <section className="dd-card"><h2>{title}</h2>{children}</section>}
 function Level({s,run}) {
  const [v,set]=useFields(s.leveling), [channel,setChannel]=useState('');
- const all=s.channels.filter(c=>c.type!=='category'), text=all.filter(c=>c.type==='text');
- return <><Section title="Pengaturan XP"><Toggle label="Aktifkan Leveling" value={v.enabled} onChange={x=>set('enabled',x)}/><Toggle label="XP dari chat" value={v.chat} onChange={x=>set('chat',x)}/><Toggle label="XP dari voice channel" value={v.voice} onChange={x=>set('voice',x)}/><Select label="Channel pengumuman level-up (opsional)" value={v.announcement} change={x=>set('announcement',x)} options={text} optional/><p className="dd-note">Anti-spam dan batas XP sudah ditentukan oleh bot. Tidak ada role hadiah otomatis.</p>{btn('Simpan pengaturan',()=>run('leveling.save',{...bools(v,['enabled','chat','voice']),announcement:v.announcement||null}))}</Section><Section title="Channel yang tidak mendapatkan XP"><Select label="Pilih channel" value={channel} change={setChannel} options={all}/>{btn('Kecualikan channel',()=>run('leveling.exclude',{channel,excluded:true}),!channel)}{v.excluded.map(id=><div className="dd-line" key={id}><span>{all.find(c=>c.id===id)?.name||'Channel '+id}</span>{btn('Izinkan XP',()=>run('leveling.exclude',{channel:id,excluded:false}))}</div>)}</Section></>
+ const all=s.channels.filter(c=>c.type==='text'), text=all;
+ return <><Section title="Pengaturan XP"><Toggle label="Aktifkan Leveling" value={v.enabled} onChange={x=>set('enabled',x)}/><Toggle label="XP dari chat" value={v.chat} onChange={x=>set('chat',x)}/><Select label="Channel pengumuman level-up (opsional)" value={v.announcement} change={x=>set('announcement',x)} options={text} optional/><p className="dd-note">Anti-spam dan batas XP sudah ditentukan oleh bot. Tidak ada role hadiah otomatis.</p>{btn('Simpan pengaturan',()=>run('leveling.save',{...{enabled:v.enabled,chat:v.chat,voice:false},announcement:v.announcement||null}))}</Section><Section title="Channel yang tidak mendapatkan XP"><Select label="Pilih channel" value={channel} change={setChannel} options={all}/>{btn('Kecualikan channel',()=>run('leveling.exclude',{channel,excluded:true}),!channel)}{v.excluded.map(id=><div className="dd-line" key={id}><span>{all.find(c=>c.id===id)?.name||'Channel '+id}</span>{btn('Izinkan XP',()=>run('leveling.exclude',{channel:id,excluded:false}))}</div>)}</Section></>
 }
 function Welcome({s,run}) {
  const [v,set]=useFields(s.welcome), text=s.channels.filter(c=>c.type==='text');
@@ -84,7 +82,6 @@ function Notifications({s,run}){
  const [v,set]=useFields({url:'',destination:'',events:'both',ping:'none'});
  return <><Section title="Tambahkan kreator YouTube"><p className="dd-note">YouTube: {s.providers.youtube?'API key dikonfigurasi':'belum dikonfigurasi'}. TikTok: {s.providers.tiktok?'webhook dikonfigurasi; gunakan /notify add untuk pendaftaran':'provider belum terhubung'}.</p><Text label="Link channel atau @handle YouTube" value={v.url} change={x=>set('url',x)} max={500}/><NotifyFields v={v} set={set} text={s.channels.filter(c=>c.type==='text')}/>{btn('Tambahkan langganan',()=>run('notify.add',v,v.ping!=='none'),!v.url||!v.destination||!s.providers.youtube)}</Section>{s.notifications.map(row=><Subscription row={row} key={row.id} s={s} run={run}/>)}</>
 }
-function VoiceMusic({s,kind}){return <Section title={kind==='voice'?'AI Voice':'Music Player'}><p>{s.sessions[kind]?'Sesi sedang aktif di server ini.':'Tidak ada sesi aktif di server ini.'}</p><p className="dd-note">Fitur ini diaktifkan secara global oleh pengelola ABUD. Tidak ada pengaturan permanen per server saat ini. Kontrol sesi tetap melalui Discord.</p><div className="dd-preview">{kind==='voice'?<><p><code>/join</code> — masuk voice channel</p><p><code>/listen</code> — atur persetujuan audio sendiri</p><p><code>/voice-status</code> — status sesi</p><p><code>/leave</code> — keluar</p></>:<><p><code>/play query:judul lagu</code> — putar lagu</p><p><code>/music queue</code> — antrean</p><p><code>/music volume</code> — volume</p><p><code>/music leave</code> — keluar</p></>}</div><p>AI Voice dan Music tidak dapat aktif dalam voice channel server yang sama secara bersamaan.</p></Section>}
 async function request(path, data) {
  const response=await fetch(path,{credentials:'same-origin',...(data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{})});
  let body;try{body=await response.json()}catch{throw new Error('Server tidak dapat memberikan respons. Muat ulang.')}
@@ -107,7 +104,7 @@ export default function DiscordDashboard(){
   finally{setBusy(false)}
  }
  const current=modules.find(m=>m[0]===tab), available=s?.available[linked[tab]||tab];
- const status=key=>{if(!s.available[linked[key]||key])return 'Tidak tersedia';if(key==='reaction')return s.panels.some(p=>p.enabled)?'Aktif':'Belum ada panel aktif';if(key==='notifications')return s.notifications.some(n=>n.enabled)?'Aktif':'Belum ada langganan aktif';if(key==='voice'||key==='music')return 'Tersedia';return s[key]?.enabled?'Aktif':'Belum aktif'};
+ const status=key=>{if(!s.available[linked[key]||key])return 'Tidak tersedia';if(key==='reaction')return s.panels.some(p=>p.enabled)?'Aktif':'Belum ada panel aktif';if(key==='notifications')return s.notifications.some(n=>n.enabled)?'Aktif':'Belum ada langganan aktif';return s[key]?.enabled?'Aktif':'Belum aktif'};
  return <main className="dd-page">
   <header className="dd-heading"><div><div className="dd-kicker"><Bot size={18}/> DISCORD BOT</div><h1>Kelola bot Discord</h1><p>Pilih server, pilih fitur, lalu simpan. Tidak perlu menghafal slash command.</p></div></header>
   <section className="dd-invite"><div><h2>Tambahkan ABUD ke server kamu</h2><p>Pilih server di Discord, izinkan akses, lalu kembali ke sini untuk mengatur bot.</p></div><div className="dd-actions"><a className="dd-invite-link" href="/discord/invite" target="_blank" rel="noopener noreferrer"><Bot size={18}/> Invite ABUD to your server</a>{btn('Segarkan daftar server',()=>window.location.reload(),busy)}</div></section>
@@ -116,7 +113,7 @@ export default function DiscordDashboard(){
   {busy&&<p role="status">Memproses…</p>}
   {s&&<><div className="dd-tabs"><button type="button" aria-current={tab==='overview'?'page':undefined} onClick={()=>setTab('overview')} disabled={busy}>Ringkasan</button>{modules.map(([key,title])=><button key={key} type="button" aria-current={tab===key?'page':undefined} disabled={busy} onClick={()=>{setTab(key);setNotice('');setError('')}}>{title}</button>)}</div>
   {tab==='overview'?<div className="dd-grid">{modules.map(([key,title,desc,Icon])=><button key={key} disabled={busy} type="button" className="dd-module" onClick={()=>setTab(key)}><Icon size={25}/><span><strong>{title}</strong><small>{desc}</small><small className="dd-status">{status(key)}</small></span><ChevronRight size={18}/></button>)}</div>:<><h2 className="dd-subheading">{current?.[1]}</h2>{!available?<Section title="Fitur belum tersedia"><p>Hubungi pengelola ABUD untuk mengaktifkan layanan ini.</p></Section>:<fieldset disabled={busy} key={guild+'-'+tab+(tab==='reaction'?'':'-'+version)}>
-  {tab==='leveling'?<Level s={s} run={run}/>:tab==='welcome'?<Welcome s={s} run={run}/>:tab==='ticket'?<Tickets s={s} run={run}/>:tab==='reaction'?<Reactions s={{...s,revision:version}} run={run}/>:tab==='notifications'?<Notifications s={s} run={run}/>:<VoiceMusic s={s} kind={tab}/>}
+  {tab==='leveling'?<Level s={s} run={run}/>:tab==='welcome'?<Welcome s={s} run={run}/>:tab==='ticket'?<Tickets s={s} run={run}/>:tab==='reaction'?<Reactions s={{...s,revision:version}} run={run}/>:tab==='notifications'?<Notifications s={s} run={run}/> :null}
   </fieldset>}</>}
   </>}
  </main>

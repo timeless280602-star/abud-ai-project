@@ -1,4 +1,4 @@
-"""Leveling persistence, anti-farming, voice eligibility and role-free UI contracts."""
+"""Leveling persistence, anti-farming and role-free UI contracts."""
 
 import tempfile
 import unittest
@@ -15,7 +15,6 @@ from app.discord_leveling import Leveling, install_leveling_commands
 from app.level_card import rank_card
 from app.leveling import (
     CHAT_CAP,
-    VOICE_CAP,
     Award,
     LevelingError,
     LevelStore,
@@ -82,16 +81,6 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(all(len(r[0]) == 64 for r in hashes))
         self.assertEqual(self.store.member(1, 10)["xp"], 60)
 
-    def test_chat_and_voice_have_independent_cooldowns_and_caps(self):
-        for i in range(150):
-            self.chat(BASE + i * 60, f"Pembahasan komunitas nomor {i}", amount=25)
-            self.store.award(1, 10, "Member", "voice", BASE + i * 60, amount=5)
-        row = self.store.member(1, 10)
-        self.assertEqual(
-            (row["chat_xp"], row["voice_xp"], row["xp"]),
-            (CHAT_CAP, VOICE_CAP, CHAT_CAP + VOICE_CAP),
-        )
-
     def test_daily_cap_resets_at_midnight_wib_and_award_is_clipped(self):
         near_midnight = datetime.fromisoformat("2026-11-18T16:59:00+00:00").timestamp()
         self.chat(near_midnight)
@@ -117,12 +106,14 @@ class StoreTests(unittest.TestCase):
             )
         )
         self.chat()
-        self.store.configure(1, False, True, True, None)
+        self.store.configure(1, False, True, False, None)
         self.assertIsNone(self.chat(BASE + 61, "Bincang komunitas saat jeda"))
         self.store.configure(1, True, False, True, None)
+        self.assertFalse(self.store.config(1)["voice"])
         self.assertIsNone(self.chat(BASE + 122, "Bincang komunitas chat mati"))
-        self.assertIsNotNone(self.store.award(1, 10, "X", "voice", BASE + 122))
-        self.assertEqual(self.store.member(1, 10)["xp"], 25)
+        with self.assertRaisesRegex(ValueError, "Only chat XP"):
+            self.store.award(1, 10, "X", "voice", BASE + 122)
+        self.assertEqual(self.store.member(1, 10)["xp"], 20)
 
     def test_stable_tie_ranking_is_isolated_by_guild(self):
         self.chat(member=20)
@@ -141,30 +132,18 @@ class StoreTests(unittest.TestCase):
         )
 
     def test_rank_card_is_a_real_bounded_png_with_long_unicode_name(self):
-        result = rank_card("🎮 Cindy Astuti 日本語 " * 15, 550, 450, 100, 3)
+        result = rank_card("🎮 Cindy Astuti 日本語 " * 15, 550, 450, 3)
         with Image.open(result) as image:
             self.assertEqual(image.format, "PNG")
             self.assertEqual(image.size, (960, 300))
         self.assertLess(len(result.getvalue()), 200000)
 
 
-def voice_member(ident, channel, **flags):
-    state = SimpleNamespace(
-        channel=channel,
-        self_mute=False,
-        mute=False,
-        self_deaf=False,
-        deaf=False,
-        afk=False,
-        suppress=False,
-    )
-    for name, value in flags.items():
-        setattr(state, name, value)
+def fake_member(ident):
     return SimpleNamespace(
         id=ident,
         display_name=f"Member {ident}",
         bot=False,
-        voice=state,
         add_roles=AsyncMock(),
         remove_roles=AsyncMock(),
         edit=AsyncMock(),
@@ -176,20 +155,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.guild = Mock(spec=discord.Guild)
         self.guild.id = 1
-        self.guild.unavailable = False
-        self.guild.afk_channel = None
-        self.channel = Mock(spec=discord.VoiceChannel)
-        self.channel.id = 100
-        self.first = voice_member(10, self.channel)
-        self.second = voice_member(20, self.channel)
-        self.channel.members = [self.first, self.second]
-        self.guild.voice_channels = [self.channel]
+        self.first = fake_member(10)
         self.client = Mock(guilds=[self.guild], is_ready=Mock(return_value=True))
         self.manager = Leveling(self.client)
         self.manager.enabled = True
         self.manager.path = str(Path(self.temp.name) / "db")
         self.manager.store = LevelStore(self.manager.path)
-        self.manager.store.configure(1, True, True, True, None)
+        self.manager.store.configure(1, True, True, False, None)
 
     async def asyncTearDown(self):
         await self.manager.close()
@@ -212,7 +184,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(self.manager.store.member(1, 10)["chat_xp"], 0)
         for kind in ["bot", "webhook", "dm", "system"]:
             message = self.message("Percakapan berbeda yang panjang")
-            message.author = voice_member(30, self.channel)
+            message.author = fake_member(30)
             if kind == "bot":
                 message.author.bot = True
             if kind == "webhook":
@@ -229,49 +201,6 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         message = self.message()
         message.channel = SimpleNamespace(id=201, parent_id=200)
         await self.manager.message(message)
-        self.assertEqual(self.manager.store.member(1, 10)["xp"], 0)
-
-    async def test_voice_requires_two_unmuted_humans_and_ignores_afk_or_excluded_channel(
-        self,
-    ):
-        self.assertEqual(len(self.manager.eligible(self.guild)), 2)
-        for flag in ["self_mute", "mute", "self_deaf", "deaf", "afk", "suppress"]:
-            setattr(self.second.voice, flag, True)
-            self.assertEqual(self.manager.eligible(self.guild), {})
-            setattr(self.second.voice, flag, False)
-        self.second.bot = True
-        self.assertEqual(self.manager.eligible(self.guild), {})
-        self.second.bot = False
-        self.guild.afk_channel = self.channel
-        self.assertEqual(self.manager.eligible(self.guild), {})
-        self.guild.afk_channel = None
-        self.manager.store.exclude(1, 100, True)
-        self.assertEqual(self.manager.eligible(self.guild), {})
-
-    async def test_voice_observed_minute_no_backfill_and_no_double_tick(self):
-        self.manager.sync_voice(self.guild)
-        for key in self.manager.voice_since:
-            self.manager.voice_since[key] -= (
-                600  # delayed event loop earns one minute only
-            )
-        await self.manager.tick()
-        self.assertEqual(self.manager.store.member(1, 10)["voice_xp"], 5)
-        self.assertEqual(self.manager.store.member(1, 20)["voice_xp"], 5)
-        await self.manager.tick()
-        self.assertEqual(self.manager.store.member(1, 10)["voice_xp"], 5)
-
-    async def test_voice_eligibility_break_and_reconnect_reset_continuity(self):
-        self.manager.sync_voice(self.guild)
-        self.second.voice.self_mute = True
-        self.manager.sync_voice(self.guild)
-        self.assertEqual(self.manager.voice_since, {})
-        self.second.voice.self_mute = False
-        self.manager.sync_voice(self.guild)
-        self.client.is_ready.return_value = False
-        await self.manager.tick()
-        self.assertEqual(self.manager.voice_since, {})
-        self.client.is_ready.return_value = True
-        await self.manager.tick()
         self.assertEqual(self.manager.store.member(1, 10)["xp"], 0)
 
     async def test_level_notice_is_opt_in_never_pings_and_never_changes_roles(self):
@@ -319,16 +248,15 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def test_lifecycle_start_reuses_worker_and_restart_keeps_settings(self):
+    async def test_lifecycle_start_and_restart_preserve_settings(self):
+        first_store = self.manager.store
         await self.manager.start()
-        first_task = self.manager.task
-        await self.manager.start()
-        self.assertIs(self.manager.task, first_task)
+        self.assertIs(self.manager.store, first_store)
         await self.manager.close()
-        self.assertTrue(first_task.cancelled())
+        self.assertIsNone(self.manager.store)
         await self.manager.start()
         self.assertTrue(self.manager.store.config(1)["enabled"])
-        self.assertIsNot(self.manager.task, first_task)
+        self.assertIsNot(self.manager.store, first_store)
 
     async def test_admin_setup_preserves_options_and_notification_permission_is_validated(
         self,
@@ -346,7 +274,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         setup = tree.get_command("leveling").get_command("setup")
         await setup.callback(interaction, True, chat=False)
         self.assertFalse(self.manager.store.config(1)["chat"])
-        self.assertTrue(self.manager.store.config(1)["voice"])
+        self.assertFalse(self.manager.store.config(1)["voice"])
         destination = Mock(spec=discord.TextChannel)
         destination.id = 500
         destination.permissions_for.return_value = SimpleNamespace(
@@ -398,26 +326,6 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.first.add_roles.assert_not_awaited()
         self.first.remove_roles.assert_not_awaited()
         await client.close()
-
-    async def test_optional_module_errors_do_not_break_voice_hook_or_create_worker(
-        self,
-    ):
-        with patch.object(
-            self.manager.store, "config", side_effect=RuntimeError("private db info")
-        ):
-            with self.assertLogs("app.discord_leveling", level="WARNING") as logs:
-                self.assertEqual(self.manager.sync_voice(self.guild), {})
-            self.assertNotIn("private db info", " ".join(logs.output))
-        await self.manager.close()
-        with (
-            patch(
-                "app.discord_leveling.LevelStore", side_effect=OSError("private path")
-            ),
-            self.assertLogs("app.discord_leveling", level="WARNING"),
-        ):
-            await self.manager.start()
-        self.assertIsNone(self.manager.store)
-        self.assertIsNone(self.manager.task)
 
     async def test_commands_register_admin_controls_and_no_role_commands(self):
         client = discord.Client(intents=discord.Intents.none())

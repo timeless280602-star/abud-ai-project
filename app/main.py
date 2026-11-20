@@ -4,7 +4,6 @@ import re
 import json
 import urllib.request
 import urllib.error
-from typing import Literal
 
 from datetime import datetime, timedelta, timezone
 import hmac
@@ -18,6 +17,14 @@ from app import auth as dashboard_auth
 from app import tools as abud_tools
 from app.memory_review import review_meaning
 from app.auth import router as auth_router
+from app.highest import router as highest_router, init as highest_init
+from app.highest_live import start_live_worker
+from app.highest_stats import start_stats_worker
+from app.highest_ops import router as ops_router, init as ops_init
+from app.highest_social import router as social_router, init as social_init
+from app.highest_records import router as records_router, init as records_init
+from app.highest_business import router as business_router, init as business_init
+from app.highest_notifications import start_notification_worker
 from app import improvement, research, web_canva, web_chat, web_projects, web_discord
 from app.skills.engine import get_relevant_skills
 
@@ -45,6 +52,11 @@ app.include_router(web_canva.router)
 app.include_router(web_projects.router)
 app.include_router(improvement.router)
 app.include_router(web_discord.router)
+app.include_router(highest_router)
+app.include_router(ops_router)
+app.include_router(social_router)
+app.include_router(records_router)
+app.include_router(business_router)
 
 @app.exception_handler(database.ArchivedMemoryError)
 async def archived_memory_conflict(request, error):
@@ -87,6 +99,8 @@ async def require_internal_api_key(request: Request, call_next):
         or request.url.path.startswith("/profile-avatars/")
         or request.url.path in ("/", "/health", "/favicon.svg")
         or request.url.path.startswith("/assets/")
+        or request.url.path == "/highest"
+        or request.url.path.startswith("/highest/")
         or request.url.path in public_auth_paths
     ):
         return await call_next(request)
@@ -322,7 +336,6 @@ class ChatRequest(BaseModel):
     can_manage_guild_memory: bool = False
     mentioned_users: list[dict] = Field(default_factory=list)
     mentioned_roles: list[dict] = Field(default_factory=list)
-    response_mode: Literal["text", "voice"] = "text"
 
 
 class AutoSaveRequest(ChatRequest):
@@ -455,6 +468,14 @@ def internal_guild_sync(payload: InternalGuildSyncRequest):
 async def startup():
     database.init_database()
     web_chat.init_schema()
+    highest_init()
+    ops_init()
+    social_init()
+    records_init()
+    business_init()
+    start_live_worker()
+    start_stats_worker()
+    start_notification_worker()
     print("Abud Multi-Scope Memory Database initialized.")
 
 
@@ -1212,17 +1233,6 @@ def chat(request: ChatRequest):
         }
     ]
 
-    if request.response_mode == "voice":
-        messages[0]["content"] += (
-            "\n\nMODE VOICE CHANNEL: Jawaban akan dibacakan kepada anggota channel. "
-            "Jawab ringkas dalam 1–3 kalimat natural, sesuai bahasa pembicara. "
-            "Hindari Markdown, tabel, kode, URL, promosi profil, dan catatan internal. "
-            "Jangan mengaku sudah mengirim teks atau melakukan ping melalui suara. "
-            "Jika tujuan permintaan belum jelas, tanyakan satu hal yang diperlukan. "
-            "Jangan mengungkap Personal Memory yang tidak diminta dalam channel bersama. "
-            "Jika transkrip tidak jelas, minta pembicara mengulangi tanpa menebak."
-        )
-
     # GLOBAL MEMORY: berlaku untuk semua pengguna dan server.
     global_memories = database.get_global_memories(limit=100)
 
@@ -1442,9 +1452,6 @@ def chat(request: ChatRequest):
         "temperature": 0.7,
         "messages": messages
     }
-
-    if request.response_mode == "voice":
-        payload["max_tokens"] = 350
 
     available_tools = list(abud_tools.GENERAL_TOOLS)
 

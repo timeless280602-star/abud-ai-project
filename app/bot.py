@@ -10,11 +10,7 @@ import discord
 from discord import app_commands
 from aiohttp import web
 
-from app.discord_voice import DiscordVoice, install_voice_commands
 from app.discord_notifications import Notifications, install_notification_commands
-from app.discord_music import Music
-from app.music_commands import install_music_commands
-from app.music_chat import handle_music_message
 from app.discord_leveling import Leveling, install_leveling_commands
 from app.discord_onboarding import Onboarding
 from app.onboarding_commands import install_onboarding_commands
@@ -47,7 +43,6 @@ if not INTERNAL_API_KEY:
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
 intents.reactions = True
 intents.members = os.getenv("ABUD_ONBOARDING_ENABLED", "false").lower() == "true"
 
@@ -56,21 +51,15 @@ class AbudClient(discord.Client):
     async def close(self):
         try:
             try:
-                try:
-                    try:
-                        try:
-                            await ticket_manager.close()
-                        finally:
-                            await onboarding_manager.close()
-                    finally:
-                        await leveling_manager.close()
-                finally:
-                    await notification_manager.close()
+                await ticket_manager.close()
             finally:
                 try:
-                    await music_manager.close()
+                    await onboarding_manager.close()
                 finally:
-                    await voice_manager.close()
+                    try:
+                        await leveling_manager.close()
+                    finally:
+                        await notification_manager.close()
         finally:
             try:
                 runner = getattr(self, "_verification_gateway_runner", None)
@@ -98,12 +87,8 @@ class AbudCommandTree(app_commands.CommandTree):
 
 
 tree = AbudCommandTree(client)
-voice_manager = DiscordVoice(client, API_URL, INTERNAL_API_KEY)
-install_voice_commands(tree, voice_manager)
 notification_manager = Notifications(client)
 install_notification_commands(tree, notification_manager)
-music_manager = Music(client, voice_manager)
-install_music_commands(tree, music_manager)
 leveling_manager = Leveling(client)
 install_leveling_commands(tree, leveling_manager)
 onboarding_manager = Onboarding(client)
@@ -710,18 +695,6 @@ async def help_command(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="Voice channel",
-        value=(
-            "`/join` masuk; `/listen aktif:True` aktifkan suaramu; "
-            "`/listen aktif:False` berhenti didengar; `/stop` hentikan jawaban; "
-            "`/voice-status` status; `/leave` keluar. "
-            "Awali setiap pertanyaan dengan ‘Abud’, maksimal 12 detik. "
-            "Pembuka sesi atau pengelola server dapat menutup sesi."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
         name="Hak akses Memory",
         value=(
             "Personal Memory hanya bisa dikelola pemilik akun. "
@@ -874,7 +847,7 @@ async def start_verification_gateway():
 
     app.router.add_post("/internal/notifications/tiktok", notification_manager.webhook)
     install_dashboard_gateway(app, client, INTERNAL_API_KEY, leveling_manager, onboarding_manager,
-                              ticket_manager, notification_manager, voice_manager, music_manager)
+                              ticket_manager, notification_manager)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -976,7 +949,6 @@ async def on_ready():
     await onboarding_manager.start()
     await leveling_manager.start()
     await notification_manager.start()
-    await music_manager.start()
     await sync_all_guilds_to_api()
 
     print("Personal / Guild / Global Memory aktif.")
@@ -996,9 +968,6 @@ async def on_guild_join(guild):
 
 @client.event
 async def on_guild_remove(guild):
-    leveling_manager.forget(guild.id)
-    await music_manager.leave(guild.id)
-    await voice_manager.leave(guild.id)
     try:
         await asyncio.to_thread(sync_guild_to_api, guild, False)
         print(f"Guild ditandai tidak aktif: {guild.id}")
@@ -1055,43 +1024,6 @@ async def on_raw_bulk_message_delete(payload):
 
 
 @client.event
-async def on_voice_state_update(member, before, after):
-    leveling_manager.sync_voice(member.guild)
-    await voice_manager.voice_state_update(member, before, after)
-    await music_manager.voice_state_update(member, before, after)
-
-
-@client.event
-async def on_wavelink_track_end(payload):
-    await music_manager.track_end(payload)
-
-
-@client.event
-async def on_wavelink_track_exception(payload):
-    await music_manager.track_error(payload)
-
-
-@client.event
-async def on_wavelink_track_stuck(payload):
-    await music_manager.track_error(payload)
-
-
-@client.event
-async def on_wavelink_websocket_closed(payload):
-    await music_manager.connection_lost(payload.player)
-
-
-@client.event
-async def on_wavelink_node_disconnected(payload):
-    await music_manager.node_lost(payload)
-
-
-@client.event
-async def on_disconnect():
-    leveling_manager.suspend()
-
-
-@client.event
 async def on_resumed():
     await ticket_manager.start()
     await onboarding_manager.start()
@@ -1107,11 +1039,6 @@ async def on_message(message):
         return
 
     await leveling_manager.message(message)
-
-    if await handle_music_message(
-        message, music_manager, bot_id=client.user.id if client.user else None
-    ):
-        return
 
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = (

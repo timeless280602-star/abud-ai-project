@@ -111,7 +111,52 @@ const field=(key,label,type="text",opts=null,value=null)=>[key,label,type,opts,v
 const postRefresh=async(path,data)=>{await api(path,data);await render()};
 function lines(rows,format){const v=el("div");for(const r of rows)v.append(el("p",format(r)));if(!rows.length)v.append(el("p","No entries yet.","muted"));return v}
 async function grantPanel(ranks){let p=panel("Rank permissions · internal modules");p.append(el("p","Default access is denied. All Access grants view, write and approve on all current and future internal modules; it does not grant website administrator rights.","muted"));let grants=await api("/admin/grants");for(const rank of ranks){let enabled=grants.some(g=>g.rank_id===rank.id&&g.module==="*"&&g.level==="approve");let row=el("div",null,"row");add(row,el("strong",rank.name+" · "+(enabled?"ALL ACCESS":"Custom permissions")),button(enabled?"Disable All Access":"Enable All Access",async()=>{if(!confirm(enabled?"Disable All Access? Existing custom permissions will apply again.":"Grant all internal modules and approval rights to every approved member of this rank, including future modules?"))return;await postRefresh("/admin/grants",{rank:rank.id,module:"*",level:enabled?"none":"approve"})},!enabled));p.append(row)}if(ranks.length)p.append(form([field("rank","Rank","select",options(ranks)),field("module","Module","select",Object.entries(opsNames)),field("level","Permission","select",[["none","No access"],["view","View"],["write","Write"],["approve","Approve (includes write)"]])],"Save permission",v=>postRefresh("/admin/grants",{...v,rank:n(v.rank)})));p.append(lines(grants,g=>(ranks.find(r=>r.id===g.rank_id)?.name||g.rank_id)+" · "+(g.module==="*"?"All Access":opsNames[g.module])+" · "+g.level));let a=panel("Audit log · recent activity");let logs=await api("/admin/ops-audit");a.append(lines(logs,l=>dateFormat(l.created)+" · "+(l.username||"System")+" · "+l.action+" · "+(l.target??"—")));p.append(a);return p}
-async function opsPanel(){let rights=await api("/ops/access"),p=panel("Internal operations");let mods=Object.keys(opsNames).filter(k=>rights[k]);if(!mods.length){p.append(el("p","No module permissions assigned. Contact an administrator.","muted"));return p}if(!mods.includes(opsTab))opsTab=mods[0];let nav=el("nav");for(const k of mods)nav.append(button(opsNames[k],async()=>{opsTab=k;await render()},k!==opsTab));p.append(nav);let canWrite=rights[opsTab]!=="view";let handler={treasury:treasuryUI,inventory:inventoryUI,crafting:craftingUI,cases:casesUI,operations:operationsCalendarUI,business:businessUI,business_prices:pricesUI,business_analytics:businessAnalyticsUI,business_discounts:discountApprovalUI}[opsTab];p.append(handler?await handler(canWrite,rights[opsTab],rights):await recordUI(opsTab,canWrite,rights[opsTab]));p.append(await approvalUI());return p}
+async function assetsUI(write,level){
+ const d=await api("/ops/assets"),p=panel("Asset & Property Management");
+ p.append(el("p","Central register for organizational vehicles, property and equipment. Acquisition and disposal require independent approval; assignments, maintenance and every lifecycle change are recorded.","muted"));
+ const counts={};for(const a of d.assets)counts[a.status]=(counts[a.status]||0)+1;
+ const summary=el("div",null,"grid");
+ for(const [key,label] of [["available","Available"],["assigned","Assigned"],["maintenance","Maintenance"],["retired","Retired"]])summary.append(el("article",null,"tile"),el("small",label),el("h2",String(counts[key]||0)));
+ p.append(summary);
+ const active=d.assets.filter(a=>a.status!=="retired"),assetOptions=options(active.map(a=>({id:a.id,name:a.asset_tag+" · "+a.name})));
+ if(write){
+  p.append(form([
+   field("asset_tag","Asset tag / registration ID"),field("asset_type","Asset type","select",[["vehicle","Vehicle"],["property","Property"],["equipment","Equipment"],["other","Other"]]),
+   field("name","Asset name"),field("description","Description","textarea"),field("make_model","Make / model"),field("serial_number","Serial number"),
+   field("plate_number","Plate / registration number"),field("location","Current location"),field("condition","Condition","select",[["new","New"],["excellent","Excellent"],["good","Good"],["fair","Fair"],["poor","Poor"]]),
+   field("purchase_cost","Acquisition cost","number",null,0),field("purchase_date","Acquisition date"),field("account_id","Treasury account · required when cost is above zero","select",options(d.accounts)),
+   field("inventory_item_id","Related inventory item · optional","select",options(d.inventory_items)),field("case_id","Related case · optional","select",options(d.cases)),field("note","Acquisition justification / reference","textarea")
+  ],"Request asset acquisition",v=>postRefresh("/ops/assets/requests",{request_type:"acquisition",acquisition:{...v,purchase_cost:n(v.purchase_cost),account_id:v.account_id? n(v.account_id):null,inventory_item_id:v.inventory_item_id?n(v.inventory_item_id):null,case_id:v.case_id?n(v.case_id):null}})));
+  if(active.length)p.append(form([field("asset_id","Asset to dispose","select",assetOptions),field("note","Disposal justification / reference","textarea")],"Request asset disposal",v=>postRefresh("/ops/assets/requests",{request_type:"disposal",disposal:{asset_id:n(v.asset_id),note:v.note}})));
+ }
+ p.append(el("h3","Asset register"));
+ for(const a of d.assets){
+  const card=el("article",null,"tile"),details=el("div");
+  add(card,el("h3",a.asset_tag+" · "+a.name),el("small",a.asset_type.toUpperCase()+" · "+a.status.toUpperCase()+" · "+a.condition),el("p",a.description||"No description"),el("p",(a.make_model||"—")+" · Serial "+(a.serial_number||"—")+" · Plate "+(a.plate_number||"—")),el("p","Location: "+(a.location||"—")+" · Assigned: "+(a.assigned_to||"Unassigned")),el("p","Acquisition: "+moneyFormat(a.purchase_cost)+" · "+(a.purchase_date||"Date not recorded")),el("p","Inventory: "+(a.inventory_item_name||"—")+" · Case: "+(a.case_title||"—")));
+  if(write&&a.status!=="retired"){
+   const controls=el("details");controls.append(el("summary","Manage asset"));
+   controls.append(form([field("assigned_to","Assigned character / custodian","text",null,a.assigned_to),field("location","Current location","text",null,a.location),field("note","Assignment / return reason")],"Save assignment / return",v=>postRefresh("/ops/assets/"+a.id+"/assignment",v)));
+   if(a.status!=="maintenance")controls.append(form([field("title","Maintenance task"),field("description","Work required","textarea"),field("vendor","Workshop / provider"),field("cost","Estimated cost","number",null,0)],"Open maintenance record",v=>postRefresh("/ops/assets/"+a.id+"/maintenance",{...v,cost:n(v.cost)})));
+   card.append(controls);
+  }
+  if(a.status==="maintenance"){
+   const open=d.maintenance.filter(m=>m.asset_id===a.id&&m.status==="open");
+   for(const m of open)card.append(el("p","Open maintenance: "+m.title+" · "+moneyFormat(m.cost)+" · "+(m.vendor||"No provider")),write?button("Mark maintenance completed",()=>postRefresh("/ops/assets/"+a.id+"/maintenance/"+m.id+"/complete",{})):el("small","Maintenance in progress"));
+  }
+  card.append(button("View lifecycle history",()=>{details.replaceChildren(lines(d.history.filter(h=>h.asset_id===a.id),h=>dateFormat(h.created)+" · "+h.event+" · "+(h.from_value||"—")+" → "+(h.to_value||"—")+" · "+h.note));},true),details);
+  p.append(card);
+ }
+ p.append(el("h3","Acquisition & disposal approval queue"));
+ for(const q of d.requests){
+  const card=el("article",null,"tile");
+  add(card,el("h3","#"+q.id+" · "+q.request_type.toUpperCase()+" · "+q.status.toUpperCase()),el("p",(q.asset_name||q.asset_tag||JSON.parse(q.payload||"{}").name||"Asset request")+" · "+q.note),el("small",q.username+" · "+dateFormat(q.created)+(q.reviewer_name?" · reviewed by "+q.reviewer_name:"")));
+  if(level==="approve"&&q.status==="pending"&&q.actor!==me.id)card.append(el("div",null,"row"),button("Approve",()=>postRefresh("/ops/assets/requests/"+q.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/assets/requests/"+q.id+"/review",{approve:false}),true));
+  p.append(card);
+ }
+ p.append(el("h3","Maintenance history"),lines(d.maintenance,m=>m.asset_tag+" · "+m.title+" · "+m.status+" · "+moneyFormat(m.cost)+" · "+dateFormat(m.created)));
+ return p
+}
+async function opsPanel(){let rights=await api("/ops/access"),p=panel("Internal operations");let mods=Object.keys(opsNames).filter(k=>rights[k]);if(!mods.length){p.append(el("p","No module permissions assigned. Contact an administrator.","muted"));return p}if(!mods.includes(opsTab))opsTab=mods[0];let nav=el("nav");for(const k of mods)nav.append(button(opsNames[k],async()=>{opsTab=k;await render()},k!==opsTab));p.append(nav);let canWrite=rights[opsTab]!=="view";let handler={treasury:treasuryUI,inventory:inventoryUI,crafting:craftingUI,cases:casesUI,operations:operationsCalendarUI,business:businessUI,business_prices:pricesUI,business_analytics:businessAnalyticsUI,business_discounts:discountApprovalUI,assets:assetsUI}[opsTab];p.append(handler?await handler(canWrite,rights[opsTab],rights):await recordUI(opsTab,canWrite,rights[opsTab]));p.append(await approvalUI());return p}
 
 let calendarMode="month",calendarAnchor=new Date(),calendarSelected=new Date(),calendarDivisions=[];
 const calDate=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-");

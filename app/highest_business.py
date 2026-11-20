@@ -13,17 +13,20 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_order(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),nonce TEXT NOT NULL,group_name TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('buy','sell')),status TEXT NOT NULL CHECK(status IN ('pending','ready','completed')),notes TEXT NOT NULL,vault INTEGER REFERENCES hq_vault(id),treasury INTEGER NOT NULL DEFAULT 0,money_id INTEGER REFERENCES hq_money(id),version INTEGER NOT NULL DEFAULT 1,delivery_note TEXT NOT NULL DEFAULT '',completed_at INTEGER,legacy_hidden INTEGER NOT NULL DEFAULT 0,discount_scope TEXT NOT NULL DEFAULT 'none',discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(actor,nonce));
         CREATE TABLE IF NOT EXISTS hq_order_line(order_id INTEGER REFERENCES hq_order(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>0),buy INTEGER NOT NULL,sell INTEGER NOT NULL,discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(order_id,item));
         CREATE TABLE IF NOT EXISTS hq_order_history(id INTEGER PRIMARY KEY,order_id INTEGER REFERENCES hq_order(id),actor INTEGER REFERENCES users(id),status TEXT NOT NULL,note TEXT NOT NULL,created INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS hq_discount_policy(rank_id INTEGER PRIMARY KEY REFERENCES ranks(id) ON DELETE CASCADE,scope TEXT NOT NULL DEFAULT 'none' CHECK(scope IN ('none','all','items','both')),max_percent INTEGER NOT NULL DEFAULT 0 CHECK(max_percent BETWEEN 0 AND 100),max_fixed INTEGER NOT NULL DEFAULT 0 CHECK(max_fixed>=0),updated_by INTEGER REFERENCES users(id),updated INTEGER NOT NULL);
         """)
         order_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_order)")}
         if "delivery_note" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN delivery_note TEXT NOT NULL DEFAULT ''")
         if "completed_at" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN completed_at INTEGER")
         if "legacy_hidden" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN legacy_hidden INTEGER NOT NULL DEFAULT 0")
-        for name,definition in (("discount_scope","TEXT NOT NULL DEFAULT 'none'"),("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0")):
+        for name,definition in (("discount_scope","TEXT NOT NULL DEFAULT 'none'"),("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0"),("discount_state","TEXT NOT NULL DEFAULT 'approved'"),("discount_requested_amount","INTEGER NOT NULL DEFAULT 0"),("discount_reason","TEXT NOT NULL DEFAULT ''"),("discount_reviewed_by","INTEGER REFERENCES users(id)"),("discount_review_note","TEXT NOT NULL DEFAULT ''")):
             if name not in order_columns: c.execute(f"ALTER TABLE hq_order ADD COLUMN {name} {definition}")
         line_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_order_line)")}
-        for name,definition in (("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0")):
+        for name,definition in (("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0"),("requested_discount_amount","INTEGER NOT NULL DEFAULT 0")):
             if name not in line_columns: c.execute(f"ALTER TABLE hq_order_line ADD COLUMN {name} {definition}")
         c.execute("UPDATE hq_order SET completed_at=updated WHERE status='completed' AND completed_at IS NULL")
+        c.execute("UPDATE hq_order SET discount_requested_amount=discount_amount WHERE discount_requested_amount=0 AND discount_amount>0")
+        c.execute("UPDATE hq_order_line SET requested_discount_amount=discount_amount WHERE requested_discount_amount=0 AND discount_amount>0")
         c.execute("UPDATE hq_order SET legacy_hidden=1,status='pending' WHERE status='cancelled'")
         c.execute("UPDATE hq_order SET status='pending' WHERE status IN ('confirmed','processing')")
         c.execute("UPDATE hq_order SET delivery_note='Butuh pengantaran' WHERE status='ready' AND trim(delivery_note)=''")
@@ -47,9 +50,18 @@ class Order(BaseModel):
     discount_scope:str="none"
     discount_type:str="none"
     discount_value:int=Field(default=0,ge=0,le=1000000000000)
+    discount_reason:str=Field(default="",max_length=500)
 class Status(BaseModel):
     status:str
     version:int=Field(ge=1)
+    note:str=Field(default="",max_length=500)
+class DiscountPolicy(BaseModel):
+    rank:int
+    scope:str="none"
+    max_percent:int=Field(default=0,ge=0,le=100)
+    max_fixed:int=Field(default=0,ge=0,le=1000000000000)
+class DiscountReview(BaseModel):
+    approve:bool
     note:str=Field(default="",max_length=500)
 def get_order(c,oid):
     r=c.execute("SELECT * FROM hq_order WHERE id=?",(oid,)).fetchone()
@@ -66,6 +78,7 @@ def order_data(c,r):
     out["sales"]=sum(x["qty"]*x["sell"] for x in out["lines"])
     out["subtotal"]=sum(x["subtotal"] for x in out["lines"])
     out["discount_amount"]=sum(x["discount_amount"] for x in out["lines"])
+    out["requested_discount_amount"]=r["discount_requested_amount"]
     out["net_sales"]=out["sales"]-out["discount_amount"] if r["direction"]=="sell" else 0
     out["total"]=out["subtotal"]-out["discount_amount"]
     out["estimated_margin"]=out["net_sales"]-out["cost"] if r["direction"]=="sell" else None
@@ -78,6 +91,32 @@ def history(c,oid,uid,status,note):
     c.execute("INSERT INTO hq_order_history(order_id,actor,status,note,created) VALUES(?,?,?,?,?)",(oid,uid,status,note,now()))
 def prices(c):
     return rows(c,"SELECT i.id,i.name,i.category,p.buy,p.sell,p.updated FROM hq_item i LEFT JOIN hq_price p ON i.id=p.item ORDER BY i.name")
+def discount_policy(c,rank):
+    row=c.execute("SELECT scope,max_percent,max_fixed FROM hq_discount_policy WHERE rank_id=?",(rank,)).fetchone()
+    return dict(row) if row else {"scope":"none","max_percent":0,"max_fixed":0}
+def discount_scope_allowed(policy,scope):
+    return (scope=="all" and policy["scope"] in ("all","both")) or (scope=="items" and policy["scope"] in ("items","both"))
+@router.get("/admin/discount-policies")
+def get_discount_policies(r:Request):
+    with db() as c:
+        privilege(c,r,admin=True)
+        return reply(rows(c,"""SELECT r.id rank_id,r.name rank_name,coalesce(p.scope,'none') scope,
+            coalesce(p.max_percent,0) max_percent,coalesce(p.max_fixed,0) max_fixed,p.updated,p.updated_by
+            FROM ranks r LEFT JOIN hq_discount_policy p ON p.rank_id=r.id ORDER BY r.position,r.id"""))
+@router.post("/admin/discount-policies")
+def save_discount_policy(p:DiscountPolicy,r:Request):
+    origin(r)
+    if p.scope not in ("none","all","items","both"): fail(400,"Invalid discount scope")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,admin=True)
+        if not c.execute("SELECT 1 FROM ranks WHERE id=?",(p.rank,)).fetchone(): fail(404,"Rank not found")
+        c.execute("""INSERT INTO hq_discount_policy(rank_id,scope,max_percent,max_fixed,updated_by,updated)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(rank_id) DO UPDATE SET scope=excluded.scope,
+            max_percent=excluded.max_percent,max_fixed=excluded.max_fixed,updated_by=excluded.updated_by,updated=excluded.updated""",
+            (p.rank,p.scope,p.max_percent,p.max_fixed,u["id"],now()))
+        audit(c,u["id"],"business.discount_policy",p.rank)
+    return {"ok":True}
 @router.get("/business/prices")
 def price_list(r:Request):
     with db() as c:
@@ -97,7 +136,8 @@ def save_price(p:Price,r:Request):
 def orders(r:Request):
     with db() as c:
         privilege(c,r,"business")
-        return reply({"orders":[order_data(c,x) for x in c.execute("SELECT * FROM hq_order WHERE legacy_hidden=0 ORDER BY id DESC LIMIT 500").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name")})
+        u=privilege(c,r,"business")
+        return reply({"orders":[order_data(c,x) for x in c.execute("SELECT * FROM hq_order WHERE legacy_hidden=0 ORDER BY id DESC LIMIT 500").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name"),"discount_policy":discount_policy(c,u["rank"])})
 @router.get("/business/orders/{oid}")
 def order(oid:int,r:Request):
     with db() as c:
@@ -129,6 +169,10 @@ def create(p:Order,r:Request):
         u=privilege(c,r,"business","write")
         old=c.execute("SELECT id FROM hq_order WHERE actor=? AND nonce=?",(u["id"],p.nonce)).fetchone()
         if old:return {"id":old["id"],"duplicate":True}
+        policy=discount_policy(c,u["rank"])
+        if p.discount_scope!="none" and not discount_scope_allowed(policy,p.discount_scope):
+            fail(403,"Your rank is not authorized to use this discount scope")
+        if p.discount_scope=="none" and p.discount_reason.strip(): fail(400,"Discount reason is only used for discounted orders")
         if p.vault is not None:
             privilege(c,r,"inventory","write")
             if not c.execute("SELECT 1 FROM hq_vault WHERE id=?",(p.vault,)).fetchone():fail(404,"Vault not found")
@@ -162,18 +206,66 @@ def create(p:Order,r:Request):
                 elif item["discount_type"]=="fixed":
                     line_discounts[index]=min(base,item["discount_value"]*item["qty"])
         for index,item in enumerate(items):
-            item["discount_amount"]=line_discounts[index]
-        discount_amount=sum(line_discounts)
-        total=subtotal-discount_amount
+            item["requested_discount_amount"]=line_discounts[index]
+        requested_discount=sum(line_discounts)
+        needs_approval=False
+        if requested_discount:
+            if p.discount_scope=="all" and p.discount_type=="percent" and p.discount_value>policy["max_percent"]:
+                needs_approval=True
+            if p.discount_scope=="items" and any(x["discount_type"]=="percent" and x["discount_value"]>policy["max_percent"] for x in items):
+                needs_approval=True
+            if requested_discount>policy["max_fixed"]:
+                needs_approval=True
+        if needs_approval and not p.discount_reason.strip():
+            fail(400,"A reason is required when a discount exceeds this rank's direct approval limit")
+        if p.discount_reason.strip() and not requested_discount:
+            fail(400,"Discount reason is only used for discounted orders")
+        state="pending" if needs_approval else ("approved" if requested_discount else "none")
+        effective_discount=requested_discount if state=="approved" else 0
+        for index,item in enumerate(items):
+            item["discount_amount"]=line_discounts[index] if state=="approved" else 0
+        total=subtotal-effective_discount
         if total>1000000000000:fail(400,"Order total exceeds ledger limit")
         gid=clean(p.group_name,100)
-        oid=c.execute("""INSERT INTO hq_order(actor,nonce,group_name,direction,status,notes,vault,treasury,discount_scope,discount_type,discount_value,discount_amount,created,updated)
-            VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)""",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),p.discount_scope,p.discount_type,p.discount_value,discount_amount,now(),now())).lastrowid
-        c.executemany("""INSERT INTO hq_order_line(order_id,item,qty,buy,sell,discount_type,discount_value,discount_amount)
-            VALUES(?,?,?,?,?,?,?,?)""",[(oid,x["item"],x["qty"],x["buy"],x["sell"],x["discount_type"],x["discount_value"],x["discount_amount"]) for x in items])
-        history(c,oid,u["id"],"pending","Order created")
+        oid=c.execute("""INSERT INTO hq_order(actor,nonce,group_name,direction,status,notes,vault,treasury,discount_scope,discount_type,discount_value,discount_amount,discount_state,discount_requested_amount,discount_reason,created,updated)
+            VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?)""",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),p.discount_scope,p.discount_type,p.discount_value,effective_discount,state,requested_discount,p.discount_reason.strip(),now(),now())).lastrowid
+        c.executemany("""INSERT INTO hq_order_line(order_id,item,qty,buy,sell,discount_type,discount_value,discount_amount,requested_discount_amount)
+            VALUES(?,?,?,?,?,?,?,?,?)""",[(oid,x["item"],x["qty"],x["buy"],x["sell"],x["discount_type"],x["discount_value"],x["discount_amount"],x["requested_discount_amount"]) for x in items])
+        history(c,oid,u["id"],"pending","Order created"+(" · Discount approval requested" if needs_approval else ""))
         audit(c,u["id"],"business.order",oid)
-    return {"id":oid}
+        if needs_approval:audit(c,u["id"],"business.discount.request",oid)
+    return {"id":oid,"discount_state":state,"discount_requested_amount":requested_discount}
+
+@router.get("/business/discount-requests")
+def discount_requests(r:Request):
+    with db() as c:
+        privilege(c,r,"business_discounts")
+        pending=rows(c,"""SELECT o.*,u.display_name creator FROM hq_order o JOIN users u ON u.id=o.actor
+            WHERE o.discount_state='pending' AND o.legacy_hidden=0 ORDER BY o.created,o.id LIMIT 200""")
+        return reply({"requests":[order_data(c,x) for x in pending]})
+@router.post("/business/orders/{oid}/discount-review")
+def review_discount(oid:int,p:DiscountReview,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"business_discounts","approve")
+        row=get_order(c,oid)
+        if row["discount_state"]!="pending": fail(409,"Discount request is no longer pending")
+        if row["actor"]==u["id"]: fail(403,"You cannot approve or reject your own discount request")
+        if not p.approve and not p.note.strip(): fail(400,"A rejection reason is required")
+        if p.approve:
+            c.execute("UPDATE hq_order SET discount_state='approved',discount_amount=discount_requested_amount,discount_reviewed_by=?,discount_review_note=?,version=version+1,updated=? WHERE id=?",
+                (u["id"],p.note.strip(),now(),oid))
+            c.execute("UPDATE hq_order_line SET discount_amount=requested_discount_amount WHERE order_id=?",(oid,))
+            history(c,oid,u["id"],"discount_approved",p.note.strip() or "Discount approved")
+            audit(c,u["id"],"business.discount.approve",oid)
+        else:
+            c.execute("UPDATE hq_order SET discount_state='rejected',discount_amount=0,discount_reviewed_by=?,discount_review_note=?,version=version+1,updated=? WHERE id=?",
+                (u["id"],p.note.strip(),now(),oid))
+            c.execute("UPDATE hq_order_line SET discount_amount=0 WHERE order_id=?",(oid,))
+            history(c,oid,u["id"],"discount_rejected",p.note.strip())
+            audit(c,u["id"],"business.discount.reject",oid)
+    return {"ok":True,"discount_state":"approved" if p.approve else "rejected"}
 
 @router.post("/business/orders/{oid}/status")
 def update(oid:int,p:Status,r:Request):
@@ -184,6 +276,7 @@ def update(oid:int,p:Status,r:Request):
         u=privilege(c,r,"business","approve" if p.status=="completed" else "write")
         row=get_order(c,oid)
         if row["version"]!=p.version: fail(409,"Order changed; reload")
+        if row["discount_state"]=="pending": fail(409,"Discount approval is still pending")
         if p.status not in STATES.get(row["status"],set()): fail(409,"Invalid status transition")
         mid=None
         delivery_note=row["delivery_note"]

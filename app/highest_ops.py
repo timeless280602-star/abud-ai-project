@@ -45,7 +45,19 @@ def init():
         CREATE INDEX IF NOT EXISTS hq_approval_queue ON hq_approval_request(status,module,current_step,created);
         CREATE TABLE IF NOT EXISTS hq_approval_request_step(request_id INTEGER NOT NULL REFERENCES hq_approval_request(id) ON DELETE CASCADE,step INTEGER NOT NULL,rank_id INTEGER NOT NULL REFERENCES ranks(id),PRIMARY KEY(request_id,step));
         CREATE TABLE IF NOT EXISTS hq_approval_action(id INTEGER PRIMARY KEY,request_id INTEGER NOT NULL REFERENCES hq_approval_request(id) ON DELETE CASCADE,step INTEGER NOT NULL,actor INTEGER NOT NULL REFERENCES users(id),delegated_from INTEGER REFERENCES users(id),decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL,UNIQUE(request_id,step));
-        CREATE TABLE IF NOT EXISTS hq_approval_delegation(id INTEGER PRIMARY KEY,module TEXT NOT NULL,delegator INTEGER NOT NULL REFERENCES users(id),delegate INTEGER NOT NULL REFERENCES users(id),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(module,delegator,delegate));        """)
+        CREATE TABLE IF NOT EXISTS hq_approval_delegation(id INTEGER PRIMARY KEY,module TEXT NOT NULL,delegator INTEGER NOT NULL REFERENCES users(id),delegate INTEGER NOT NULL REFERENCES users(id),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(module,delegator,delegate));
+        CREATE TABLE IF NOT EXISTS hq_notification(
+            id INTEGER PRIMARY KEY,uid INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',href TEXT NOT NULL DEFAULT '',
+            dedupe_key TEXT NOT NULL,created INTEGER NOT NULL,read_at INTEGER,
+            UNIQUE(uid,dedupe_key)
+        );
+        CREATE INDEX IF NOT EXISTS hq_notification_inbox ON hq_notification(uid,read_at,created DESC);
+        CREATE TABLE IF NOT EXISTS hq_notification_dispatch(
+            event_id INTEGER NOT NULL REFERENCES hq_operation_event(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,uid INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            dispatched_at INTEGER NOT NULL,PRIMARY KEY(event_id,version,uid)
+        );        """)
         item_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_item)")}
         if "costing_method" not in item_columns: c.execute("ALTER TABLE hq_item ADD COLUMN costing_method TEXT NOT NULL DEFAULT 'fifo'")
         movement_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_movement)")}
@@ -55,6 +67,38 @@ def init():
         if "cost_method" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN cost_method TEXT")
         if "cost_source" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'unvalued'")
 
+
+def notify(c,uid,kind,title,body='',href='',dedupe_key=None):
+    if not uid: return False
+    key=dedupe_key or f"{kind}:{hashlib.sha256((title+'|'+body+'|'+href).encode()).hexdigest()}"
+    cur=c.execute("""INSERT OR IGNORE INTO hq_notification(uid,kind,title,body,href,dedupe_key,created)
+        VALUES(?,?,?,?,?,?,?)""",(uid,kind,clean(title,160),clean(body,1000,required=False),clean(href,240,required=False),key,now()))
+    return cur.rowcount==1
+
+def _notify_approval_step(c,request_id,step):
+    item=c.execute("SELECT module,requester,title FROM hq_approval_request WHERE id=?",(request_id,)).fetchone()
+    if not item: return
+    configured=c.execute("SELECT rank_id FROM hq_approval_request_step WHERE request_id=? AND step=?",(request_id,step)).fetchone()
+    if configured:
+        candidates=rows(c,"""SELECT u.id FROM users u JOIN membership m ON m.uid=u.id
+            JOIN hq_grants g ON g.rank_id=m.rank AND (g.module=? OR g.module='*') AND g.level='approve'
+            WHERE m.status='approved' AND m.rank=? AND u.id<>?""",(item["module"],configured["rank_id"],item["requester"]))
+        delegated=rows(c,"""SELECT DISTINCT du.id FROM hq_approval_delegation d
+            JOIN users du ON du.id=d.delegate JOIN membership dm ON dm.uid=du.id
+            JOIN users ou ON ou.id=d.delegator JOIN membership om ON om.uid=ou.id
+            JOIN hq_grants dg ON dg.rank_id=dm.rank AND (dg.module=d.module OR dg.module='*') AND dg.level='approve'
+            JOIN hq_grants og ON og.rank_id=om.rank AND (og.module=d.module OR og.module='*') AND og.level='approve'
+            WHERE d.module=? AND d.active=1 AND dm.status='approved' AND om.status='approved'
+              AND om.rank=? AND dm.rank=? AND du.id<>?""",(item["module"],configured["rank_id"],configured["rank_id"],item["requester"]))
+        candidates.extend(delegated)
+    else:
+        candidates=rows(c,"""SELECT u.id FROM users u JOIN membership m ON m.uid=u.id
+            JOIN hq_grants g ON g.rank_id=m.rank AND (g.module=? OR g.module='*') AND g.level='approve'
+            WHERE m.status='approved' AND u.id<>?""",(item["module"],item["requester"]))
+    for target in {x["id"] for x in candidates}:
+        notify(c,target,"approval_review","Approval requires your review",
+            f"{item['title']} · {item['module']} · step {step}",
+            "/highest/internal/","approval:"+str(request_id)+":step:"+str(step)+":user:"+str(target))
 
 def now(): return int(time.time())
 def rows(c,sql,args=()): return [dict(x) for x in c.execute(sql,args)]
@@ -145,6 +189,32 @@ class CaseNote(BaseModel):
     note:str=Field(min_length=1,max_length=4000)
     status:str|None=None
 
+@router.get("/notifications")
+def notification_inbox(r:Request,limit:int=50):
+    if limit<1 or limit>100: fail(400,"Invalid notification limit")
+    with db() as c:
+        u=privilege(c,r)
+        unread=c.execute("SELECT count(*) FROM hq_notification WHERE uid=? AND read_at IS NULL",(u["id"],)).fetchone()[0]
+        items=rows(c,"SELECT id,kind,title,body,href,created,read_at FROM hq_notification WHERE uid=? ORDER BY created DESC,id DESC LIMIT ?",(u["id"],limit))
+        return reply({"items":items,"unread_count":unread})
+
+@router.post("/notifications/{notification_id}/read")
+def notification_read(notification_id:int,r:Request):
+    origin(r)
+    with db() as c:
+        u=privilege(c,r)
+        cur=c.execute("UPDATE hq_notification SET read_at=? WHERE id=? AND uid=? AND read_at IS NULL",(now(),notification_id,u["id"]))
+        if cur.rowcount==0 and not c.execute("SELECT 1 FROM hq_notification WHERE id=? AND uid=?",(notification_id,u["id"])).fetchone(): fail(404,"Notification not found")
+    return {"ok":True}
+
+@router.post("/notifications/read-all")
+def notification_read_all(r:Request):
+    origin(r)
+    with db() as c:
+        u=privilege(c,r)
+        c.execute("UPDATE hq_notification SET read_at=? WHERE uid=? AND read_at IS NULL",(now(),u["id"]))
+    return {"ok":True}
+
 @router.get("/ops/access")
 def access(r:Request):
     with db() as c:
@@ -191,6 +261,13 @@ def money(p:Money,r:Request):
         u=privilege(c,r,"treasury","write")
         amount=p.amount if p.direction=="income" else -p.amount
         mid=c.execute("INSERT INTO hq_money(actor,amount,category,note,state,created) VALUES(?,?,?,?,'pending',?)",(u["id"],amount,clean(p.category,60),clean(p.note,500),now())).lastrowid
+        reviewers=rows(c,"""SELECT DISTINCT u.id FROM users u JOIN membership m ON m.uid=u.id
+            JOIN hq_grants g ON g.rank_id=m.rank AND (g.module='treasury' OR g.module='*') AND g.level='approve'
+            WHERE m.status='approved' AND u.id<>?""",(u["id"],))
+        for target in reviewers:
+            notify(c,target["id"],"treasury_review","Treasury transaction awaits review",
+                clean(p.category,60)+" · "+str(abs(amount))+" · "+clean(p.note,500),
+                "/highest/internal/","treasury:"+str(mid)+":review:"+str(target["id"]))
         audit(c,u["id"],"money.request",mid)
     return {"ok":True,"id":mid}
 
@@ -206,6 +283,8 @@ def money_review(mid:int,p:Decision,r:Request):
         if p.approve and balance(c)+row["amount"]<0: fail(409,"Insufficient treasury balance")
         state="posted" if p.approve else "rejected"
         c.execute("UPDATE hq_money SET state=?,reviewer=? WHERE id=?",(state,u["id"],mid))
+        notify(c,row["actor"],"treasury_decision","Treasury transaction "+state,
+            row["category"]+" · "+str(abs(row["amount"])),"/highest/internal/","treasury:"+str(mid)+":decision:"+state)
         audit(c,u["id"],"money."+state,mid)
     return {"ok":True}
 
@@ -687,6 +766,7 @@ def approval_submit(p:ApprovalSubmission,r:Request):
         if policy:
             route=rows(c,"SELECT rank_id FROM hq_approval_policy WHERE module=? ORDER BY step",(p.module,))
             c.executemany("INSERT INTO hq_approval_request_step(request_id,step,rank_id) VALUES(?,?,?)",[(rid,index,x["rank_id"]) for index,x in enumerate(route,1)])
+        _notify_approval_step(c,rid,1)
         audit(c,u["id"],"approval.submit",rid)
     return {"ok":True,"id":rid,"steps":total}
 
@@ -707,6 +787,12 @@ def approval_review(request_id:int,p:ApprovalDecision,r:Request):
         elif item["current_step"]<item["total_steps"]: state="pending";step=item["current_step"]+1
         else: state="approved";step=item["current_step"]
         c.execute("UPDATE hq_approval_request SET status=?,current_step=?,updated=? WHERE id=?",(state,step,now(),request_id))
+        if state=="pending":
+            _notify_approval_step(c,request_id,step)
+        else:
+            notify(c,item["requester"],"approval_decision","Approval request "+state,
+                item["title"]+" · reviewed by "+str(u["id"]),
+                "/highest/internal/","approval:"+str(request_id)+":final:"+state)
         audit(c,u["id"],"approval."+decision,request_id)
     return {"ok":True,"status":state,"next_step":step}
 

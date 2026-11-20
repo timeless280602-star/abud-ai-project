@@ -53,7 +53,8 @@ def refresh():
     return {"updated":updated,"total":len(clips)}
 
 def worker():
-    interval=max(3600,int(os.getenv("HIGHEST_STATS_INTERVAL","21600")))
+    try: interval=max(3600,int(os.getenv("HIGHEST_STATS_INTERVAL","21600")))
+    except ValueError: interval=21600
     while True:
         try: refresh()
         except Exception: pass

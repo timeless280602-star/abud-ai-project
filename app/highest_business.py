@@ -10,14 +10,19 @@ def init():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS hq_price(item INTEGER PRIMARY KEY REFERENCES hq_item(id),buy INTEGER NOT NULL CHECK(buy>=0),sell INTEGER NOT NULL CHECK(sell>=0),updated INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS hq_order(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),nonce TEXT NOT NULL,group_name TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('buy','sell')),status TEXT NOT NULL CHECK(status IN ('pending','ready','completed')),notes TEXT NOT NULL,vault INTEGER REFERENCES hq_vault(id),treasury INTEGER NOT NULL DEFAULT 0,money_id INTEGER REFERENCES hq_money(id),version INTEGER NOT NULL DEFAULT 1,delivery_note TEXT NOT NULL DEFAULT '',completed_at INTEGER,legacy_hidden INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(actor,nonce));
-        CREATE TABLE IF NOT EXISTS hq_order_line(order_id INTEGER REFERENCES hq_order(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>0),buy INTEGER NOT NULL,sell INTEGER NOT NULL,PRIMARY KEY(order_id,item));
+        CREATE TABLE IF NOT EXISTS hq_order(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),nonce TEXT NOT NULL,group_name TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('buy','sell')),status TEXT NOT NULL CHECK(status IN ('pending','ready','completed')),notes TEXT NOT NULL,vault INTEGER REFERENCES hq_vault(id),treasury INTEGER NOT NULL DEFAULT 0,money_id INTEGER REFERENCES hq_money(id),version INTEGER NOT NULL DEFAULT 1,delivery_note TEXT NOT NULL DEFAULT '',completed_at INTEGER,legacy_hidden INTEGER NOT NULL DEFAULT 0,discount_scope TEXT NOT NULL DEFAULT 'none',discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(actor,nonce));
+        CREATE TABLE IF NOT EXISTS hq_order_line(order_id INTEGER REFERENCES hq_order(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>0),buy INTEGER NOT NULL,sell INTEGER NOT NULL,discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(order_id,item));
         CREATE TABLE IF NOT EXISTS hq_order_history(id INTEGER PRIMARY KEY,order_id INTEGER REFERENCES hq_order(id),actor INTEGER REFERENCES users(id),status TEXT NOT NULL,note TEXT NOT NULL,created INTEGER NOT NULL);
         """)
         order_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_order)")}
         if "delivery_note" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN delivery_note TEXT NOT NULL DEFAULT ''")
         if "completed_at" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN completed_at INTEGER")
         if "legacy_hidden" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN legacy_hidden INTEGER NOT NULL DEFAULT 0")
+        for name,definition in (("discount_scope","TEXT NOT NULL DEFAULT 'none'"),("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0")):
+            if name not in order_columns: c.execute(f"ALTER TABLE hq_order ADD COLUMN {name} {definition}")
+        line_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_order_line)")}
+        for name,definition in (("discount_type","TEXT NOT NULL DEFAULT 'none'"),("discount_value","INTEGER NOT NULL DEFAULT 0"),("discount_amount","INTEGER NOT NULL DEFAULT 0")):
+            if name not in line_columns: c.execute(f"ALTER TABLE hq_order_line ADD COLUMN {name} {definition}")
         c.execute("UPDATE hq_order SET completed_at=updated WHERE status='completed' AND completed_at IS NULL")
         c.execute("UPDATE hq_order SET legacy_hidden=1,status='pending' WHERE status='cancelled'")
         c.execute("UPDATE hq_order SET status='pending' WHERE status IN ('confirmed','processing')")
@@ -29,6 +34,8 @@ class Price(BaseModel):
 class Line(BaseModel):
     item:int
     qty:int=Field(gt=0,le=100000)
+    discount_type:str="none"
+    discount_value:int=Field(default=0,ge=0,le=1000000000)
 class Order(BaseModel):
     nonce:str=Field(min_length=16,max_length=100)
     group_name:str=Field(min_length=1,max_length=100)
@@ -37,6 +44,9 @@ class Order(BaseModel):
     notes:str=Field(default="",max_length=1000)
     vault:int|None=None
     treasury:bool=False
+    discount_scope:str="none"
+    discount_type:str="none"
+    discount_value:int=Field(default=0,ge=0,le=1000000000000)
 class Status(BaseModel):
     status:str
     version:int=Field(ge=1)
@@ -48,10 +58,17 @@ def get_order(c,oid):
 def order_data(c,r):
     out=dict(r)
     out["lines"]=rows(c,"SELECT l.*,i.name FROM hq_order_line l JOIN hq_item i ON i.id=l.item WHERE order_id=? ORDER BY i.name",(r["id"],))
+    for line in out["lines"]:
+        unit=line["buy"] if r["direction"]=="buy" else line["sell"]
+        line["subtotal"]=line["qty"]*unit
+        line["total"]=line["subtotal"]-line["discount_amount"]
     out["cost"]=sum(x["qty"]*x["buy"] for x in out["lines"])
     out["sales"]=sum(x["qty"]*x["sell"] for x in out["lines"])
-    out["total"]=out["cost"] if r["direction"]=="buy" else out["sales"]
-    out["estimated_margin"]=out["sales"]-out["cost"] if r["direction"]=="sell" else None
+    out["subtotal"]=sum(x["subtotal"] for x in out["lines"])
+    out["discount_amount"]=sum(x["discount_amount"] for x in out["lines"])
+    out["net_sales"]=out["sales"]-out["discount_amount"] if r["direction"]=="sell" else 0
+    out["total"]=out["subtotal"]-out["discount_amount"]
+    out["estimated_margin"]=out["net_sales"]-out["cost"] if r["direction"]=="sell" else None
     out["money_state"]=None
     if r["money_id"]:
         money=c.execute("SELECT state FROM hq_money WHERE id=?",(r["money_id"],)).fetchone()
@@ -91,6 +108,22 @@ def create(p:Order,r:Request):
     origin(r)
     if p.direction not in ("buy","sell"):fail(400,"Invalid transaction direction")
     if len({x.item for x in p.lines})!=len(p.lines):fail(400,"Combine duplicate items")
+    if p.discount_scope not in ("none","all","items"): fail(400,"Invalid discount scope")
+    if p.discount_type not in ("none","percent","fixed"): fail(400,"Invalid order discount type")
+    if p.discount_scope=="all":
+        if p.discount_type not in ("percent","fixed"): fail(400,"Choose a percentage or nominal discount for all items")
+        if p.discount_type=="percent" and p.discount_value>100: fail(400,"Percentage discount cannot exceed 100")
+        if any(x.discount_type!="none" or x.discount_value for x in p.lines): fail(400,"Choose either an all-items discount or item-specific discounts, not both")
+    elif p.discount_scope=="items":
+        if p.discount_type!="none" or p.discount_value: fail(400,"Item-specific discounts cannot be combined with an all-items discount")
+    else:
+        if p.discount_type!="none" or p.discount_value: fail(400,"Discount settings must be empty when discount scope is none")
+        if any(x.discount_type!="none" or x.discount_value for x in p.lines): fail(400,"Item discounts require the selected-items discount scope")
+    for line in p.lines:
+        if line.discount_type not in ("none","percent","fixed"): fail(400,"Invalid item discount type")
+        if line.discount_type=="percent" and line.discount_value>100: fail(400,"Item percentage discount cannot exceed 100")
+        if line.discount_type=="none" and line.discount_value: fail(400,"A discount value requires a discount type")
+        if p.discount_scope!="items" and (line.discount_type!="none" or line.discount_value): fail(400,"Item discounts require the selected-items discount scope")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         u=privilege(c,r,"business","write")
@@ -104,15 +137,44 @@ def create(p:Order,r:Request):
         for line in p.lines:
             price=c.execute("SELECT buy,sell FROM hq_price WHERE item=?",(line.item,)).fetchone()
             if not price:fail(400,"Set item prices before ordering")
-            items.append((line.item,line.qty,price["buy"],price["sell"]))
-        total=sum(x[1]*(x[2] if p.direction=="buy" else x[3]) for x in items)
+            items.append({"item":line.item,"qty":line.qty,"buy":price["buy"],"sell":price["sell"],"discount_type":line.discount_type,"discount_value":line.discount_value})
+        subtotals=[x["qty"]*(x["buy"] if p.direction=="buy" else x["sell"]) for x in items]
+        subtotal=sum(subtotals)
+        if subtotal>1000000000000:fail(400,"Order subtotal exceeds ledger limit")
+        line_discounts=[0 for _ in items]
+        if p.discount_scope=="all":
+            if p.discount_type=="percent":
+                discount=min(subtotal,(subtotal*p.discount_value+50)//100)
+            else:
+                discount=min(subtotal,p.discount_value)
+            if subtotal:
+                shares=[(subtotal_i*discount)//subtotal for subtotal_i in subtotals]
+                remainders=[(subtotal_i*discount)%subtotal for subtotal_i in subtotals]
+                remainder=discount-sum(shares)
+                for index in sorted(range(len(items)),key=lambda i:(-remainders[i],i))[:remainder]:
+                    shares[index]+=1
+                line_discounts=shares
+        elif p.discount_scope=="items":
+            for index,item in enumerate(items):
+                base=subtotals[index]
+                if item["discount_type"]=="percent":
+                    line_discounts[index]=min(base,(base*item["discount_value"]+50)//100)
+                elif item["discount_type"]=="fixed":
+                    line_discounts[index]=min(base,item["discount_value"]*item["qty"])
+        for index,item in enumerate(items):
+            item["discount_amount"]=line_discounts[index]
+        discount_amount=sum(line_discounts)
+        total=subtotal-discount_amount
         if total>1000000000000:fail(400,"Order total exceeds ledger limit")
         gid=clean(p.group_name,100)
-        oid=c.execute("INSERT INTO hq_order(actor,nonce,group_name,direction,status,notes,vault,treasury,created,updated) VALUES(?,?,?,?,'pending',?,?,?,?,?)",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),now(),now())).lastrowid
-        c.executemany("INSERT INTO hq_order_line VALUES(?,?,?,?,?)",[(oid,*x) for x in items])
+        oid=c.execute("""INSERT INTO hq_order(actor,nonce,group_name,direction,status,notes,vault,treasury,discount_scope,discount_type,discount_value,discount_amount,created,updated)
+            VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)""",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),p.discount_scope,p.discount_type,p.discount_value,discount_amount,now(),now())).lastrowid
+        c.executemany("""INSERT INTO hq_order_line(order_id,item,qty,buy,sell,discount_type,discount_value,discount_amount)
+            VALUES(?,?,?,?,?,?,?,?)""",[(oid,x["item"],x["qty"],x["buy"],x["sell"],x["discount_type"],x["discount_value"],x["discount_amount"]) for x in items])
         history(c,oid,u["id"],"pending","Order created")
         audit(c,u["id"],"business.order",oid)
     return {"id":oid}
+
 @router.post("/business/orders/{oid}/status")
 def update(oid:int,p:Status,r:Request):
     origin(r)
@@ -133,7 +195,7 @@ def update(oid:int,p:Status,r:Request):
                 privilege(c,r,"inventory","write")
                 for line in order["lines"]:
                     unit_price=line["buy"] if row["direction"]=="buy" else line["sell"]
-                    change(c,u["id"],"business_"+row["direction"],row["vault"],line["item"],line["qty"] if row["direction"]=="buy" else -line["qty"],"IC order "+str(oid),"order:"+str(oid),unit_price=unit_price)
+                    change(c,u["id"],"business_"+row["direction"],row["vault"],line["item"],line["qty"] if row["direction"]=="buy" else -line["qty"],"IC order "+str(oid),"order:"+str(oid),unit_price=unit_price,movement_value=line["total"])
             if row["treasury"] and order["total"]:
                 privilege(c,r,"treasury","write")
                 amount=order["total"] if row["direction"]=="sell" else -order["total"]

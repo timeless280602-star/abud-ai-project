@@ -180,14 +180,14 @@ def item(p:Item,r:Request):
         audit(c,u["id"],"item.create",iid)
     return {"ok":True}
 
-def change(c,uid,kind,vault,item,delta,note,ref,unit_price=None):
+def change(c,uid,kind,vault,item,delta,note,ref,unit_price=None,movement_value=None):
     if not c.execute("SELECT 1 FROM hq_vault WHERE id=?",(vault,)).fetchone() or not c.execute("SELECT 1 FROM hq_item WHERE id=?",(item,)).fetchone(): fail(404,"Vault or item not found")
     row=c.execute("SELECT qty FROM hq_stock WHERE vault=? AND item=?",(vault,item)).fetchone()
     qty=(row["qty"] if row else 0)+delta
     if qty<0: fail(409,"Insufficient stock")
     if qty>1000000000000: fail(409,"Stock limit exceeded")
     c.execute("INSERT INTO hq_stock VALUES(?,?,?) ON CONFLICT(vault,item) DO UPDATE SET qty=excluded.qty",(vault,item,qty))
-    c.execute("INSERT INTO hq_movement(actor,kind,vault,item,delta,after_qty,note,ref,unit_price,value,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid,kind,vault,item,delta,qty,note,ref,unit_price,abs(delta)*unit_price if unit_price is not None else None,now()))
+    c.execute("INSERT INTO hq_movement(actor,kind,vault,item,delta,after_qty,note,ref,unit_price,value,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid,kind,vault,item,delta,qty,note,ref,unit_price,movement_value if movement_value is not None else (abs(delta)*unit_price if unit_price is not None else None),now()))
 
 @router.post("/ops/move")
 def move(p:Movement,r:Request):

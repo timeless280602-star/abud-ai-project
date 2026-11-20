@@ -246,7 +246,7 @@ def clip(p:Clip,r:Request):
     with db() as c: c.execute("INSERT INTO clips(uid,title,url) VALUES(?,?,?)",(u["id"],clean(p.title,100),p.url))
     return {"ok":True}
 def _media_dir():
-    base=os.getenv("HIGHEST_DATABASE_PATH","/app/data/highest.db")
+    base=os.getenv("HIGHEST_DATABASE_PATH",str(Path(os.getenv("ABUD_DATABASE_PATH","/app/data/abud_memory.db")).parent/"highest.db"))
     path=Path(os.getenv("HIGHEST_MEDIA_DIR",str(Path(base).parent/"highest_media")))
     path.mkdir(parents=True,exist_ok=True,mode=0o750)
     return path

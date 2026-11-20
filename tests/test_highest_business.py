@@ -221,7 +221,7 @@ class BusinessTest(unittest.TestCase):
         oid=next(x["id"] for x in self.get(self.u,"/business/orders").json()["orders"] if x["actor"]==cashier_id and x["nonce"]=="member-created-sale-12345")
         self.advance(oid)
         self.assertEqual(self.post(self.m,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
-        analytics=self.get(self.a,"/business/analytics").json()
+        analytics=self.get(self.u,"/business/analytics").json()
         member_u=next(x for x in analytics["members"] if x["actor"]==self.get(self.u,"/me").json()["id"])
         member_m=next(x for x in analytics["members"] if x["actor"]==self.get(self.m,"/me").json()["id"])
         self.assertEqual((member_u["transactions_created"],member_u["completed_orders_created"],member_u["sales_revenue"]),(1,1,70))

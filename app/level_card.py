@@ -16,7 +16,7 @@ def font(size):
         return ImageFont.load_default(size=size)
 
 
-def rank_card(name, xp, chat_xp, voice_xp, rank):
+def rank_card(name, xp, chat_xp, rank):
     image = Image.new("RGB", (960, 300), "#101116")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((8, 8, 951, 291), radius=24, outline="#343540", width=2)
@@ -49,7 +49,7 @@ def rank_card(name, xp, chat_xp, voice_xp, rank):
         )
     draw.text(
         (64, 250),
-        f"TOTAL {xp:,} XP   •   CHAT {chat_xp:,}   •   VOICE {voice_xp:,}",
+        f"TOTAL {xp:,} XP   •   CHAT {chat_xp:,}",
         font=font(17),
         fill="#a9abb6",
     )

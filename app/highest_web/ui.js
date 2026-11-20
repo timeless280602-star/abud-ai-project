@@ -205,7 +205,7 @@ async function financialReportsUI(write){
  function metric(label,value,sub){let card=el("article",null,"tile");add(card,el("small",label),el("h2",String(value)),el("p",sub||""));return card}
  function draw(){
   content.replaceChildren();tabs.replaceChildren();
-  for(const [key,label] of [["summary","Executive summary"],["monthly","Monthly cash flow"],["divisions","By division"],["categories","By category"],["budgets","Budget plan"]]){
+  for(const [key,label] of [["summary","Executive summary"],["monthly","Monthly cash flow"],["divisions","By division"],["categories","By category"],["business","Business POS"],["budgets","Budget plan"]]){
    tabs.append(button(label,()=>{tab=key;draw()},key!==tab));
   }
   if(tab==="summary"){
@@ -216,7 +216,7 @@ async function financialReportsUI(write){
     metric("Net cash flow",fmt(s.net_cash_flow),"Income less expenses"),
     metric("Closing balance",fmt(s.closing_balance),"Opening balance plus period net flow"),
     metric("Budget allocation",fmt(s.budget_total),"Actual expense is compared against each budget scope below"));
-   content.append(g,el("h3","Comparison with previous period"),el("p",c.previous_start+" to "+c.previous_end+" · Income "+fmt(c.income)+" · Expenses "+fmt(c.expense)+" · Net "+fmt(c.net_cash_flow)),el("p","Change · Income "+fmt(c.income_change)+" · Expenses "+fmt(c.expense_change)+" · Net "+fmt(c.net_change)),el("p",data.budget_note,"muted"));
+   if(data.business?.available){g.append(metric("Completed POS sales",fmt(data.business.sales_revenue),data.business.completed_orders+" completed POS orders"),metric("POS purchase spend",fmt(data.business.purchase_spend),"Operational purchase orders"),metric("Estimated POS gross profit",fmt(data.business.estimated_gross_profit),"Sales less estimated cost of goods"));}content.append(g,el("h3","Comparison with previous period"),el("p",c.previous_start+" to "+c.previous_end+" · Income "+fmt(c.income)+" · Expenses "+fmt(c.expense)+" · Net "+fmt(c.net_cash_flow)),el("p","Change · Income "+fmt(c.income_change)+" · Expenses "+fmt(c.expense_change)+" · Net "+fmt(c.net_change)),el("p",data.budget_note,"muted"));
   }else if(tab==="monthly"){
    content.append(el("h3","Monthly cash flow"));
    for(const x of data.monthly)content.append(el("p",x.period+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.net)+" · "+x.transactions+" posted transactions));
@@ -226,6 +226,12 @@ async function financialReportsUI(write){
   }else if(tab==="categories"){
    content.append(el("h3","Financial performance by category"));
    for(const x of data.categories)content.append(el("p",x.category+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
+  }else if(tab==="business"){
+   const b=data.business;content.append(el("h3","Completed business POS activity"));
+   if(!b.available)content.append(el("p","Business POS schema is not initialized yet.","muted"));
+   else{content.append(el("p","Sales "+fmt(b.sales_revenue)+" · Purchases "+fmt(b.purchase_spend)+" · Estimated gross profit "+fmt(b.estimated_gross_profit)+" · "+b.completed_orders+" completed orders"));
+    for(const x of b.divisions)content.append(el("p",x.division+" · Sales "+fmt(x.sales_revenue)+" · Purchases "+fmt(x.purchase_spend)+" · "+x.completed_orders+" completed orders"));
+   }
   }else{
    content.append(el("h3","Monthly budget plan"),el("p","Budgets are set by month, division and optional category. Actuals are compared against posted expenses.","muted"));
    if(write)content.append(form([field("period","Budget month","month"),field("division","Division / rank (blank = organization-wide)"),field("category","Expense category (blank = all categories)"),field("amount","Budget amount","number")],"Save monthly budget",v=>postRefresh("/ops/financial-reports/budgets",{...v,amount:n(v.amount)})));

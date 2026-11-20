@@ -142,7 +142,7 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(self.get(self.v,f"/social/comments/pov/{pov_id}").status_code,404)
 
     def test_youtube_channel_ownership_challenge_auto_verifies(self):
-        started=self.post(self.v,"/social/channel-verification",{"kind":"streamer","platform":"youtube","channel":"UC"+"a"*22,"profile_url":"https://www.youtube.com/channel/UC"+"a"*22})
+        started=self.post(self.v,"/social/channel-verification",{"kind":"streamer","platform":"youtube","profile_url":"https://www.youtube.com/channel/UC"+"a"*22})
         self.assertEqual(started.status_code,200,started.text)
         verification_id=started.json()["id"]
         challenge=started.json()["challenge"]

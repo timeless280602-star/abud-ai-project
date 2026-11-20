@@ -155,6 +155,7 @@ class SocialTest(unittest.TestCase):
                 checked=self.post(self.v,f"/social/channel-verification/{verification_id}/check",{})
         self.assertEqual(checked.status_code,200,checked.text)
         self.assertEqual(checked.json()["status"],"verified")
+        self.assertEqual(self.get(self.v,"/social/activity").json()["items"][0]["kind"],"channel_verified")
         studio=self.get(self.v,"/social/studio").json()
         self.assertEqual(studio["verification"][0]["status"],"approved")
         with db() as c:
@@ -170,6 +171,9 @@ class SocialTest(unittest.TestCase):
         with db() as c:
             notices=c.execute("SELECT count(*) FROM hq_notification WHERE uid=? AND kind='streamer_live'",(self.v.get("/highest/api/me").json()["id"],)).fetchone()[0]
         self.assertEqual(notices,2)
+        activity=self.get(self.v,"/social/activity").json()
+        self.assertEqual(activity["unread_count"],2)
+        self.assertTrue(all(x["kind"]=="streamer_live" for x in activity["items"]))
 
     def test_social_content_approval_notifies_author(self):
         self.assertEqual(self.post(self.v,"/social/post",{"category":"general","body":"Pending community post","spoiler":False}).status_code,200)
@@ -180,6 +184,8 @@ class SocialTest(unittest.TestCase):
             notice=c.execute("SELECT kind,title FROM hq_notification WHERE uid=? AND kind='content_approved'",(self.v.get("/highest/api/me").json()["id"],)).fetchone()
         self.assertIsNotNone(notice)
         self.assertIn("approved",notice["title"].lower())
+        activity=self.get(self.v,"/social/activity").json()
+        self.assertEqual(activity["items"][0]["kind"],"content_approved")
 
     def test_creator_wiki_feed(self):
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://evil.example/a"}).status_code,400)

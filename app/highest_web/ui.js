@@ -24,7 +24,35 @@ async function community(){let [d,social]=await Promise.all([api("/community"),a
 let member=panel("The Highest Membership");member.append(el("p","Status: "+me.status));if(me.status==="pending")member.append(el("p","Waiting for administrator approval. Your account remains community-only.","muted"));else if(me.status!=="approved")member.append(form([["character","Nama karakter IC","text"],["callsign","Callsign (opsional)","optional"],["requested","Jabatan IC (opsional)","optional"]],"Apply as HT Member",async d=>{await api("/apply",d);await boot()}));root.append(member);
 let clips=panel("Clip Center");clips.append(form([["title","Clip title","text"],["url","YouTube or TikTok link","text"]],"Submit for review",async d=>{await api("/clip",d);alert("Clip submitted for moderator review.");await render()}));let list=el("div",null,"grid");for(const c of social.clips){let t=el("article",null,"tile");add(t,el("h3",c.title),el("small","By "+c.display_name),el("p"),link("Watch clip ↗",c.url),el("p"),button((c.liked?"Unlike":"Like")+" · "+c.likes,()=>postRefresh("/social/clip/"+c.id+"/like",{enabled:!c.liked}),true),button(c.bookmarked?"Saved":"Bookmark",()=>postRefresh("/social/clip/"+c.id+"/bookmark",{enabled:!c.bookmarked}),true));list.append(t)}if(!list.children.length)list.append(el("p","No published clips yet.","muted"));clips.append(list);root.append(clips,await socialPanel(social));return root}
 function tree(ranks,parent=null,seen=new Set()){let t=el("div",null,"tree");for(const r of ranks.filter(r=>r.parent===parent)){if(seen.has(r.id))continue;seen.add(r.id);t.append(el("p",r.name+" · "+r.position),tree(ranks,r.id,seen))}return t}
-async function internal(){let d=await api("/internal"),root=el("div"),h=panel("Organizational hierarchy");h.append(tree(d.ranks));root.append(h);let members=panel("Personnel roster");for(const m of d.members){let rank=d.ranks.find(r=>r.id===m.rank);members.append(el("p",m.character+" · "+(m.callsign||"—")+" · "+(rank?.name||"—")+" · "+m.position))}root.append(members);root.append(await opsPanel());return root}
+let notificationPoller=null;
+async function notificationPanel(){
+ let d=await api("/notifications"),p=panel("HQ Notification Center");
+ let summary=el("p",d.unread_count+" unread · live inbox refreshes every 30 seconds while this page is open","muted");
+ summary.id="hq-notification-summary";p.append(summary);
+ const controls=el("div",null,"row");
+ controls.append(button("Refresh inbox",async()=>await render(),true));
+ if(d.unread_count)controls.append(button("Mark all as read",async()=>{await api("/notifications/read-all",{});await render()},true));
+ p.append(controls);
+ const list=el("div",null,"grid");
+ for(const item of d.items){
+  const card=el("article",null,"tile");
+  add(card,el("h3",item.title),el("small",item.kind.replaceAll("_"," ")+" · "+dateFormat(item.created)),el("p",item.body||""));
+  if(!item.read_at)card.append(button("Mark as read",async()=>{await api("/notifications/"+item.id+"/read",{});await render()},true));
+  list.append(card);
+ }
+ if(!d.items.length)list.append(el("p","You're all caught up. No notifications yet.","muted"));
+ p.append(list);
+ if(notificationPoller)clearInterval(notificationPoller);
+ notificationPoller=setInterval(async()=>{
+  if(view!=="internal"||document.hidden)return;
+  try{
+   const fresh=await api("/notifications?limit=1");
+   if(fresh.unread_count!==d.unread_count||((fresh.items[0]?.id||0)!==(d.items[0]?.id||0)))await render();
+  }catch(e){}
+ },30000);
+ return p;
+}
+async function internal(){let d=await api("/internal"),root=el("div");root.append(await notificationPanel());let h=panel("Organizational hierarchy");h.append(tree(d.ranks));root.append(h);let members=panel("Personnel roster");for(const m of d.members){let rank=d.ranks.find(r=>r.id===m.rank);members.append(el("p",m.character+" · "+(m.callsign||"—")+" · "+(rank?.name||"—")+" · "+m.position))}root.append(members);root.append(await opsPanel());return root}
 async function businessProfileAdmin(){
 let data=await api("/admin/business-profiles"),p=panel("Business profile & document branding");
 p.append(el("p","Create one profile for each business unit. Every new order stores a permanent snapshot of the selected identity, document numbering, logo and visual style. Existing invoices and receipts are not rewritten when a profile changes.","muted"));

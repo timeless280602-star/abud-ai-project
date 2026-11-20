@@ -1,4 +1,5 @@
 import os,tempfile,unittest
+from datetime import datetime
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -62,6 +63,49 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(section["evidence_files"],0)
         self.assertEqual(section["evidence_events"],0)
         self.assertEqual(section["integrity_failures"],0)
+
+    def test_financial_reports_posted_ledger_budgets_and_exports(self):
+        self.assertEqual(self.get(self.u,"/ops/financial-reports?start=2026-11&end=2026-11").status_code,403)
+        self.grant("financial_reports","write")
+        self.grant("treasury","approve")
+        period=datetime.now().strftime("%Y-%m")
+        income=self.post(self.u,"/ops/treasury",{
+            "amount":1000,"direction":"income","category":"Funding","note":"Financial report income"
+        })
+        expense=self.post(self.u,"/ops/treasury",{
+            "amount":250,"direction":"expense","category":"Supplies","note":"Financial report expense"
+        })
+        pending=self.post(self.u,"/ops/treasury",{
+            "amount":500,"direction":"income","category":"Pending","note":"Must not be recognized yet"
+        })
+        self.assertEqual(income.status_code,200,income.text)
+        self.assertEqual(expense.status_code,200,expense.text)
+        self.assertEqual(pending.status_code,200,pending.text)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/{income.json()['id']}/review",{"approve":True}).status_code,200)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/{expense.json()['id']}/review",{"approve":True}).status_code,200)
+        report=self.get(self.u,f"/ops/financial-reports?start={period}&end={period}")
+        self.assertEqual(report.status_code,200,report.text)
+        data=report.json()
+        self.assertEqual(data["summary"]["income"],1000)
+        self.assertEqual(data["summary"]["expense"],250)
+        self.assertEqual(data["summary"]["net_cash_flow"],750)
+        self.assertEqual(data["summary"]["transactions"],2)
+        self.assertEqual(data["divisions"][0]["division"],"Operations")
+        saved=self.post(self.u,"/ops/financial-reports/budgets",{
+            "period":period,"division":"Operations","category":"Supplies","amount":500
+        })
+        self.assertEqual(saved.status_code,200,saved.text)
+        data=self.get(self.u,f"/ops/financial-reports?start={period}&end={period}").json()
+        self.assertEqual(data["budgets"][0]["actual_expense"],250)
+        self.assertEqual(data["budgets"][0]["variance"],250)
+        self.assertEqual(self.post(self.u,"/ops/financial-reports/budgets",{
+            "period":period,"division":"Operations","category":"Supplies","amount":600
+        }).status_code,200)
+        for fmt,signature in (("csv","THE HIGHEST HQ"),("xlsx",b"PK"),("pdf",b"%PDF")):
+            response=self.get(self.u,f"/ops/financial-reports/export?start={period}&end={period}&format={fmt}")
+            self.assertEqual(response.status_code,200,response.text[:300])
+            if fmt=="csv": self.assertIn(signature,response.text)
+            else: self.assertTrue(response.content.startswith(signature))
 
     def test_money(self):
         self.assertEqual(self.get(self.u,"/ops/treasury").status_code,403)

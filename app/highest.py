@@ -1,5 +1,6 @@
 """Separate authentication and membership for the fictional FiveM HQ."""
 import hashlib, hmac, os, re, secrets, sqlite3, time, uuid, mimetypes
+from urllib.parse import urlsplit
 from contextlib import contextmanager
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form

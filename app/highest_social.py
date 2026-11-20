@@ -176,7 +176,13 @@ def _published_owner(c,kind,cid):
     tables={"clip":"clips","moment":"hq_moment","pov":"hq_pov","wiki":"hq_wiki","post":"hq_posts"}
     table=tables.get(kind)
     if not table: fail(400,"Invalid content type")
-    target=c.execute("SELECT uid FROM "+table+" WHERE id=? AND state='published'",(cid,)).fetchone()
+    if kind=="pov":
+        target=c.execute("""SELECT p.uid FROM hq_pov p
+            JOIN hq_moment m ON m.id=p.moment
+            JOIN clips cl ON cl.id=p.clip
+            WHERE p.id=? AND p.state='published' AND m.state='published' AND cl.state='published'""",(cid,)).fetchone()
+    else:
+        target=c.execute("SELECT uid FROM "+table+" WHERE id=? AND state='published'",(cid,)).fetchone()
     if not target: fail(404,"Published content unavailable")
     return int(target["uid"])
 

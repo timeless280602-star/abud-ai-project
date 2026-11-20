@@ -1,5 +1,5 @@
 """Fictional in-game business orders and POS. No real payments."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from app.highest import db, origin, clean, fail, audit
@@ -9,7 +9,7 @@ router=APIRouter(prefix="/highest/api")
 STATES={"pending":{"ready"},"ready":{"completed"},"completed":set()}
 
 def document_number(prefix,timestamp,order_id):
-    day=datetime.fromtimestamp(int(timestamp),timezone.utc).strftime("%Y%m%d")
+    day=datetime.fromtimestamp(int(timestamp),timezone(timedelta(hours=7))).strftime("%Y%m%d")
     return f"{prefix}-{day}-{int(order_id):06d}"
 
 def init():

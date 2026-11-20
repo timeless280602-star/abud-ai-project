@@ -243,6 +243,9 @@ class BusinessTest(unittest.TestCase):
         oid=response.json()["id"]
         created=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         self.assertRegex(created["invoice_no"],r"^INV-\d{8}-\d{6}$")
+        stylesheet=self.u.get("/highest/document.css")
+        self.assertEqual(stylesheet.status_code,200)
+        self.assertIn("size:A4",stylesheet.text)
         self.assertEqual(created["invoice_creator_name"],"cashier")
         self.assertIsNotNone(created["invoice_issued_at"])
         self.assertIsNone(created["receipt_no"])

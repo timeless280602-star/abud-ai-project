@@ -48,3 +48,14 @@ a.button:hover{background:#e4c383;text-decoration:none}
 .community-report form{display:grid;gap:8px;margin-top:10px}
 .community-report textarea{min-height:64px}
 .community-content-item{padding:8px 0;border-bottom:1px solid var(--border)}
+
+/* Community Engagement */
+.community-comments{margin-top:10px;padding-top:8px;border-top:1px solid var(--border)}
+.community-comments summary{cursor:pointer;color:#d5b779;font-size:13px;font-weight:600}
+.community-comment-list{display:grid;gap:10px;margin-top:10px}
+.community-comment{padding:10px;border:1px solid var(--border);border-radius:8px;background:#10100f;display:grid;gap:7px}
+.community-comment p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.community-comment small{color:var(--muted)}
+.community-comment form{display:grid;gap:7px;padding:8px 0}
+.community-comment textarea{width:100%;min-height:54px;background:#101010;color:#fff;border:1px solid #716047;border-radius:7px;padding:9px;font:inherit}
+.community-comment button{margin-right:6px}

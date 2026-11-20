@@ -969,7 +969,6 @@ async def on_guild_join(guild):
 
 @client.event
 async def on_guild_remove(guild):
-    leveling_manager.forget(guild.id)
     try:
         await asyncio.to_thread(sync_guild_to_api, guild, False)
         print(f"Guild ditandai tidak aktif: {guild.id}")
@@ -1027,7 +1026,6 @@ async def on_raw_bulk_message_delete(payload):
 
 @client.event
 async def on_disconnect():
-    leveling_manager.suspend()
 
 
 @client.event

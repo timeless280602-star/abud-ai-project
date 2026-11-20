@@ -34,6 +34,9 @@ def poll():
         try: status,url=check(stream)
         except Exception: status,url="unknown",None
         checked=int(time.time())
+        if status=="unknown":
+            with db() as c: c.execute("UPDATE streamers SET checked=? WHERE id=?",(checked,stream["id"]))
+            continue
         with db() as c:
             c.execute("BEGIN IMMEDIATE")
             previous=c.execute("SELECT status FROM streamers WHERE id=?",(stream["id"],)).fetchone()

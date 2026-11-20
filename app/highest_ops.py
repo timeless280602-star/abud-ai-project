@@ -1460,7 +1460,7 @@ def _financial_report_data(c,start,end):
             "income":prior["income"],"expense":prior["expense"],"net_cash_flow":prior["income"]-prior["expense"],
             "income_change":summary["income"]-prior["income"],"expense_change":expense_total-prior["expense"],
             "net_change":(summary["income"]-expense_total)-(prior["income"]-prior["expense"])},
-        "monthly":periods,"divisions":by_division,"categories":by_category,"budgets":budgets,"business":business,
+        "monthly":periods,"divisions":by_division,"categories":by_category,"budgets":budgets,"business":business,"available_divisions":rows(c,"SELECT name FROM ranks ORDER BY position,name"),
         "budget_note":"Expenses are attributed to the member's current approved rank, not a historical rank snapshot. Internal account transfers are excluded. Only posted Treasury ledger entries are included.",
         "generated_at":now()}
 

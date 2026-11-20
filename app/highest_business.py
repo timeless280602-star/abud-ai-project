@@ -303,7 +303,14 @@ def order_data(c,r):
         unit=line["buy"] if r["direction"]=="buy" else line["sell"]
         line["subtotal"]=line["qty"]*unit
         line["total"]=line["subtotal"]-line["discount_amount"]
-    out["cost"]=sum(x["qty"]*x["buy"] for x in out["lines"])
+    catalog_cost=sum(x["qty"]*x["buy"] for x in out["lines"])
+    actual_cost_row=c.execute("""SELECT sum(value) actual_cogs,count(*) movement_count FROM hq_movement
+        WHERE ref=? AND kind='business_sell' AND cost_source NOT IN ('unvalued','legacy_unvalued')""",("order:"+str(r["id"]),)).fetchone()
+    actual_cost=actual_cost_row["actual_cogs"] if r["direction"]=="sell" and r["status"]=="completed" and actual_cost_row["movement_count"] else None
+    out["catalog_cost_estimate"]=catalog_cost
+    out["actual_cogs"]=actual_cost
+    out["cost_basis"]="actual_inventory_cost" if actual_cost is not None else "catalog_buy_price_estimate"
+    out["cost"]=actual_cost if actual_cost is not None else catalog_cost
     out["sales"]=sum(x["qty"]*x["sell"] for x in out["lines"])
     out["subtotal"]=sum(x["subtotal"] for x in out["lines"])
     out["discount_amount"]=sum(x["discount_amount"] for x in out["lines"])

@@ -113,7 +113,7 @@ class BusinessTest(unittest.TestCase):
 
 
     def test_all_items_percentage_discount_flows_into_revenue_and_treasury(self):
-        payload={"nonce":"all-percent-discount-12345","group_name":"Discount Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"treasury":True,"discount_scope":"all","discount_type":"percent","discount_value":10}
+        payload={"nonce":"all-percent-discount-12345","group_name":"Discount Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"treasury":True,"discount_scope":"all","discount_type":"percent","discount_value":10,"discount_reason":"IC promotional pricing"}
         oid=self.post(self.u,"/business/orders",payload).json()["id"]
         order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         self.assertEqual((order["subtotal"],order["discount_amount"],order["total"]),(105,11,94))
@@ -131,7 +131,7 @@ class BusinessTest(unittest.TestCase):
         items=self.get(self.u,"/ops/inventory").json()["items"]
         second=next(x["id"] for x in items if x["name"]=="Second RP Item")
         self.assertEqual(self.post(self.u,"/business/prices",{"item":second,"buy":10,"sell":20}).status_code,200)
-        payload={"nonce":"selected-fixed-discount-12345","group_name":"Mixed Basket","direction":"sell","lines":[{"item":self.item,"qty":2,"discount_type":"fixed","discount_value":3},{"item":second,"qty":2}],"discount_scope":"items"}
+        payload={"nonce":"selected-fixed-discount-12345","group_name":"Mixed Basket","direction":"sell","lines":[{"item":self.item,"qty":2,"discount_type":"fixed","discount_value":3},{"item":second,"qty":2}],"discount_scope":"items","discount_reason":"IC customer loyalty discount"}
         oid=self.post(self.u,"/business/orders",payload).json()["id"]
         order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         self.assertEqual((order["subtotal"],order["discount_amount"],order["total"]),(110,6,104))
@@ -141,7 +141,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual((untouched["discount_amount"],untouched["total"]),(0,40))
 
     def test_all_items_nominal_discount_applies_to_purchase_total(self):
-        payload={"nonce":"all-fixed-discount-12345","group_name":"Supplier Group","direction":"buy","lines":[{"item":self.item,"qty":3}],"treasury":True,"discount_scope":"all","discount_type":"fixed","discount_value":5}
+        payload={"nonce":"all-fixed-discount-12345","group_name":"Supplier Group","direction":"buy","lines":[{"item":self.item,"qty":3}],"treasury":True,"discount_scope":"all","discount_type":"fixed","discount_value":5,"discount_reason":"IC supplier volume discount"}
         oid=self.post(self.u,"/business/orders",payload).json()["id"]
         order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         self.assertEqual((order["subtotal"],order["discount_amount"],order["total"]),(60,5,55))
@@ -166,7 +166,7 @@ class BusinessTest(unittest.TestCase):
         self.set_discount_policy("all",10,1000)
         denied_scope={"nonce":"scope-denied-123456789","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":1,"discount_type":"percent","discount_value":5}],"discount_scope":"items"}
         self.assertEqual(self.post(self.u,"/business/orders",denied_scope).status_code,403)
-        direct={"nonce":"direct-discount-12345678","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"discount_scope":"all","discount_type":"percent","discount_value":5}
+        direct={"nonce":"direct-discount-12345678","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"discount_scope":"all","discount_type":"percent","discount_value":5,"discount_reason":"IC direct promotion"}
         direct_id=self.post(self.u,"/business/orders",direct).json()["id"]
         direct_order=self.get(self.u,f"/business/orders/{direct_id}").json()["order"]
         self.assertEqual((direct_order["discount_state"],direct_order["discount_amount"],direct_order["total"]),("approved",5,100))
@@ -200,3 +200,14 @@ class BusinessTest(unittest.TestCase):
         policies=self.get(self.a,"/admin/discount-policies").json()
         cashier=next(x for x in policies if x["rank_id"]==self.rank)
         self.assertEqual((cashier["scope"],cashier["max_percent"],cashier["max_fixed"]),("all",5,5))
+
+
+    def test_direct_discount_requires_reason_and_logs_actor(self):
+        payload={"nonce":"direct-reason-required-123456","group_name":"IC Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"discount_scope":"all","discount_type":"percent","discount_value":5}
+        self.assertEqual(self.post(self.u,"/business/orders",payload).status_code,400)
+        payload["discount_reason"]="IC loyalty promotion"
+        response=self.post(self.u,"/business/orders",payload)
+        self.assertEqual(response.status_code,200,response.text)
+        order=self.get(self.u,f"/business/orders/{response.json()['id']}").json()["order"]
+        self.assertEqual(order["creator"],"cashier")
+        self.assertEqual(order["discount_reason"],"IC loyalty promotion")

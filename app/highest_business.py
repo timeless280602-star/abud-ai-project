@@ -65,7 +65,7 @@ class DiscountReview(BaseModel):
     approve:bool
     note:str=Field(default="",max_length=500)
 def get_order(c,oid):
-    r=c.execute("SELECT * FROM hq_order WHERE id=?",(oid,)).fetchone()
+    r=c.execute("SELECT o.*,u.display_name creator FROM hq_order o JOIN users u ON u.id=o.actor WHERE o.id=?",(oid,)).fetchone()
     if not r: fail(404,"Order not found")
     return r
 def order_data(c,r):
@@ -138,7 +138,7 @@ def orders(r:Request):
     with db() as c:
         privilege(c,r,"business")
         u=privilege(c,r,"business")
-        return reply({"orders":[order_data(c,x) for x in c.execute("SELECT * FROM hq_order WHERE legacy_hidden=0 ORDER BY id DESC LIMIT 500").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name"),"discount_policy":discount_policy(c,u["rank"])})
+        return reply({"orders":[order_data(c,x) for x in c.execute("SELECT o.*,u.display_name creator FROM hq_order o JOIN users u ON u.id=o.actor WHERE o.legacy_hidden=0 ORDER BY o.id DESC LIMIT 500").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name"),"discount_policy":discount_policy(c,u["rank"])})
 @router.get("/business/orders/{oid}")
 def order(oid:int,r:Request):
     with db() as c:
@@ -217,8 +217,8 @@ def create(p:Order,r:Request):
                 needs_approval=True
             if requested_discount>policy["max_fixed"]:
                 needs_approval=True
-        if needs_approval and not p.discount_reason.strip():
-            fail(400,"A reason is required when a discount exceeds this rank's direct approval limit")
+        if requested_discount and not p.discount_reason.strip():
+            fail(400,"A reason is required for every discounted order")
         if p.discount_reason.strip() and not requested_discount:
             fail(400,"Discount reason is only used for discounted orders")
         state="pending" if needs_approval else ("approved" if requested_discount else "none")
@@ -235,6 +235,7 @@ def create(p:Order,r:Request):
         history(c,oid,u["id"],"pending","Order created"+(" · Discount approval requested" if needs_approval else ""))
         audit(c,u["id"],"business.order",oid)
         if needs_approval:audit(c,u["id"],"business.discount.request",oid)
+        elif requested_discount:audit(c,u["id"],"business.discount.auto_approved",oid)
     return {"id":oid,"discount_state":state,"discount_requested_amount":requested_discount}
 
 @router.get("/business/discount-requests")

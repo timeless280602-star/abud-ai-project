@@ -84,6 +84,40 @@ class HighestTest(unittest.TestCase):
         with db() as c:
             self.assertIsNone(c.execute("SELECT views FROM clips WHERE id=?",(clip_id,)).fetchone()["views"])
 
+    def test_scheduled_youtube_stats_refresh_updates_only_published_clips(self):
+        path="/highest/api"
+        self.assertEqual(self.user.post(path+"/clip",json={"title":"YouTube stats","url":"https://youtu.be/abcdefghijk"}).status_code,200)
+        clip_id=self.admin.get(path+"/admin").json()["clips"][0]["id"]
+        self.assertEqual(self.admin.post(path+f"/admin/clip/{clip_id}/published").status_code,200)
+        response=type("Response",(),{"json":lambda self:{"items":[{"id":"abcdefghijk","statistics":{"viewCount":"1234"}}]},"raise_for_status":lambda self:None})()
+        with patch.dict(os.environ,{"HIGHEST_YOUTUBE_API_KEY":"test-key"}):
+            with patch("app.highest_stats.httpx.Client") as client:
+                client.return_value.__enter__.return_value.get.return_value=response
+                from app.highest_stats import refresh
+                result=refresh()
+        self.assertEqual(result["updated"],1)
+        with db() as c:
+            row=c.execute("SELECT views,views_source FROM clips WHERE id=?",(clip_id,)).fetchone()
+        self.assertEqual(row["views"],1234)
+        self.assertEqual(row["views_source"],"youtube_data_api")
+
+    def test_scheduled_tiktok_stats_requires_https_provider(self):
+        path="/highest/api"
+        self.assertEqual(self.user.post(path+"/clip",json={"title":"TikTok stats","url":"https://www.tiktok.com/@creator/video/123456"}).status_code,200)
+        clip_id=self.admin.get(path+"/admin").json()["clips"][0]["id"]
+        self.assertEqual(self.admin.post(path+f"/admin/clip/{clip_id}/published").status_code,200)
+        response=type("Response",(),{"json":lambda self:{"views":987},"raise_for_status":lambda self:None})()
+        with patch.dict(os.environ,{"HIGHEST_TIKTOK_STATS_URL":"https://provider.example/stats","HIGHEST_TIKTOK_STATS_TOKEN":"test-token"}):
+            with patch("app.highest_stats.httpx.Client") as client:
+                client.return_value.__enter__.return_value.get.return_value=response
+                from app.highest_stats import refresh
+                result=refresh()
+        self.assertEqual(result["updated"],1)
+        with db() as c:
+            row=c.execute("SELECT views,views_source FROM clips WHERE id=?",(clip_id,)).fetchone()
+        self.assertEqual(row["views"],987)
+        self.assertEqual(row["views_source"],"tiktok_provider")
+
     def test_approval_and_revocation(self):
         u=self.user; a=self.admin; path="/highest/api"
         self.assertEqual(u.get(path+"/internal").status_code,403)

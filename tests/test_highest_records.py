@@ -116,6 +116,50 @@ class RecordsTest(unittest.TestCase):
         self.assertTrue(final_custody["chain_valid"])
         self.assertEqual(final_custody["events"][-1]["action"],"integrity_failed")
 
+    def test_advanced_case_intelligence_analytics_and_permission_scope(self):
+        self.assertEqual(self.get(self.u,"/case-intelligence/analytics").status_code,403)
+        self.grant("cases","write")
+        first=self.post(self.u,"/ops/cases",{"name":"Harbor Incident","summary":"Fictional IC case"}).json()["id"]
+        second=self.post(self.u,"/ops/cases",{"name":"Warehouse Incident","summary":"Fictional IC case"}).json()["id"]
+        lead=self.post(self.u,f"/case-extras/{first}/nodes",{
+            "entity_type":"character","name":"Alex Morgan","description":"Fictional character","reference":"IC-CHAR-01"
+        }).json()["id"]
+        same=self.post(self.u,f"/case-extras/{second}/nodes",{
+            "entity_type":"character","name":" alex morgan ","description":"Fictional character"
+        })
+        self.assertEqual(same.status_code,200,same.text)
+        vehicle=self.post(self.u,f"/case-extras/{first}/nodes",{
+            "entity_type":"vehicle","name":"Black Sultan"
+        }).json()["id"]
+        self.assertEqual(self.post(self.u,f"/case-extras/{first}/links",{
+            "source_id":lead,"target_id":vehicle,"label":"Seen together"
+        }).status_code,200)
+        pdf=b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n"
+        upload=self.u.post(f"/highest/api/case-extras/{first}/files",
+            data={"title":"IC photo","category":"document","detail":"Fictional evidence","related_entity_id":str(lead)},
+            files={"file":("photo.pdf",pdf,"application/pdf")})
+        self.assertEqual(upload.status_code,200,upload.text)
+        self.assertEqual(self.u.get(f"/highest/api/case-extras/evidence/{upload.json()['id']}/file").status_code,200)
+        self.grant("cases","view")
+        report=self.get(self.u,"/case-intelligence/analytics")
+        self.assertEqual(report.status_code,200,report.text)
+        data=report.json()
+        self.assertEqual(data["cases"]["total"],2)
+        self.assertEqual(data["graph"]["characters"],2)
+        self.assertEqual(data["graph"]["vehicles"],1)
+        self.assertEqual(data["graph"]["relationships"],1)
+        self.assertEqual(data["graph"]["evidence_files"],1)
+        self.assertEqual(data["graph"]["custody_events"],2)
+        self.assertEqual(len(data["recurring_entities"]),1)
+        overlap=data["recurring_entities"][0]
+        self.assertEqual(overlap["entity_name"],"Alex Morgan")
+        self.assertEqual(overlap["case_count"],2)
+        self.assertIn("not proof",overlap["interpretation"])
+        self.assertEqual(len(data["candidate_case_overlaps"]),1)
+        self.assertEqual(data["most_connected_entities"][0]["degree"],1)
+        self.assertTrue(data["activity_timeline"])
+        self.assertEqual(self.get(self.v,"/case-intelligence/analytics").status_code,403)
+
     def test_graph_rejects_cross_case_links_and_preserves_legacy_relations(self):
         self.grant("cases","write")
         first=self.post(self.u,"/ops/cases",{"name":"First case","summary":"IC"}).json()["id"]

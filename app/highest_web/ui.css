@@ -41,3 +41,10 @@ a.button:hover{background:#e4c383;text-decoration:none}
 .calendar-day.outside{opacity:.38}
 .calendar-day:hover{border-color:#c9a86a}
 @media(max-width:700px){.calendar-grid{gap:3px}.calendar-day{min-height:76px;padding:5px 3px}.calendar-day small{font-size:8px;padding:2px}.calendar-weekday{font-size:9px;padding:5px 0}}
+
+/* Community Trust & Safety */
+.community-report{margin-top:10px;padding-top:8px;border-top:1px solid var(--border)}
+.community-report summary{cursor:pointer;color:#d5b779;font-size:12px}
+.community-report form{display:grid;gap:8px;margin-top:10px}
+.community-report textarea{min-height:64px}
+.community-content-item{padding:8px 0;border-bottom:1px solid var(--border)}

@@ -36,7 +36,12 @@ def init():
             starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,status TEXT NOT NULL,reminder_minutes INTEGER NOT NULL,
             actor INTEGER REFERENCES users(id),created INTEGER NOT NULL,PRIMARY KEY(event_id,version)
         );
-        """)
+
+        CREATE TABLE IF NOT EXISTS hq_approval_policy(module TEXT NOT NULL,step INTEGER NOT NULL CHECK(step>0),rank_id INTEGER NOT NULL REFERENCES ranks(id) ON DELETE CASCADE,PRIMARY KEY(module,step));
+        CREATE TABLE IF NOT EXISTS hq_approval_request(id INTEGER PRIMARY KEY,module TEXT NOT NULL,reference_type TEXT NOT NULL DEFAULT '',reference_id TEXT NOT NULL DEFAULT '',title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',payload TEXT NOT NULL DEFAULT '{}',requester INTEGER NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled')),current_step INTEGER NOT NULL DEFAULT 1,total_steps INTEGER NOT NULL DEFAULT 1,created INTEGER NOT NULL,updated INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS hq_approval_queue ON hq_approval_request(status,module,current_step,created);
+        CREATE TABLE IF NOT EXISTS hq_approval_action(id INTEGER PRIMARY KEY,request_id INTEGER NOT NULL REFERENCES hq_approval_request(id) ON DELETE CASCADE,step INTEGER NOT NULL,actor INTEGER NOT NULL REFERENCES users(id),delegated_from INTEGER REFERENCES users(id),decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL,UNIQUE(request_id,step));
+        CREATE TABLE IF NOT EXISTS hq_approval_delegation(id INTEGER PRIMARY KEY,module TEXT NOT NULL,delegator INTEGER NOT NULL REFERENCES users(id),delegate INTEGER NOT NULL REFERENCES users(id),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(module,delegator,delegate));        """)
         movement_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_movement)")}
         if "unit_price" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN unit_price INTEGER")
         if "value" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN value INTEGER")
@@ -69,6 +74,23 @@ class Money(BaseModel):
     note:str=Field(min_length=1,max_length=500)
 class Decision(BaseModel):
     approve:bool
+class ApprovalSubmission(BaseModel):
+    module:str
+    reference_type:str=Field(default='',max_length=80)
+    reference_id:str=Field(default='',max_length=120)
+    title:str=Field(min_length=3,max_length=160)
+    description:str=Field(default='',max_length=4000)
+    payload:dict=Field(default_factory=dict)
+class ApprovalDecision(BaseModel):
+    approve:bool
+    note:str=Field(default='',max_length=1000)
+class ApprovalPolicy(BaseModel):
+    module:str
+    ranks:list[int]=Field(min_length=1,max_length=8)
+class ApprovalDelegation(BaseModel):
+    module:str
+    delegate_user_id:int
+    active:bool=True
 class Name(BaseModel):
     name:str=Field(min_length=1,max_length=80)
 class Item(Name):

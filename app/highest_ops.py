@@ -267,9 +267,12 @@ def _receive_cost(c,vault,item,qty,total_value,source,ref,method=None):
         active=_active_layers(c,vault,item)
         total_qty=sum(x["qty_remaining"] for x in active)+qty
         value=sum(x["value_remaining"] for x in active)+total_value
-        if any(x["source"] in ("legacy_unvalued","unvalued","mixed_unvalued") for x in active) and source not in ("legacy_unvalued","unvalued","mixed_unvalued"):
-            fail(409,"Revalue legacy opening stock before adding costed receipts to a weighted-average stash")
-        layer_source=source if not active else ("mixed_unvalued" if source in ("legacy_unvalued","unvalued","mixed_unvalued") or any(x["source"] in ("legacy_unvalued","unvalued","mixed_unvalued") for x in active) else ("weighted_average_pool" if any(x["source"]!=source for x in active) else source))
+        unknown_sources=("legacy_unvalued","unvalued","mixed_unvalued")
+        active_unknown=any(x["source"] in unknown_sources for x in active)
+        incoming_unknown=source in unknown_sources
+        if active and active_unknown!=incoming_unknown:
+            fail(409,"Revalue legacy opening stock before mixing it with costed weighted-average stock")
+        layer_source=source if not active else ("mixed_unvalued" if incoming_unknown else ("weighted_average_pool" if any(x["source"]!=source for x in active) else source))
         if active:
             keep=active[0]["id"]
             c.execute("UPDATE hq_cost_layer SET qty_remaining=?,value_remaining=?,source=?,reference=?,created=? WHERE id=?",
@@ -315,7 +318,7 @@ def _cost_summary(c):
     return rows(c,"""SELECT v.id vault_id,v.name vault_name,i.id item_id,i.name item_name,i.costing_method,
         coalesce(sum(l.qty_remaining),0) qty,coalesce(sum(l.value_remaining),0) value,
         CASE WHEN coalesce(sum(l.qty_remaining),0)>0 THEN round(sum(l.value_remaining)*1.0/sum(l.qty_remaining),2) ELSE 0 END average_unit_cost,
-        coalesce(sum(CASE WHEN l.source='legacy_unvalued' THEN l.qty_remaining ELSE 0 END),0) unvalued_qty
+        coalesce(sum(CASE WHEN l.source IN ('legacy_unvalued','unvalued','mixed_unvalued') THEN l.qty_remaining ELSE 0 END),0) unvalued_qty
         FROM hq_vault v CROSS JOIN hq_item i LEFT JOIN hq_cost_layer l ON l.vault=v.id AND l.item=i.id AND l.qty_remaining>0
         LEFT JOIN hq_stock st ON st.vault=v.id AND st.item=i.id
         WHERE coalesce(st.qty,0)>0 OR coalesce(i.min_stock,0)>0
@@ -400,7 +403,7 @@ def opening_valuation(p:OpeningValuation,r:Request):
         _ensure_cost_layers(c,p.vault,p.item)
         stock=c.execute("SELECT qty FROM hq_stock WHERE vault=? AND item=?",(p.vault,p.item)).fetchone()
         if not stock: fail(404,"No stock balance found for this stash and item")
-        layers=c.execute("SELECT * FROM hq_cost_layer WHERE vault=? AND item=? AND qty_remaining>0 AND source IN ('legacy_unvalued','unvalued') ORDER BY created,id",(p.vault,p.item)).fetchall()
+        layers=c.execute("SELECT * FROM hq_cost_layer WHERE vault=? AND item=? AND qty_remaining>0 AND source IN ('legacy_unvalued','unvalued','mixed_unvalued') ORDER BY created,id",(p.vault,p.item)).fetchall()
         if not layers: fail(409,"There is no unvalued opening stock to revalue")
         total_qty=sum(x["qty_remaining"] for x in layers);total_value=total_qty*p.unit_cost
         for layer in layers:

@@ -12,7 +12,26 @@ def init():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS hq_grants(rank_id INTEGER REFERENCES ranks(id) ON DELETE CASCADE,module TEXT,level TEXT CHECK(level IN ('view','write','approve')),PRIMARY KEY(rank_id,module));
-        CREATE TABLE IF NOT EXISTS hq_money(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),amount INTEGER NOT NULL,category TEXT NOT NULL,note TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','posted','rejected')),reviewer INTEGER REFERENCES users(id),created INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS hq_treasury_account(
+            id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            description TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+            created INTEGER NOT NULL,actor INTEGER REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS hq_money(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),amount INTEGER NOT NULL,category TEXT NOT NULL,note TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','posted','rejected')),reviewer INTEGER REFERENCES users(id),created INTEGER NOT NULL,account_id INTEGER REFERENCES hq_treasury_account(id),transfer_ref TEXT);
+        CREATE INDEX IF NOT EXISTS hq_money_account_state ON hq_money(account_id,state,created DESC);
+        CREATE TABLE IF NOT EXISTS hq_treasury_transfer(
+            id INTEGER PRIMARY KEY,actor INTEGER NOT NULL REFERENCES users(id),source_account INTEGER NOT NULL REFERENCES hq_treasury_account(id),
+            destination_account INTEGER NOT NULL REFERENCES hq_treasury_account(id),amount INTEGER NOT NULL CHECK(amount>0),
+            note TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('pending','posted','rejected')),
+            reviewer INTEGER REFERENCES users(id),created INTEGER NOT NULL,transfer_ref TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS hq_treasury_reconciliation(
+            id INTEGER PRIMARY KEY,account_id INTEGER NOT NULL REFERENCES hq_treasury_account(id),
+            expected_balance INTEGER NOT NULL,counted_balance INTEGER NOT NULL,difference INTEGER NOT NULL,
+            note TEXT NOT NULL,actor INTEGER NOT NULL REFERENCES users(id),status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+            reviewer INTEGER REFERENCES users(id),created INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS hq_treasury_recon_account ON hq_treasury_reconciliation(account_id,created DESC);
         CREATE TABLE IF NOT EXISTS hq_vault(id INTEGER PRIMARY KEY,name TEXT UNIQUE COLLATE NOCASE NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_item(id INTEGER PRIMARY KEY,name TEXT UNIQUE COLLATE NOCASE NOT NULL,category TEXT NOT NULL,min_stock INTEGER NOT NULL CHECK(min_stock>=0));
         CREATE TABLE IF NOT EXISTS hq_stock(vault INTEGER REFERENCES hq_vault(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>=0),PRIMARY KEY(vault,item));
@@ -60,6 +79,14 @@ def init():
         );        """)
         item_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_item)")}
         if "costing_method" not in item_columns: c.execute("ALTER TABLE hq_item ADD COLUMN costing_method TEXT NOT NULL DEFAULT 'fifo'")
+        money_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_money)")}
+        if "account_id" not in money_columns: c.execute("ALTER TABLE hq_money ADD COLUMN account_id INTEGER REFERENCES hq_treasury_account(id)")
+        if "transfer_ref" not in money_columns: c.execute("ALTER TABLE hq_money ADD COLUMN transfer_ref TEXT")
+        default_account=c.execute("SELECT id FROM hq_treasury_account WHERE name='General Treasury' COLLATE NOCASE").fetchone()
+        if not default_account:
+            default_id=c.execute("INSERT INTO hq_treasury_account(name,description,active,created) VALUES('General Treasury','Migrated default treasury account',1,?)",(now(),)).lastrowid
+        else: default_id=default_account["id"]
+        c.execute("UPDATE hq_money SET account_id=? WHERE account_id IS NULL",(default_id,))
         movement_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_movement)")}
         if "unit_price" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN unit_price INTEGER")
         if "value" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN value INTEGER")
@@ -125,6 +152,18 @@ class Money(BaseModel):
     amount:int=Field(gt=0,le=1000000000000)
     direction:str
     category:str=Field(min_length=1,max_length=60)
+    note:str=Field(min_length=1,max_length=500)
+class TreasuryAccount(BaseModel):
+    name:str=Field(min_length=2,max_length=80)
+    description:str=Field(default='',max_length=300)
+class TreasuryTransfer(BaseModel):
+    source_account:int
+    destination_account:int
+    amount:int=Field(gt=0,le=1000000000000)
+    note:str=Field(min_length=1,max_length=500)
+class TreasuryReconciliation(BaseModel):
+    account_id:int
+    counted_balance:int=Field(ge=0,le=1000000000000000)
     note:str=Field(min_length=1,max_length=500)
 class Decision(BaseModel):
     approve:bool
@@ -244,49 +283,160 @@ def grant(p:Grant,r:Request):
         audit(c,u["id"],"grant."+p.module+"."+p.level,p.rank)
     return {"ok":True}
 
-def balance(c): return c.execute("SELECT coalesce(sum(amount),0) FROM hq_money WHERE state='posted'").fetchone()[0]
+def balance(c,account_id=None):
+    if account_id is None:
+        return c.execute("SELECT coalesce(sum(amount),0) FROM hq_money WHERE state='posted'").fetchone()[0]
+    return c.execute("SELECT coalesce(sum(amount),0) FROM hq_money WHERE state='posted' AND account_id=?",(account_id,)).fetchone()[0]
 
 @router.get("/ops/treasury")
 def treasury(r:Request):
     with db() as c:
         privilege(c,r,"treasury")
-        return reply({"balance":balance(c),"entries":rows(c,"SELECT m.*,u.username FROM hq_money m JOIN users u ON u.id=m.actor ORDER BY m.id DESC LIMIT 300")})
+        accounts=rows(c,"""SELECT a.*,coalesce(sum(CASE WHEN m.state='posted' THEN m.amount ELSE 0 END),0) balance
+            FROM hq_treasury_account a LEFT JOIN hq_money m ON m.account_id=a.id
+            WHERE a.active=1 GROUP BY a.id ORDER BY a.name""")
+        return reply({"balance":balance(c),"accounts":accounts,
+            "entries":rows(c,"""SELECT m.*,u.username,a.name account_name FROM hq_money m
+                JOIN users u ON u.id=m.actor LEFT JOIN hq_treasury_account a ON a.id=m.account_id
+                ORDER BY m.id DESC LIMIT 300"""),
+            "transfers":rows(c,"""SELECT t.*,s.name source_name,d.name destination_name,u.username
+                FROM hq_treasury_transfer t JOIN hq_treasury_account s ON s.id=t.source_account
+                JOIN hq_treasury_account d ON d.id=t.destination_account JOIN users u ON u.id=t.actor
+                ORDER BY t.id DESC LIMIT 100"""),
+            "reconciliations":rows(c,"""SELECT x.*,a.name account_name,u.username FROM hq_treasury_reconciliation x
+                JOIN hq_treasury_account a ON a.id=x.account_id JOIN users u ON u.id=x.actor
+                ORDER BY x.id DESC LIMIT 100""")})
+
+@router.post("/ops/treasury/accounts")
+def treasury_account_create(p:TreasuryAccount,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"treasury","write")
+        try:
+            aid=c.execute("INSERT INTO hq_treasury_account(name,description,active,created,actor) VALUES(?,?,1,?,?)",
+                (clean(p.name,80),clean(p.description,300,required=False),now(),u["id"])).lastrowid
+        except Exception as e:
+            if "UNIQUE" in str(e): fail(409,"Treasury account name already exists")
+            raise
+        audit(c,u["id"],"treasury.account.create",aid)
+    return {"ok":True,"id":aid}
 
 @router.post("/ops/treasury")
 def money(p:Money,r:Request):
     origin(r)
     if p.direction not in ("income","expense"): fail(400,"Invalid direction")
+    account_id=getattr(p,"account_id",None)
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         u=privilege(c,r,"treasury","write")
+        if account_id is None:
+            account=c.execute("SELECT id FROM hq_treasury_account WHERE name='General Treasury' COLLATE NOCASE AND active=1").fetchone()
+            account_id=account["id"] if account else None
+        account=c.execute("SELECT id FROM hq_treasury_account WHERE id=? AND active=1",(account_id,)).fetchone()
+        if not account: fail(404,"Active treasury account not found")
         amount=p.amount if p.direction=="income" else -p.amount
-        mid=c.execute("INSERT INTO hq_money(actor,amount,category,note,state,created) VALUES(?,?,?,?,'pending',?)",(u["id"],amount,clean(p.category,60),clean(p.note,500),now())).lastrowid
+        mid=c.execute("INSERT INTO hq_money(actor,amount,category,note,state,created,account_id) VALUES(?,?,?,?,'pending',?,?)",
+            (u["id"],amount,clean(p.category,60),clean(p.note,500),now(),account_id)).lastrowid
         reviewers=rows(c,"""SELECT DISTINCT u.id FROM users u JOIN membership m ON m.uid=u.id
             JOIN hq_grants g ON g.rank_id=m.rank AND (g.module='treasury' OR g.module='*') AND g.level='approve'
             WHERE m.status='approved' AND u.id<>?""",(u["id"],))
         for target in reviewers:
             notify(c,target["id"],"treasury_review","Treasury transaction awaits review",
-                clean(p.category,60)+" · "+str(abs(amount))+" · "+clean(p.note,500),
+                account["id"].__str__()+" · "+clean(p.category,60)+" · "+str(abs(amount)),
                 "/highest/internal/","treasury:"+str(mid)+":review:"+str(target["id"]))
         audit(c,u["id"],"money.request",mid)
     return {"ok":True,"id":mid}
 
-@router.post("/ops/treasury/{mid}/review")
-def money_review(mid:int,p:Decision,r:Request):
+@router.post("/ops/treasury/transfers")
+def treasury_transfer_create(p:TreasuryTransfer,r:Request):
+    origin(r)
+    if p.source_account==p.destination_account: fail(400,"Source and destination accounts must differ")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"treasury","write")
+        source=c.execute("SELECT * FROM hq_treasury_account WHERE id=? AND active=1",(p.source_account,)).fetchone()
+        dest=c.execute("SELECT * FROM hq_treasury_account WHERE id=? AND active=1",(p.destination_account,)).fetchone()
+        if not source or not dest: fail(404,"Active treasury account not found")
+        if balance(c,p.source_account)<p.amount: fail(409,"Insufficient source account balance")
+        ref=secrets.token_hex(12)
+        tid=c.execute("""INSERT INTO hq_treasury_transfer(actor,source_account,destination_account,amount,note,status,created,transfer_ref)
+            VALUES(?,?,?,?,?,'pending',?,?)""",(u["id"],p.source_account,p.destination_account,p.amount,clean(p.note,500),now(),ref)).lastrowid
+        reviewers=rows(c,"""SELECT DISTINCT u.id FROM users u JOIN membership m ON m.uid=u.id
+            JOIN hq_grants g ON g.rank_id=m.rank AND (g.module='treasury' OR g.module='*') AND g.level='approve'
+            WHERE m.status='approved' AND u.id<>?""",(u["id"],))
+        for target in reviewers:
+            notify(c,target["id"],"treasury_transfer_review","Treasury transfer awaits review",
+                source["name"]+" → "+dest["name"]+" · "+str(p.amount),"/highest/internal/",
+                "treasury-transfer:"+str(tid)+":review:"+str(target["id"]))
+        audit(c,u["id"],"treasury.transfer.request",tid)
+    return {"ok":True,"id":tid,"reference":ref}
+
+@router.post("/ops/treasury/transfers/{transfer_id}/review")
+def treasury_transfer_review(transfer_id:int,p:Decision,r:Request):
     origin(r)
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         u=privilege(c,r,"treasury","approve")
-        row=c.execute("SELECT * FROM hq_money WHERE id=? AND state='pending'",(mid,)).fetchone()
-        if not row: fail(409,"No pending transaction")
-        if row["actor"]==u["id"]: fail(403,"Cannot approve or reject own submission")
-        if p.approve and balance(c)+row["amount"]<0: fail(409,"Insufficient treasury balance")
-        state="posted" if p.approve else "rejected"
-        c.execute("UPDATE hq_money SET state=?,reviewer=? WHERE id=?",(state,u["id"],mid))
-        notify(c,row["actor"],"treasury_decision","Treasury transaction "+state,
-            row["category"]+" · "+str(abs(row["amount"])),"/highest/internal/","treasury:"+str(mid)+":decision:"+state)
-        audit(c,u["id"],"money."+state,mid)
-    return {"ok":True}
+        transfer=c.execute("SELECT * FROM hq_treasury_transfer WHERE id=? AND status='pending'",(transfer_id,)).fetchone()
+        if not transfer: fail(409,"No pending treasury transfer")
+        if transfer["actor"]==u["id"]: fail(403,"Cannot review own transfer")
+        state="rejected"
+        if p.approve:
+            if balance(c,transfer["source_account"])<transfer["amount"]: fail(409,"Insufficient source account balance")
+            source=c.execute("SELECT name FROM hq_treasury_account WHERE id=?",(transfer["source_account"],)).fetchone()
+            dest=c.execute("SELECT name FROM hq_treasury_account WHERE id=?",(transfer["destination_account"],)).fetchone()
+            ref=transfer["transfer_ref"]
+            c.execute("""INSERT INTO hq_money(actor,amount,category,note,state,reviewer,created,account_id,transfer_ref)
+                VALUES(?,?,'Internal transfer',?,'posted',?,?,?,?)""",
+                (transfer["actor"],-transfer["amount"],"Transfer to "+dest["name"]+" · "+transfer["note"],u["id"],now(),transfer["source_account"],ref))
+            c.execute("""INSERT INTO hq_money(actor,amount,category,note,state,reviewer,created,account_id,transfer_ref)
+                VALUES(?,?,'Internal transfer',?,'posted',?,?,?,?)""",
+                (transfer["actor"],transfer["amount"],"Transfer from "+source["name"]+" · "+transfer["note"],u["id"],now(),transfer["destination_account"],ref))
+            state="posted"
+        c.execute("UPDATE hq_treasury_transfer SET status=?,reviewer=? WHERE id=?",(state,u["id"],transfer_id))
+        notify(c,transfer["actor"],"treasury_transfer_decision","Treasury transfer "+state,
+            "Transfer #"+str(transfer_id)," /highest/internal/","treasury-transfer:"+str(transfer_id)+":decision:"+state)
+        audit(c,u["id"],"treasury.transfer."+state,transfer_id)
+    return {"ok":True,"status":state}
+
+@router.post("/ops/treasury/reconciliations")
+def treasury_reconciliation_create(p:TreasuryReconciliation,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"treasury","write")
+        account=c.execute("SELECT * FROM hq_treasury_account WHERE id=? AND active=1",(p.account_id,)).fetchone()
+        if not account: fail(404,"Active treasury account not found")
+        expected=balance(c,p.account_id);difference=p.counted_balance-expected
+        rid=c.execute("""INSERT INTO hq_treasury_reconciliation(account_id,expected_balance,counted_balance,difference,note,actor,status,created)
+            VALUES(?,?,?,?,?,?,'pending',?)""",(p.account_id,expected,p.counted_balance,difference,clean(p.note,500),u["id"],now())).lastrowid
+        reviewers=rows(c,"""SELECT DISTINCT u.id FROM users u JOIN membership m ON m.uid=u.id
+            JOIN hq_grants g ON g.rank_id=m.rank AND (g.module='treasury' OR g.module='*') AND g.level='approve'
+            WHERE m.status='approved' AND u.id<>?""",(u["id"],))
+        for target in reviewers:
+            notify(c,target["id"],"treasury_reconciliation_review","Treasury reconciliation awaits review",
+                account["name"]+" · variance "+str(difference),"/highest/internal/",
+                "treasury-reconciliation:"+str(rid)+":review:"+str(target["id"]))
+        audit(c,u["id"],"treasury.reconciliation.submit",rid)
+    return {"ok":True,"id":rid,"expected_balance":expected,"difference":difference}
+
+@router.post("/ops/treasury/reconciliations/{reconciliation_id}/review")
+def treasury_reconciliation_review(reconciliation_id:int,p:Decision,r:Request):
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,"treasury","approve")
+        record=c.execute("SELECT * FROM hq_treasury_reconciliation WHERE id=? AND status='pending'",(reconciliation_id,)).fetchone()
+        if not record: fail(409,"No pending reconciliation")
+        if record["actor"]==u["id"]: fail(403,"Cannot review own reconciliation")
+        state="approved" if p.approve else "rejected"
+        c.execute("UPDATE hq_treasury_reconciliation SET status=?,reviewer=? WHERE id=?",(state,u["id"],reconciliation_id))
+        notify(c,record["actor"],"treasury_reconciliation_decision","Treasury reconciliation "+state,
+            "Reconciliation #"+str(reconciliation_id)+" · variance "+str(record["difference"]),
+            "/highest/internal/","treasury-reconciliation:"+str(reconciliation_id)+":decision:"+state)
+        audit(c,u["id"],"treasury.reconciliation."+state,reconciliation_id)
+    return {"ok":True,"status":state}
 
 def catalog(c):
     return {"vaults":rows(c,"SELECT * FROM hq_vault ORDER BY name"),"items":rows(c,"SELECT * FROM hq_item ORDER BY name")}

@@ -834,7 +834,7 @@ def approval_delegation(p:ApprovalDelegation,r:Request):
             pending=rows(c,"""SELECT q.id,q.title,q.current_step FROM hq_approval_request q
                 JOIN hq_approval_request_step st ON st.request_id=q.id AND st.step=q.current_step
                 WHERE q.module=? AND q.status='pending' AND st.rank_id=? AND q.requester<>?""",
-                (p.module,target["rank"],u["id"]))
+                (p.module,u["rank"],u["id"]))
             for request in pending:
                 notify(c,p.delegate_user_id,"approval_review","Approval requires your review",
                     request["title"]+" · "+p.module+" · step "+str(request["current_step"]),

@@ -149,9 +149,10 @@ class SocialTest(unittest.TestCase):
         response=MagicMock()
         response.json.return_value={"items":[{"snippet":{"description":"Official channel\\n"+challenge}}]}
         response.raise_for_status.return_value=None
-        with patch("app.highest_social.httpx.Client") as client:
-            client.return_value.__enter__.return_value.get.return_value=response
-            checked=self.post(self.v,f"/social/channel-verification/{verification_id}/check",{})
+        with patch.dict(os.environ,{"HIGHEST_YOUTUBE_API_KEY":"test-api-key"}):
+            with patch("app.highest_social.httpx.Client") as client:
+                client.return_value.__enter__.return_value.get.return_value=response
+                checked=self.post(self.v,f"/social/channel-verification/{verification_id}/check",{})
         self.assertEqual(checked.status_code,200,checked.text)
         self.assertEqual(checked.json()["status"],"verified")
         studio=self.get(self.v,"/social/studio").json()

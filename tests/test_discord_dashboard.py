@@ -112,5 +112,5 @@ class Actions(unittest.IsolatedAsyncioTestCase):
     async def test_leveling_save_uses_original_store(self):
         manager=Mock()
         guild=SimpleNamespace(id=123)
-        await administer(guild,None,"leveling.save",{"enabled":True,"chat":True,"voice":False,"announcement":None},manager,None,None,None)
+        await administer(guild,None,"leveling.save",{"enabled":True,"chat":True,"announcement":None},manager,None,None,None)
         manager.store.configure.assert_called_once_with(123,True,True,False,None)

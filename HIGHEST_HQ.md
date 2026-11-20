@@ -158,3 +158,20 @@ Community Engagement & Social Interaction:
 - Added a dedicated Community Activity tab with unread counts, individual read state and mark-all-read.
 - All comment creation, replies, likes and deletes are authenticated; comment creation is rate-limited. Content must still be published when a comment is read or created.
 - No nested reply chains, image/GIF attachments, mentions, emoji reactions, or edit-history feature are included in this iteration.
+
+
+Content approvals and creator integrations:
+- Clip approvals/rejections and Moments, POVs, Wiki and Community Feed approvals/rejections create private HQ inbox notifications for the submitting member.
+- Streamer live alerts are sent to members who follow that streamer, only on a transition into live. Repeated polling while a stream remains live does not re-notify.
+- YouTube channel ownership is verified automatically by a one-time challenge placed in the public channel description and checked through YouTube Data API.
+- TikTok channel ownership uses a configurable profile-verification adapter. It must return JSON with `username` and `bio` (or `description`) for the requested username.
+- Native clip media supports JPG/JPEG, PNG, WEBP, GIF, MP4 and WEBM. Image uploads are limited to 10 MB; videos to 50 MB. Uploads are private until approved; stored files use random names and SHA-256 fingerprints.
+- YouTube view counts use YouTube Data API videos.list statistics. TikTok view counts use an operator-configured statistics adapter. Missing provider credentials or unsupported links remain unavailable; they are never displayed as zero.
+- Native media storage defaults to a `highest_media` directory beside the Highest SQLite database; `HIGHEST_MEDIA_DIR` can override the path.
+
+Environment configuration:
+- `HIGHEST_YOUTUBE_API_KEY`: YouTube Data API key for livestream polling, channel challenge verification, and YouTube clip view counts.
+- `HIGHEST_TIKTOK_STATUS_URL` + `HIGHEST_TIKTOK_STATUS_TOKEN`: existing operator-configured TikTok live-status provider.
+- `HIGHEST_TIKTOK_PROFILE_URL` + `HIGHEST_TIKTOK_PROFILE_TOKEN`: HTTPS profile verification adapter; GET with `username` query and Bearer token must return `{ "username": "...", "bio": "..." }`.
+- `HIGHEST_TIKTOK_STATS_URL` + `HIGHEST_TIKTOK_STATS_TOKEN`: HTTPS statistics adapter; GET with `url` query and Bearer token must return `{ "views": 123 }`.
+- TikTok adapters are integration contracts, not a claim that TikTok provides these endpoints publicly. Configure only a provider that is authorized to access the relevant account/profile data.

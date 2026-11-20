@@ -136,6 +136,9 @@ class HighestTest(unittest.TestCase):
         self.assertEqual(u.get(path+"/internal").status_code,403)
 
     def test_origin_and_unconfigured_live(self):
+        page=self.user.get("/highest/")
+        self.assertEqual(page.status_code,200)
+        self.assertIn("img-src 'self' https: data:",page.headers.get("content-security-policy",""))
         self.assertEqual(self.user.post("/highest/api/logout",json={},headers={"Origin":"https://other.example"}).status_code,403)
         no_origin=TestClient(self.admin.app,base_url="https://abud.web.id")
         no_origin.cookies.update(self.admin.cookies)

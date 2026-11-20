@@ -1,12 +1,14 @@
 """Public-to-authenticated community content; never reads IC internal tables."""
-import time, os, re, secrets
+import time, os, re, secrets, uuid, hashlib
 import sqlite3
+from pathlib import Path
 import httpx
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from app.highest import db, current, origin, clean, fail, audit, throttle
+from app.highest import db, current, origin, clean, fail, audit, throttle, _media_dir
 from app.highest_ops import notify
 
 router=APIRouter(prefix="/highest/api")
@@ -29,6 +31,7 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_clip_bookmarks(uid INTEGER REFERENCES users(id),clip INTEGER REFERENCES clips(id),PRIMARY KEY(uid,clip));
         CREATE TABLE IF NOT EXISTS hq_follows(uid INTEGER REFERENCES users(id),streamer INTEGER REFERENCES streamers(id),PRIMARY KEY(uid,streamer));
         CREATE TABLE IF NOT EXISTS hq_posts(id INTEGER PRIMARY KEY,uid INTEGER REFERENCES users(id),body TEXT NOT NULL,category TEXT NOT NULL,spoiler INTEGER NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS hq_posts_media_idx ON hq_posts(id,state);
         CREATE TABLE IF NOT EXISTS hq_reports(id INTEGER PRIMARY KEY,reporter INTEGER NOT NULL REFERENCES users(id),content_type TEXT NOT NULL CHECK(content_type IN ('clip','moment','pov','wiki','post')),content_id INTEGER NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('harassment','personal_info','spam','inappropriate','copyright','other')),details TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','actioned','dismissed')),action TEXT NOT NULL DEFAULT '',reviewed_by INTEGER REFERENCES users(id),reviewed_at INTEGER,review_note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS hq_reports_queue ON hq_reports(status,created DESC);
         CREATE UNIQUE INDEX IF NOT EXISTS hq_reports_one_open ON hq_reports(reporter,content_type,content_id) WHERE status='open';
@@ -45,6 +48,9 @@ def init():
             created INTEGER NOT NULL,PRIMARY KEY(uid,comment_id)
         );
         """)
+        post_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_posts)")}
+        for name,definition in (("media_path","TEXT"),("media_type","TEXT"),("media_size","INTEGER"),("media_sha256","TEXT")):
+            if name not in post_columns: c.execute("ALTER TABLE hq_posts ADD COLUMN "+name+" "+definition)
 def valid_link(value):
     try: p=urlsplit(value)
     except ValueError: fail(400,"Invalid link")
@@ -99,7 +105,7 @@ def social(r:Request):
         for m in moments:
             m["povs"]=rows(c,"SELECT p.id,p.label,cl.title,cl.url,u.display_name,cu.display_name clip_owner FROM hq_pov p JOIN clips cl ON p.clip=cl.id JOIN users u ON p.uid=u.id JOIN users cu ON cl.uid=cu.id WHERE p.moment=? AND p.state='published' AND cl.state='published' ORDER BY p.id",(m["id"],))
         wiki=rows(c,"SELECT w.id,w.kind,w.title,w.body,w.spoiler,w.created,u.display_name FROM hq_wiki w JOIN users u ON w.uid=u.id WHERE w.state='published' ORDER BY w.id DESC LIMIT 100")
-        posts=rows(c,"SELECT p.id,p.body,p.category,p.spoiler,p.created,u.display_name FROM hq_posts p JOIN users u ON p.uid=u.id WHERE p.state='published' ORDER BY p.id DESC LIMIT 100")
+        posts=rows(c,"SELECT p.id,p.body,p.category,p.spoiler,p.created,p.media_type,p.media_size,u.display_name FROM hq_posts p JOIN users u ON p.uid=u.id WHERE p.state='published' ORDER BY p.id DESC LIMIT 100")
         clips=rows(c,"""SELECT cl.id,cl.title,cl.url,cl.media_type,cl.media_size,cl.views,cl.views_checked,cl.views_source,u.display_name,
         (SELECT count(*) FROM hq_clip_likes l WHERE l.clip=cl.id) likes,
         EXISTS(SELECT 1 FROM hq_clip_likes l WHERE l.clip=cl.id AND l.uid=?) liked,
@@ -235,6 +241,43 @@ def wiki(p:Wiki,r:Request):
     with db() as c:
         c.execute("INSERT INTO hq_wiki(uid,kind,title,body,spoiler,state,created) VALUES(?,?,?,?,?,'pending',?)",(u["id"],p.kind,clean(p.title,100),clean(p.body,10000),int(p.spoiler),now()))
     return {"ok":True}
+@router.post("/social/post/upload")
+async def post_upload(r:Request,body:str=Form(...),category:str=Form("general"),spoiler:bool=Form(False),file:UploadFile=File(...)):
+    origin(r);u=current(r);throttle(r,"post-upload:"+str(u["id"]))
+    if category not in ("general","storyline","fan_art","clips","memes"): fail(400,"Invalid category")
+    body=clean(body,2000)
+    ext=Path(file.filename or "").suffix.lower()
+    allowed={".jpg":"image/jpeg",".jpeg":"image/jpeg",".png":"image/png",".webp":"image/webp",".gif":"image/gif",".mp4":"video/mp4",".webm":"video/webm"}
+    media_type=allowed.get(ext)
+    if not media_type: fail(400,"Supported media: JPG, PNG, WEBP, GIF, MP4 and WEBM")
+    if file.content_type and file.content_type not in (media_type,"application/octet-stream"): fail(400,"File type does not match its extension")
+    limit=50*1024*1024 if media_type.startswith("video/") else 10*1024*1024
+    data=await file.read(limit+1)
+    if not data or len(data)>limit: fail(413,"Image limit is 10 MB and video limit is 50 MB")
+    valid=(ext in (".jpg",".jpeg") and data.startswith(b"\\xff\\xd8\\xff")) or (ext==".png" and data.startswith(b"\\x89PNG\\r\\n\\x1a\\n")) or (ext==".gif" and data[:6] in (b"GIF87a",b"GIF89a")) or (ext==".webp" and data[:4]==b"RIFF" and data[8:12]==b"WEBP") or (ext==".mp4" and len(data)>12 and data[4:8]==b"ftyp") or (ext==".webm" and data.startswith(b"\\x1a\\x45\\xdf\\xa3"))
+    if not valid: fail(400,"File content is not a valid supported media file")
+    digest_value=hashlib.sha256(data).hexdigest();filename=uuid.uuid4().hex+ext;target=_media_dir()/filename
+    target.write_bytes(data);os.chmod(target,0o640)
+    try:
+        with db() as c:
+            pid=c.execute("INSERT INTO hq_posts(uid,body,category,spoiler,state,created,media_path,media_type,media_size,media_sha256) VALUES(?,?,?,?, 'pending',?,?,?,?,?)",
+                (u["id"],body,category,int(spoiler),now(),filename,media_type,len(data),digest_value)).lastrowid
+            audit(c,u["id"],"social.post.media.upload",pid)
+    except Exception:
+        target.unlink(missing_ok=True);raise
+    return {"ok":True,"id":pid,"state":"pending","sha256":digest_value}
+
+@router.get("/social/post/{pid}/media")
+def post_media(pid:int,r:Request):
+    u=current(r)
+    with db() as c:
+        item=c.execute("SELECT uid,state,media_path,media_type FROM hq_posts WHERE id=?",(pid,)).fetchone()
+        if not item or not item["media_path"]: fail(404,"Media not found")
+        if item["state"]!="published" and int(item["uid"])!=u["id"] and not u["admin"]: fail(404,"Media not found")
+        path=_media_dir()/Path(item["media_path"]).name
+        if not path.is_file(): fail(404,"Media file unavailable")
+        return FileResponse(path,media_type=item["media_type"],headers={"X-Content-Type-Options":"nosniff","Cache-Control":"private, max-age=300"})
+
 @router.post("/social/post")
 def post(p:Post,r:Request):
     origin(r); u=current(r); throttle(r,"post:"+str(u["id"]))

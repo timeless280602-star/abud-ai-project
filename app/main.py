@@ -22,6 +22,7 @@ from app.highest_ops import router as ops_router, init as ops_init
 from app.highest_social import router as social_router, init as social_init
 from app.highest_records import router as records_router, init as records_init
 from app.highest_business import router as business_router, init as business_init
+from app.highest_notifications import start_notification_worker
 from app.skills.engine import get_relevant_skills
 
 
@@ -452,6 +453,7 @@ async def startup():
     records_init()
     business_init()
     start_live_worker()
+    start_notification_worker()
     print("Abud Multi-Scope Memory Database initialized.")
 
 

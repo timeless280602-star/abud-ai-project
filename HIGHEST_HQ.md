@@ -74,3 +74,12 @@ This is the initial feature branch, not a production deployment. Do not replace 
 - Delivery is idempotent per event revision and recipient. Editing a schedule creates a new revision and therefore a distinct reminder; retries and repeated worker cycles do not duplicate the same reminder.
 - The web inbox polls for unread/new notification changes every 30 seconds while the internal HQ page is open. This is in-app delivery only; no email, Discord DM, mobile push, or browser push provider is configured.
 - Notifications are retained in the HQ database and are not automatically deleted when read. Notification history is private to each user.
+
+
+## Asset & Property Management
+
+- The dedicated Assets module tracks vehicles, property, equipment and other organizational assets using unique asset tags. Records include description, make/model, serial and plate references, location, condition, acquisition date/cost, custodian, and optional links to Inventory items and IC Cases.
+- Acquisition and disposal are request/reviewer workflows. A requester cannot approve their own request; reviewers require the module's `approve` permission. Acquisition approval creates the asset and a separate pending Treasury cash-out entry when the acquisition has a non-zero cost. Treasury approval remains independent, so the posted balance is unchanged until the cash-out is approved.
+- Asset assignment and return update the custodian, location and available/assigned state. Each lifecycle operation is recorded in the asset history and HQ audit log.
+- Maintenance work orders record task, description, provider, estimated cost, actor, timestamps and open/completed state. Opening maintenance changes the asset state to maintenance; completion restores assigned or available state based on its custodian. Retired assets cannot be assigned or sent to maintenance.
+- The Assets dashboard provides asset status counts, the asset register, acquisition/disposal approval queue, lifecycle history and maintenance history. Access follows the existing rank-based module grants.

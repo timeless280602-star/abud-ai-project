@@ -51,16 +51,15 @@ class AbudClient(discord.Client):
     async def close(self):
         try:
             try:
+                await ticket_manager.close()
+            finally:
                 try:
-                    try:
-                        try:
-                            await ticket_manager.close()
-                        finally:
-                            await onboarding_manager.close()
-                    finally:
-                        await leveling_manager.close()
+                    await onboarding_manager.close()
                 finally:
-                    await notification_manager.close()
+                    try:
+                        await leveling_manager.close()
+                    finally:
+                        await notification_manager.close()
         finally:
             try:
                 runner = getattr(self, "_verification_gateway_runner", None)

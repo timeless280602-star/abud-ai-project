@@ -366,23 +366,24 @@ def social_activity(r:Request,limit:int=50):
     u=current(r)
     if limit<1 or limit>100: fail(400,"Invalid activity limit")
     with db() as c:
-        items=rows(c,"SELECT id,kind,title,body,href,created,read_at FROM hq_notification WHERE uid=? AND kind LIKE 'social_%' ORDER BY created DESC,id DESC LIMIT ?",(u["id"],limit))
-        unread=c.execute("SELECT count(*) FROM hq_notification WHERE uid=? AND kind LIKE 'social_%' AND read_at IS NULL",(u["id"],)).fetchone()[0]
+        kinds="kind LIKE 'social_%' OR kind IN ('content_approved','content_rejected','streamer_live','channel_verified','creator_approved','creator_rejected')"
+        items=rows(c,"SELECT id,kind,title,body,href,created,read_at FROM hq_notification WHERE uid=? AND ("+kinds+") ORDER BY created DESC,id DESC LIMIT ?",(u["id"],limit))
+        unread=c.execute("SELECT count(*) FROM hq_notification WHERE uid=? AND ("+kinds+") AND read_at IS NULL",(u["id"],)).fetchone()[0]
         return reply({"items":items,"unread_count":unread})
 
 @router.post("/social/activity/read-all")
 def social_activity_read_all(r:Request):
     origin(r);u=current(r)
     with db() as c:
-        c.execute("UPDATE hq_notification SET read_at=? WHERE uid=? AND kind LIKE 'social_%' AND read_at IS NULL",(now(),u["id"]))
+        c.execute("UPDATE hq_notification SET read_at=? WHERE uid=? AND (kind LIKE 'social_%' OR kind IN ('content_approved','content_rejected','streamer_live','channel_verified','creator_approved','creator_rejected')) AND read_at IS NULL",(now(),u["id"]))
     return {"ok":True}
 
 @router.post("/social/activity/{notification_id}/read")
 def social_activity_read(notification_id:int,r:Request):
     origin(r);u=current(r)
     with db() as c:
-        cur=c.execute("UPDATE hq_notification SET read_at=? WHERE id=? AND uid=? AND kind LIKE 'social_%' AND read_at IS NULL",(now(),notification_id,u["id"]))
-        if not cur.rowcount and not c.execute("SELECT 1 FROM hq_notification WHERE id=? AND uid=? AND kind LIKE 'social_%'",(notification_id,u["id"])).fetchone(): fail(404,"Activity notification not found")
+        cur=c.execute("UPDATE hq_notification SET read_at=? WHERE id=? AND uid=? AND (kind LIKE 'social_%' OR kind IN ('content_approved','content_rejected','streamer_live','channel_verified','creator_approved','creator_rejected')) AND read_at IS NULL",(now(),notification_id,u["id"]))
+        if not cur.rowcount and not c.execute("SELECT 1 FROM hq_notification WHERE id=? AND uid=? AND (kind LIKE 'social_%' OR kind IN ('content_approved','content_rejected','streamer_live','channel_verified','creator_approved','creator_rejected'))",(notification_id,u["id"])).fetchone(): fail(404,"Activity notification not found")
     return {"ok":True}
 
 @router.post("/social/report")

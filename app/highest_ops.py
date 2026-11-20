@@ -429,12 +429,13 @@ def _approval_reviewer(c,uid,module,step):
     configured=c.execute("SELECT rank_id FROM hq_approval_policy WHERE module=? AND step=?",(module,step)).fetchone()
     user=c.execute("SELECT m.rank,m.status FROM users u JOIN membership m ON m.uid=u.id WHERE u.id=?",(uid,)).fetchone()
     if not user or user["status"]!="approved" or user["rank"] is None: return False,None
+    grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(user["rank"],module)).fetchone()
+    if not grant or grant["level"]!="approve": return False,None
     if configured:
         if user["rank"]==configured["rank_id"]: return True,None
         delegated=c.execute("""SELECT d.delegator FROM hq_approval_delegation d JOIN users du ON du.id=d.delegator JOIN membership dm ON dm.uid=du.id WHERE d.module=? AND d.delegate=? AND d.active=1 AND dm.status='approved' AND dm.rank=? ORDER BY d.updated DESC LIMIT 1""",(module,uid,configured["rank_id"])).fetchone()
         return (True,delegated["delegator"]) if delegated else (False,None)
-    grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(user["rank"],module)).fetchone()
-    if grant and grant["level"]=="approve": return True,None
+    if grant["level"]=="approve": return True,None
     delegated=c.execute("""SELECT d.delegator FROM hq_approval_delegation d JOIN users du ON du.id=d.delegator JOIN membership dm ON dm.uid=du.id WHERE d.module=? AND d.delegate=? AND d.active=1 AND dm.status='approved' ORDER BY d.updated DESC LIMIT 1""",(module,uid)).fetchone()
     if delegated:
         grant=c.execute("SELECT level FROM hq_grants WHERE rank_id=(SELECT rank FROM membership WHERE uid=?) AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(delegated["delegator"],module)).fetchone()

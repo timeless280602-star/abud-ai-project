@@ -46,7 +46,7 @@ class HighestTest(unittest.TestCase):
 
     def test_native_clip_tampering_is_blocked_and_audited(self):
         path="/highest/api"
-        png=b"\\x89PNG\\r\\n\\x1a\\n"+b"\\x00"*16
+        png=b"\x89PNG\r\n\x1a\n"+b"\x00"*16
         uploaded=self.user.post(path+"/clip/upload",data={"title":"Tamper test"},files={"file":("tamper.png",png,"image/png")})
         self.assertEqual(uploaded.status_code,200,uploaded.text)
         clip_id=uploaded.json()["id"]

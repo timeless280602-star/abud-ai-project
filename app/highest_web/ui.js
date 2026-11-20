@@ -219,10 +219,10 @@ async function financialReportsUI(write){
    if(data.business?.available){g.append(metric("Completed POS sales",fmt(data.business.sales_revenue),data.business.completed_orders+" completed POS orders"),metric("POS purchase spend",fmt(data.business.purchase_spend),"Operational purchase orders"),metric("Estimated POS gross profit",fmt(data.business.estimated_gross_profit),"Sales less estimated cost of goods"));}content.append(g,el("h3","Comparison with previous period"),el("p",c.previous_start+" to "+c.previous_end+" · Income "+fmt(c.income)+" · Expenses "+fmt(c.expense)+" · Net "+fmt(c.net_cash_flow)),el("p","Change · Income "+fmt(c.income_change)+" · Expenses "+fmt(c.expense_change)+" · Net "+fmt(c.net_change)),el("p",data.budget_note,"muted"));
   }else if(tab==="monthly"){
    content.append(el("h3","Monthly cash flow"));
-   for(const x of data.monthly)content.append(el("p",x.period+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.net)+" · "+x.transactions+" posted transactions));
+   for(const x of data.monthly)content.append(el("p",x.period+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.net)+" · "+x.transactions+" posted transactions"));
   }else if(tab==="divisions"){
    content.append(el("h3","Financial performance by division"));
-   for(const x of data.divisions)content.append(el("p",x.division+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
+   for(const x of data.divisions)content.append(el("p",x.division+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions"));
   }else if(tab==="categories"){
    content.append(el("h3","Financial performance by category"));
    for(const x of data.categories)content.append(el("p",x.category+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));

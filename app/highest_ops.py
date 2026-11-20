@@ -6,13 +6,18 @@ from pydantic import BaseModel, Field
 from app.highest import db, origin, digest, cookie, fail, clean, audit, current
 
 router=APIRouter(prefix="/highest/api")
-MODULES=("treasury","inventory","crafting","cases","syndicates","operations","assets","documents","business","business_prices","business_analytics","business_discounts")
+MODULES=("treasury","inventory","crafting","cases","syndicates","operations","assets","documents","business","business_prices","business_analytics","business_discounts","financial_reports")
 
 def init():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS hq_grants(rank_id INTEGER REFERENCES ranks(id) ON DELETE CASCADE,module TEXT,level TEXT CHECK(level IN ('view','write','approve')),PRIMARY KEY(rank_id,module));
-        CREATE TABLE IF NOT EXISTS hq_treasury_account(
+        CREATE TABLE IF NOT EXISTS hq_financial_budget(
+            id INTEGER PRIMARY KEY,period TEXT NOT NULL,division TEXT NOT NULL DEFAULT '',category TEXT NOT NULL DEFAULT '',
+            amount INTEGER NOT NULL CHECK(amount>=0),actor INTEGER REFERENCES users(id),updated INTEGER NOT NULL,
+            UNIQUE(period,division,category)
+        );
+                CREATE TABLE IF NOT EXISTS hq_treasury_account(
             id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE COLLATE NOCASE,
             description TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
             created INTEGER NOT NULL,actor INTEGER REFERENCES users(id)
@@ -1341,3 +1346,185 @@ def executive_dashboard(r:Request):
                 "flagged_events_7d":c.execute("SELECT count(*) FROM audit WHERE created>=? AND (lower(action) LIKE '%integrity%' OR lower(action) LIKE '%denied%' OR lower(action) LIKE '%failed%')",(now()-7*86400,)).fetchone()[0],
                 "recent":rows(c,"SELECT a.id,a.action,a.target,a.created,u.username FROM audit a LEFT JOIN users u ON u.id=a.actor ORDER BY a.id DESC LIMIT 8")}
         return reply(data)
+
+
+# Advanced Financial Reporting — posted-ledger reporting and monthly budgets.
+from datetime import date, datetime, timedelta, timezone
+from fastapi.responses import StreamingResponse
+import csv, io
+
+class FinancialBudget(BaseModel):
+    period:str=Field(min_length=7,max_length=7)
+    division:str=Field(default="",max_length=100)
+    category:str=Field(default="",max_length=60)
+    amount:int=Field(ge=0,le=1000000000000000)
+
+def _financial_period(value):
+    try: parsed=datetime.strptime(value,"%Y-%m").date().replace(day=1)
+    except (TypeError,ValueError): fail(400,"Periods must use YYYY-MM")
+    if parsed.strftime("%Y-%m")!=value: fail(400,"Periods must use YYYY-MM")
+    return parsed
+
+def _financial_bounds(start,end):
+    first=_financial_period(start);last=_financial_period(end)
+    if last<first: fail(400,"End period must not precede start period")
+    count=(last.year-first.year)*12+last.month-first.month+1
+    if count>36: fail(400,"A report can cover at most 36 months")
+    next_month=date(last.year+(last.month==12),1 if last.month==12 else last.month+1,1)
+    tz=timezone(timedelta(hours=7))
+    return int(datetime(first.year,first.month,1,tzinfo=tz).timestamp()),int(datetime(next_month.year,next_month.month,1,tzinfo=tz).timestamp()),count
+
+def _financial_report_data(c,start,end):
+    first=_financial_period(start);last=_financial_period(end)
+    begin,finish,count=_financial_bounds(start,end)
+    previous_last=first-timedelta(days=1)
+    previous_first=date(previous_last.year,previous_last.month,1)
+    previous_start=int(datetime(previous_first.year,previous_first.month,1,tzinfo=timezone(timedelta(hours=7))).timestamp())
+    previous_finish=begin
+    opening=c.execute("SELECT coalesce(sum(amount),0) FROM hq_money WHERE state='posted' AND created<?",(begin,)).fetchone()[0]
+    monthly=rows(c,"""SELECT strftime('%Y-%m',datetime(created,'unixepoch','+7 hours')) period,
+        coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
+        coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
+        FROM hq_money WHERE state='posted' AND created>=? AND created<?
+        GROUP BY period ORDER BY period""",(begin,finish))
+    monthly_map={x["period"]:x for x in monthly};periods=[];cursor=first
+    while cursor<=last:
+        x=monthly_map.get(cursor.strftime("%Y-%m"),{})
+        periods.append({"period":cursor.strftime("%Y-%m"),"income":x.get("income",0),"expense":x.get("expense",0),
+            "net":x.get("income",0)-x.get("expense",0),"transactions":x.get("transactions",0)})
+        cursor=date(cursor.year+(cursor.month==12),1 if cursor.month==12 else cursor.month+1,1)
+    summary=c.execute("""SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
+        coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
+        FROM hq_money WHERE state='posted' AND created>=? AND created<?""",(begin,finish)).fetchone()
+    prior=c.execute("""SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
+        coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
+        FROM hq_money WHERE state='posted' AND created>=? AND created<?""",(previous_start,previous_finish)).fetchone()
+    by_division=rows(c,"""SELECT coalesce(r.name,'Unassigned') division,
+        coalesce(sum(CASE WHEN m.amount>0 THEN m.amount ELSE 0 END),0) income,
+        coalesce(sum(CASE WHEN m.amount<0 THEN -m.amount ELSE 0 END),0) expense,count(*) transactions
+        FROM hq_money m LEFT JOIN membership mb ON mb.uid=m.actor LEFT JOIN ranks r ON r.id=mb.rank
+        WHERE m.state='posted' AND m.created>=? AND m.created<?
+        GROUP BY division ORDER BY division""",(begin,finish))
+    by_category=rows(c,"""SELECT category,coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
+        coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
+        FROM hq_money WHERE state='posted' AND created>=? AND created<?
+        GROUP BY category ORDER BY category""",(begin,finish))
+    budgets=rows(c,"""SELECT period,division,category,amount FROM hq_financial_budget
+        WHERE period>=? AND period<=? ORDER BY period,division,category""",(start,end))
+    budget_total=sum(x["amount"] for x in budgets);expense_total=summary["expense"]
+    return {"period":{"start":start,"end":end,"months":count},
+        "summary":{"opening_balance":opening,"income":summary["income"],"expense":expense_total,
+            "net_cash_flow":summary["income"]-expense_total,"closing_balance":opening+summary["income"]-expense_total,
+            "transactions":summary["transactions"],"budget_total":budget_total,
+            "budget_remaining":budget_total-expense_total if budgets else None,
+            "budget_utilization_pct":round(expense_total*100/budget_total,2) if budget_total else None},
+        "comparison":{"previous_start":previous_first.strftime("%Y-%m"),"previous_end":previous_last.strftime("%Y-%m"),
+            "income":prior["income"],"expense":prior["expense"],"net_cash_flow":prior["income"]-prior["expense"],
+            "income_change":summary["income"]-prior["income"],"expense_change":expense_total-prior["expense"],
+            "net_change":(summary["income"]-expense_total)-(prior["income"]-prior["expense"])},
+        "monthly":periods,"divisions":by_division,"categories":by_category,"budgets":budgets,
+        "budget_note":"Expenses are attributed to the member's current approved rank, not a historical rank snapshot. Internal account transfers are excluded. Only posted Treasury ledger entries are included.",
+        "generated_at":now()}
+
+@router.get("/ops/financial-reports")
+def financial_reports(r:Request,start:str,end:str):
+    with db() as c:
+        privilege(c,r,"financial_reports")
+        return reply(_financial_report_data(c,start,end))
+
+@router.post("/ops/financial-reports/budgets")
+def financial_budget_save(p:FinancialBudget,r:Request):
+    origin(r);_financial_period(p.period)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"financial_reports","write")
+        division=clean(p.division,100,required=False);category=clean(p.category,60,required=False)
+        c.execute("""INSERT INTO hq_financial_budget(period,division,category,amount,actor,updated)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(period,division,category)
+            DO UPDATE SET amount=excluded.amount,actor=excluded.actor,updated=excluded.updated""",
+            (p.period,division,category,p.amount,u["id"],now()))
+        audit(c,u["id"],"financial.budget.save",None)
+    return {"ok":True}
+
+@router.delete("/ops/financial-reports/budgets")
+def financial_budget_delete(r:Request,period:str,division:str="",category:str=""):
+    origin(r);_financial_period(period)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"financial_reports","write")
+        result=c.execute("DELETE FROM hq_financial_budget WHERE period=? AND division=? AND category=?",
+            (period,clean(division,100,required=False),clean(category,60,required=False)))
+        if not result.rowcount: fail(404,"Budget not found")
+        audit(c,u["id"],"financial.budget.delete",None)
+    return {"ok":True}
+
+@router.get("/ops/financial-reports/export")
+def financial_report_export(r:Request,start:str,end:str,format:str="csv"):
+    with db() as c:
+        privilege(c,r,"financial_reports");data=_financial_report_data(c,start,end)
+    filename=f"highest-financial-report-{start.replace('-','')}-{end.replace('-','')}"
+    if format=="csv":
+        stream=io.StringIO();writer=csv.writer(stream)
+        writer.writerow(["THE HIGHEST HQ — FINANCIAL REPORT",start,end]);writer.writerow(["Metric","Amount"])
+        for key,value in data["summary"].items(): writer.writerow([key,value])
+        writer.writerow([]);writer.writerow(["Monthly cash flow"]);writer.writerow(["Period","Income","Expense","Net cash flow","Transactions"])
+        for x in data["monthly"]: writer.writerow([x["period"],x["income"],x["expense"],x["net"],x["transactions"]])
+        writer.writerow([]);writer.writerow(["Division performance"]);writer.writerow(["Division","Income","Expense","Net","Transactions"])
+        for x in data["divisions"]: writer.writerow([x["division"],x["income"],x["expense"],x["income"]-x["expense"],x["transactions"]])
+        writer.writerow([]);writer.writerow(["Category performance"]);writer.writerow(["Category","Income","Expense","Net","Transactions"])
+        for x in data["categories"]: writer.writerow([x["category"],x["income"],x["expense"],x["income"]-x["expense"],x["transactions"]])
+        writer.writerow([]);writer.writerow(["Monthly budgets"]);writer.writerow(["Period","Division","Category","Budget"])
+        for x in data["budgets"]: writer.writerow([x["period"],x["division"],x["category"],x["amount"]])
+        writer.writerow([]);writer.writerow(["Data basis",data["budget_note"]])
+        return Response("\ufeff"+stream.getvalue(),media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition":f'attachment; filename="{filename}.csv"'})
+    if format=="xlsx":
+        from openpyxl import Workbook
+        from openpyxl.styles import Font,PatternFill
+        from openpyxl.utils import get_column_letter
+        wb=Workbook();ws=wb.active;ws.title="Executive Summary"
+        ws.append(["THE HIGHEST HQ — FINANCIAL REPORT"]);ws.append(["Period",start,end]);ws.append([])
+        ws.append(["Metric","Amount"])
+        for key,value in data["summary"].items(): ws.append([key,value])
+        def sheet(name,headers,items,keys):
+            sh=wb.create_sheet(name);sh.append(headers)
+            for item in items: sh.append([item.get(k) for k in keys])
+            return sh
+        sheet("Monthly Cash Flow",["Period","Income","Expense","Net Cash Flow","Transactions"],data["monthly"],["period","income","expense","net","transactions"])
+        divs=[{**x,"net":x["income"]-x["expense"]} for x in data["divisions"]]
+        sheet("Division Performance",["Division","Income","Expense","Net","Transactions"],divs,["division","income","expense","net","transactions"])
+        cats=[{**x,"net":x["income"]-x["expense"]} for x in data["categories"]]
+        sheet("Category Performance",["Category","Income","Expense","Net","Transactions"],cats,["category","income","expense","net","transactions"])
+        sheet("Monthly Budgets",["Period","Division","Category","Budget"],data["budgets"],["period","division","category","amount"])
+        for sh in wb.worksheets:
+            sh.freeze_panes="A2";sh.auto_filter.ref=sh.dimensions
+            for cell in sh[1]:
+                cell.font=Font(bold=True,color="FFFFFF");cell.fill=PatternFill("solid",fgColor="292929")
+            for col in sh.columns:
+                width=min(42,max(12,max((len(str(cell.value or "")) for cell in col),default=0)+2))
+                sh.column_dimensions[get_column_letter(col[0].column)].width=width
+        output=io.BytesIO();wb.save(output);output.seek(0)
+        return Response(output.getvalue(),media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition":f'attachment; filename="{filename}.xlsx"'})
+    if format=="pdf":
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4,landscape
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableStyle
+        output=io.BytesIO();doc=SimpleDocTemplate(output,pagesize=landscape(A4),rightMargin=12*mm,leftMargin=12*mm,topMargin=12*mm,bottomMargin=12*mm)
+        styles=getSampleStyleSheet();story=[Paragraph("THE HIGHEST HQ — FINANCIAL REPORT",styles["Title"]),
+            Paragraph(f"Reporting period: {start} to {end} · Generated from posted Treasury entries",styles["Normal"]),Spacer(1,6*mm)]
+        def table(title,headers,values):
+            story.append(Paragraph(title,styles["Heading2"]));t=Table([headers]+values,repeatRows=1)
+            t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#292929")),
+                ("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),.35,colors.HexColor("#cccccc")),
+                ("FONTSIZE",(0,0),(-1,-1),8),("PADDING",(0,0),(-1,-1),5)]))
+            story.extend([t,Spacer(1,4*mm)])
+        table("Executive Summary",["Metric","Amount"],[[k,str(v)] for k,v in data["summary"].items()])
+        table("Monthly Cash Flow",["Period","Income","Expense","Net","Transactions"],[[x["period"],str(x["income"]),str(x["expense"]),str(x["net"]),str(x["transactions"])] for x in data["monthly"]])
+        table("Division Performance",["Division","Income","Expense","Net","Transactions"],[[x["division"],str(x["income"]),str(x["expense"]),str(x["income"]-x["expense"]),str(x["transactions"])] for x in data["divisions"]])
+        table("Category Performance",["Category","Income","Expense","Net","Transactions"],[[x["category"],str(x["income"]),str(x["expense"]),str(x["income"]-x["expense"]),str(x["transactions"])] for x in data["categories"]])
+        table("Monthly Budgets",["Period","Division","Category","Budget"],[[x["period"],x["division"] or "All divisions",x["category"] or "All categories",str(x["amount"])] for x in data["budgets"]])
+        story.append(Paragraph(data["budget_note"],styles["Italic"]));doc.build(story);output.seek(0)
+        return Response(output.getvalue(),media_type="application/pdf",
+            headers={"Content-Disposition":f'attachment; filename="{filename}.pdf"'})
+    fail(400,"Supported export formats are csv, xlsx and pdf")

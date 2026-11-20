@@ -1,5 +1,6 @@
 """Public-to-authenticated community content; never reads IC internal tables."""
 import time
+import sqlite3
 from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -21,6 +22,9 @@ def init():
         CREATE TABLE IF NOT EXISTS hq_clip_bookmarks(uid INTEGER REFERENCES users(id),clip INTEGER REFERENCES clips(id),PRIMARY KEY(uid,clip));
         CREATE TABLE IF NOT EXISTS hq_follows(uid INTEGER REFERENCES users(id),streamer INTEGER REFERENCES streamers(id),PRIMARY KEY(uid,streamer));
         CREATE TABLE IF NOT EXISTS hq_posts(id INTEGER PRIMARY KEY,uid INTEGER REFERENCES users(id),body TEXT NOT NULL,category TEXT NOT NULL,spoiler INTEGER NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS hq_reports(id INTEGER PRIMARY KEY,reporter INTEGER NOT NULL REFERENCES users(id),content_type TEXT NOT NULL CHECK(content_type IN ('clip','moment','pov','wiki','post')),content_id INTEGER NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('harassment','personal_info','spam','inappropriate','copyright','other')),details TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','actioned','dismissed')),action TEXT NOT NULL DEFAULT '',reviewed_by INTEGER REFERENCES users(id),reviewed_at INTEGER,review_note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS hq_reports_queue ON hq_reports(status,created DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS hq_reports_one_open ON hq_reports(reporter,content_type,content_id) WHERE status='open';
         """)
 def valid_link(value):
     try: p=urlsplit(value)
@@ -51,6 +55,14 @@ class Post(BaseModel):
     spoiler:bool=False
 class Review(BaseModel):
     approve:bool
+class ContentReport(BaseModel):
+    content_type:str
+    content_id:int=Field(ge=1)
+    reason:str
+    details:str=Field(default="",max_length=1000)
+class ReportDecision(BaseModel):
+    action:str
+    note:str=Field(default="",max_length=500)
 
 @router.get("/social")
 def social(r:Request):
@@ -139,6 +151,101 @@ def follow(sid:int,p:Toggle,r:Request):
         if p.enabled: c.execute("INSERT OR IGNORE INTO hq_follows VALUES(?,?)",(u["id"],sid))
         else: c.execute("DELETE FROM hq_follows WHERE uid=? AND streamer=?",(u["id"],sid))
     return {"ok":True}
+@router.post("/social/report")
+def create_report(p:ContentReport,r:Request):
+    origin(r); u=current(r); throttle(r,"report:"+str(u["id"]))
+    if p.reason not in ("harassment","personal_info","spam","inappropriate","copyright","other"): fail(400,"Invalid report reason")
+    tables={"clip":"clips","moment":"hq_moment","pov":"hq_pov","wiki":"hq_wiki","post":"hq_posts"}
+    table=tables.get(p.content_type)
+    if not table: fail(400,"Invalid content type")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        target=c.execute("SELECT uid FROM "+table+" WHERE id=? AND state='published'",(p.content_id,)).fetchone()
+        if not target: fail(404,"Published content unavailable")
+        if int(target["uid"])==u["id"]: fail(403,"You cannot report your own content")
+        if c.execute("SELECT 1 FROM hq_reports WHERE reporter=? AND content_type=? AND content_id=? AND status='open'",(u["id"],p.content_type,p.content_id)).fetchone(): fail(409,"You already have an open report for this content")
+        rid=c.execute("INSERT INTO hq_reports(reporter,content_type,content_id,reason,details,created) VALUES(?,?,?,?,?,?)",(u["id"],p.content_type,p.content_id,p.reason,clean(p.details,1000,False),now())).lastrowid
+        audit(c,u["id"],"social.report.create",rid)
+    return {"ok":True,"id":rid}
+
+@router.get("/social/reports")
+def my_reports(r:Request):
+    u=current(r)
+    with db() as c:
+        return reply({"reports":rows(c,"SELECT id,content_type,content_id,reason,details,status,action,review_note,created,reviewed_at FROM hq_reports WHERE reporter=? ORDER BY id DESC LIMIT 100",(u["id"],))})
+
+@router.get("/admin/social/reports")
+def report_queue(r:Request):
+    current(r,admin=True)
+    tables={"clip":"clips","moment":"hq_moment","pov":"hq_pov","wiki":"hq_wiki","post":"hq_posts"}
+    with db() as c:
+        reports=rows(c,"SELECT r.*,ru.username reporter_username,ru.display_name reporter_name,mu.username moderator_username FROM hq_reports r JOIN users ru ON ru.id=r.reporter LEFT JOIN users mu ON mu.id=r.reviewed_by WHERE r.status='open' ORDER BY r.created ASC LIMIT 300")
+        for report in reports:
+            table=tables[report["content_type"]]
+            report["content"]=c.execute("SELECT x.uid,u.username author_username,u.display_name author_name FROM "+table+" x JOIN users u ON u.id=x.uid WHERE x.id=?",(report["content_id"],)).fetchone()
+            if report["content"]:
+                report["content"]=dict(report["content"])
+                if report["content_type"]=="clip":
+                    extra=c.execute("SELECT title,url FROM clips WHERE id=?",(report["content_id"],)).fetchone()
+                elif report["content_type"]=="moment":
+                    extra=c.execute("SELECT title,summary body FROM hq_moment WHERE id=?",(report["content_id"],)).fetchone()
+                elif report["content_type"]=="pov":
+                    extra=c.execute("SELECT p.label title,cl.title body,cl.url FROM hq_pov p JOIN clips cl ON cl.id=p.clip WHERE p.id=?",(report["content_id"],)).fetchone()
+                elif report["content_type"]=="wiki":
+                    extra=c.execute("SELECT title,body FROM hq_wiki WHERE id=?",(report["content_id"],)).fetchone()
+                else:
+                    extra=c.execute("SELECT category title,body FROM hq_posts WHERE id=?",(report["content_id"],)).fetchone()
+                report["content"].update(dict(extra) if extra else {})
+        removed=[]
+        for kind,table in tables.items():
+            items=rows(c,"SELECT x.id,x.uid,u.username,u.display_name FROM "+table+" x JOIN users u ON u.id=x.uid WHERE x.state='removed' ORDER BY x.id DESC LIMIT 100")
+            for item in items:
+                if kind=="clip": extra=c.execute("SELECT title,url FROM clips WHERE id=?",(item["id"],)).fetchone()
+                elif kind=="moment": extra=c.execute("SELECT title,summary body FROM hq_moment WHERE id=?",(item["id"],)).fetchone()
+                elif kind=="pov": extra=c.execute("SELECT label title FROM hq_pov WHERE id=?",(item["id"],)).fetchone()
+                elif kind=="wiki": extra=c.execute("SELECT title,body FROM hq_wiki WHERE id=?",(item["id"],)).fetchone()
+                else: extra=c.execute("SELECT category title,body FROM hq_posts WHERE id=?",(item["id"],)).fetchone()
+                removed.append(dict(kind=kind,**item,**(dict(extra) if extra else {})))
+        return reply({"reports":reports,"removed":removed})
+
+@router.post("/admin/social/report/{rid}")
+def decide_report(rid:int,p:ReportDecision,r:Request):
+    origin(r); u=current(r,admin=True)
+    if p.action not in ("remove","dismiss"): fail(400,"Choose remove or dismiss")
+    tables={"clip":"clips","moment":"hq_moment","pov":"hq_pov","wiki":"hq_wiki","post":"hq_posts"}
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        report=c.execute("SELECT * FROM hq_reports WHERE id=? AND status='open'",(rid,)).fetchone()
+        if not report: fail(409,"Report is no longer open")
+        table=tables[report["content_type"]]
+        target=c.execute("SELECT uid,state FROM "+table+" WHERE id=?",(report["content_id"],)).fetchone()
+        if not target: fail(404,"Reported content no longer exists")
+        if int(target["uid"])==u["id"]: fail(403,"Cannot moderate your own content")
+        if p.action=="remove":
+            if target["state"]!="published": fail(409,"Content is no longer published")
+            c.execute("UPDATE "+table+" SET state='removed' WHERE id=?",(report["content_id"],))
+        action="removed" if p.action=="remove" else "dismissed"
+        c.execute("UPDATE hq_reports SET status=?,action=?,reviewed_by=?,reviewed_at=?,review_note=? WHERE id=? AND status='open'",("actioned" if p.action=="remove" else "dismissed",action,u["id"],now(),clean(p.note,500,False),rid))
+        audit(c,u["id"],"social.report."+action,report["content_id"])
+    return {"ok":True}
+
+@router.post("/admin/social/content/{kind}/{cid}/restore")
+def restore_content(kind:str,cid:int,p:ReportDecision,r:Request):
+    origin(r); u=current(r,admin=True)
+    if p.action!="restore": fail(400,"Restore action required")
+    tables={"clip":"clips","moment":"hq_moment","pov":"hq_pov","wiki":"hq_wiki","post":"hq_posts"}
+    table=tables.get(kind)
+    if not table: fail(400,"Invalid content type")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        target=c.execute("SELECT uid,state FROM "+table+" WHERE id=?",(cid,)).fetchone()
+        if not target: fail(404,"Content not found")
+        if int(target["uid"])==u["id"]: fail(403,"Cannot restore your own content")
+        if target["state"]!="removed": fail(409,"Content is not removed")
+        c.execute("UPDATE "+table+" SET state='published' WHERE id=?",(cid,))
+        audit(c,u["id"],"social.content.restore",cid)
+    return {"ok":True}
+
 @router.get("/admin/social")
 def moderation(r:Request):
     current(r,admin=True)

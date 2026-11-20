@@ -278,7 +278,8 @@ def post_media(pid:int,r:Request):
         if not path.is_file(): fail(404,"Media file unavailable")
         actual=hashlib.sha256(path.read_bytes()).hexdigest()
         if not item["media_sha256"] or not secrets.compare_digest(actual,item["media_sha256"]):
-            audit(c,u["id"],"social.post.media.integrity_failure",pid)
+            with db() as audit_db:
+                audit(audit_db,u["id"],"social.post.media.integrity_failure",pid)
             fail(500,"Media integrity verification failed")
         audit(c,u["id"],"social.post.media.preview",pid)
         return FileResponse(path,media_type=item["media_type"],headers={"X-Content-Type-Options":"nosniff","Cache-Control":"private, max-age=300","Content-Security-Policy":"default-src 'none'; sandbox"})

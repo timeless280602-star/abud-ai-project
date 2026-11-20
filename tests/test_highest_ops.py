@@ -86,6 +86,7 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.get(self.a,"/ops/treasury").status_code,403)
     def test_asset_lifecycle_approvals_assignments_and_maintenance(self):
         self.grant("assets","approve")
+        self.grant("treasury","view")
         general=self.get(self.u,"/ops/treasury").json()["accounts"][0]["id"]
         self.grant("inventory","write")
         item=self.post(self.u,"/ops/item",{"name":"Fleet Vehicle","category":"Vehicle"}).json()

@@ -83,7 +83,110 @@ const field=(key,label,type="text",opts=null,value=null)=>[key,label,type,opts,v
 const postRefresh=async(path,data)=>{await api(path,data);await render()};
 function lines(rows,format){const v=el("div");for(const r of rows)v.append(el("p",format(r)));if(!rows.length)v.append(el("p","No entries yet.","muted"));return v}
 async function grantPanel(ranks){let p=panel("Rank permissions · internal modules");p.append(el("p","Default access is denied. All Access grants view, write and approve on all current and future internal modules; it does not grant website administrator rights.","muted"));let grants=await api("/admin/grants");for(const rank of ranks){let enabled=grants.some(g=>g.rank_id===rank.id&&g.module==="*"&&g.level==="approve");let row=el("div",null,"row");add(row,el("strong",rank.name+" · "+(enabled?"ALL ACCESS":"Custom permissions")),button(enabled?"Disable All Access":"Enable All Access",async()=>{if(!confirm(enabled?"Disable All Access? Existing custom permissions will apply again.":"Grant all internal modules and approval rights to every approved member of this rank, including future modules?"))return;await postRefresh("/admin/grants",{rank:rank.id,module:"*",level:enabled?"none":"approve"})},!enabled));p.append(row)}if(ranks.length)p.append(form([field("rank","Rank","select",options(ranks)),field("module","Module","select",Object.entries(opsNames)),field("level","Permission","select",[["none","No access"],["view","View"],["write","Write"],["approve","Approve (includes write)"]])],"Save permission",v=>postRefresh("/admin/grants",{...v,rank:n(v.rank)})));p.append(lines(grants,g=>(ranks.find(r=>r.id===g.rank_id)?.name||g.rank_id)+" · "+(g.module==="*"?"All Access":opsNames[g.module])+" · "+g.level));let a=panel("Audit log · recent activity");let logs=await api("/admin/ops-audit");a.append(lines(logs,l=>dateFormat(l.created)+" · "+(l.username||"System")+" · "+l.action+" · "+(l.target??"—")));p.append(a);return p}
-async function opsPanel(){let rights=await api("/ops/access"),p=panel("Internal operations");let mods=Object.keys(opsNames).filter(k=>rights[k]);if(!mods.length){p.append(el("p","No module permissions assigned. Contact an administrator.","muted"));return p}if(!mods.includes(opsTab))opsTab=mods[0];let nav=el("nav");for(const k of mods)nav.append(button(opsNames[k],async()=>{opsTab=k;await render()},k!==opsTab));p.append(nav);let canWrite=rights[opsTab]!=="view";let handler={treasury:treasuryUI,inventory:inventoryUI,crafting:craftingUI,cases:casesUI,business:businessUI,business_prices:pricesUI,business_analytics:businessAnalyticsUI,business_discounts:discountApprovalUI}[opsTab];p.append(handler?await handler(canWrite,rights[opsTab],rights):await recordUI(opsTab,canWrite,rights[opsTab]));p.append(await approvalUI());return p}
+async function opsPanel(){let rights=await api("/ops/access"),p=panel("Internal operations");let mods=Object.keys(opsNames).filter(k=>rights[k]);if(!mods.length){p.append(el("p","No module permissions assigned. Contact an administrator.","muted"));return p}if(!mods.includes(opsTab))opsTab=mods[0];let nav=el("nav");for(const k of mods)nav.append(button(opsNames[k],async()=>{opsTab=k;await render()},k!==opsTab));p.append(nav);let canWrite=rights[opsTab]!=="view";let handler={treasury:treasuryUI,inventory:inventoryUI,crafting:craftingUI,cases:casesUI,operations:operationsCalendarUI,business:businessUI,business_prices:pricesUI,business_analytics:businessAnalyticsUI,business_discounts:discountApprovalUI}[opsTab];p.append(handler?await handler(canWrite,rights[opsTab],rights):await recordUI(opsTab,canWrite,rights[opsTab]));p.append(await approvalUI());return p}
+
+let calendarMode="month",calendarAnchor=new Date(),calendarSelected=new Date();
+const calDate=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-");
+const calIso=d=>calDate(d)+"T00:00:00+07:00";
+const calLabel=value=>new Date(value).toLocaleString("id-ID",{timeZone:"Asia/Jakarta",dateStyle:"medium",timeStyle:"short"});
+function calendarEventForm(entry=null,level="write"){
+ const initial=entry||{},local=value=>value?new Date(value).toLocaleString("sv-SE",{timeZone:"Asia/Jakarta"}).replace(" ","T").slice(0,16):"";
+ return form([
+  field("title","Activity title","text",null,initial.title||""),
+  field("category","Category","text",null,initial.category||"Briefing"),
+  field("division","Division / department","text",null,initial.division||""),
+  field("owner","Person responsible","text",null,initial.owner||""),
+  field("location","Location","text",null,initial.location||""),
+  field("starts_at","Start · WIB","datetime-local",null,local(initial.starts_at)),
+  field("ends_at","End · WIB","datetime-local",null,local(initial.ends_at)),
+  field("detail","Agenda / description","textarea",null,initial.detail||""),
+  field("status","Status","select",[["planned","Planned"],["in_progress","In progress"],["completed","Completed"],["cancelled","Cancelled"],...(level==="approve"||initial.status==="archived"?[["archived","Archived"]]:[])],initial.status||"planned"),
+  field("reminder_minutes","Reminder","select",[[0,"No reminder"],[5,"5 minutes before"],[15,"15 minutes before"],[30,"30 minutes before"],[60,"1 hour before"],[1440,"1 day before"]],initial.reminder_minutes??0)
+ ],entry?"Save schedule revision":"Create activity",async v=>{
+  if(!v.starts_at||!v.ends_at)throw Error("Start and end time are required");
+  const payload={...v,reminder_minutes:n(v.reminder_minutes)};
+  await api("/ops/calendar"+(entry?"/"+entry.id:""),payload,entry?"PUT":"POST");
+  await render();
+ });
+}
+async function operationsCalendarUI(write,level){
+ const p=panel("Visual Operations Calendar");
+ p.append(el("p","Central operational schedule · all dates and times are stored in WIB (Asia/Jakarta). Changes are versioned and audited.","muted"));
+ const toolbar=el("div",null,"row"),filters=el("div",null,"document-filters"),content=el("div"),selectedPanel=el("div");
+ const modeButton=(label,value)=>button(label,async()=>{calendarMode=value;await load()},calendarMode!==value);
+ const previous=button("← Previous",async()=>{calendarAnchor.setDate(1);calendarAnchor.setMonth(calendarAnchor.getMonth()+(calendarMode==="week"?0:-1));if(calendarMode==="week")calendarAnchor.setDate(calendarAnchor.getDate()-7);await load()},true);
+ const next=button("Next →",async()=>{calendarAnchor.setDate(1);calendarAnchor.setMonth(calendarAnchor.getMonth()+(calendarMode==="week"?0:1));if(calendarMode==="week")calendarAnchor.setDate(calendarAnchor.getDate()+7);await load()},true);
+ const today=button("Today",async()=>{calendarAnchor=new Date();calendarSelected=new Date();await load()},true);
+ const month=modeButton("Month","month"),week=modeButton("Week","week"),list=modeButton("List","list");
+ const division=el("select"),category=el("select"),status=el("select");
+ const addFilter=(label,input,items)=>{const wrap=el("label",label);for(const [v,t] of items){const o=el("option",t);o.value=v;input.append(o)}wrap.append(input);filters.append(wrap)};
+ addFilter("Division",division,[["","All divisions"]]);addFilter("Category",category,[["","All categories"]]);
+ addFilter("Status",status,[["","All statuses"],["planned","Planned"],["in_progress","In progress"],["completed","Completed"],["cancelled","Cancelled"],["archived","Archived"]]);
+ const header=el("div",null,"row"),grid=el("div",null,"calendar-grid");
+ const heading=el("h2"),details=el("div");
+ const fmtDay=d=>d.toLocaleDateString("en-CA",{timeZone:"Asia/Jakarta"});
+ const makeDay=(d,events,muted=false)=>{
+  const key=calDate(d),cell=el("button",null,"calendar-day"+(key===calDate(calendarSelected)?" selected":"")+(muted?" outside":""));
+  cell.type="button";cell.append(el("strong",String(d.getDate())));
+  for(const event of events.filter(e=>e.starts_at.slice(0,10)===key).slice(0,3))cell.append(el("small",event.title));
+  cell.onclick=async()=>{calendarSelected=new Date(d);await load()};return cell
+ };
+ let latest=[];
+ const renderEvents=(events)=>{
+  latest=events;content.replaceChildren();details.replaceChildren();
+  const selectedKey=calDate(calendarSelected),onDay=events.filter(e=>e.starts_at.slice(0,10)===selectedKey);
+  heading.textContent=calendarMode==="month"?calendarAnchor.toLocaleDateString("id-ID",{month:"long",year:"numeric"}):calendarMode==="week"?"Week of "+calendarAnchor.toLocaleDateString("id-ID"):"All scheduled activities";
+  if(calendarMode==="month"){
+   grid.replaceChildren();for(const day of ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"])grid.append(el("div",day,"calendar-weekday"));
+   const first=new Date(calendarAnchor.getFullYear(),calendarAnchor.getMonth(),1),offset=(first.getDay()+6)%7;
+   const start=new Date(first);start.setDate(first.getDate()-offset);
+   for(let i=0;i<42;i++){const d=new Date(start);d.setDate(start.getDate()+i);grid.append(makeDay(d,events,d.getMonth()!==calendarAnchor.getMonth()))}
+   content.append(grid);
+  }else if(calendarMode==="week"){
+   grid.replaceChildren();for(let i=0;i<7;i++){const d=new Date(calendarAnchor);d.setDate(d.getDate()-((d.getDay()+6)%7)+i);grid.append(makeDay(d,events))}
+   content.append(grid);
+  }else{
+   const ordered=events.slice().sort((a,b)=>a.starts_at.localeCompare(b.starts_at));
+   if(!ordered.length)content.append(el("p","No activities match these filters.","muted"));
+   for(const event of ordered)content.append(calendarCard(event));
+  }
+  details.append(el("h3",calendarSelected.toLocaleDateString("id-ID",{dateStyle:"full"})));
+  if(!onDay.length)details.append(el("p","No activities scheduled for this date.","muted"));
+  for(const event of onDay)details.append(calendarCard(event));
+  if(write)details.append(el("h3","Schedule an activity"),calendarEventForm(null,level));
+ };
+ function calendarCard(event){
+  const card=el("article",null,"tile");
+  add(card,el("h3",event.title),el("small",calLabel(event.starts_at)+" – "+calLabel(event.ends_at)+" WIB"),
+   el("p",event.category+" · "+(event.division||"No division")+" · "+event.status.replaceAll("_"," ")),
+   el("p",(event.owner||"No owner assigned")+" · "+(event.location||"Location not set")),
+   el("p",event.detail||"No agenda details"),el("small","Reminder: "+(event.reminder_minutes?event.reminder_minutes+" minutes before":"Off")+" · v"+event.version+" · "+(event.creator_name||"Unknown")));
+  if(write){const actions=el("div",null,"row");actions.append(button("Edit",()=>{const editor=el("details");editor.open=true;editor.append(el("summary","Edit activity"),calendarEventForm(event,level));card.append(editor)},true),
+   button("Change history",async()=>{const history=await api("/ops/calendar/"+event.id+"/history");const box=el("div",null,"custody-trail");for(const rev of history)box.append(el("p","v"+rev.version+" · "+calLabel(new Date(rev.created*1000).toISOString())+" · "+(rev.actor_name||"Unknown")+" · "+rev.status));card.append(box)},true));card.append(actions)}
+  return card
+ }
+ async function load(){
+  const start=new Date(calendarAnchor),end=new Date(calendarAnchor);
+  if(calendarMode==="month"){start.setDate(1);start.setDate(start.getDate()-((start.getDay()+6)%7));end.setDate(1);end.setMonth(end.getMonth()+1);end.setDate(end.getDate()+6)}
+  else if(calendarMode==="week"){start.setDate(start.getDate()-((start.getDay()+6)%7));end.setDate(start.getDate()+6)}
+  else {start.setDate(start.getDate()-180);end.setDate(end.getDate()+365)}
+  const params=new URLSearchParams({start:calIso(start),end:calIso(end)});
+  if(division.value)params.set("division",division.value);if(category.value)params.set("category",category.value);if(status.value)params.set("status",status.value);
+  const data=await api("/ops/calendar?"+params.toString());
+  const oldDivision=division.value,oldCategory=category.value;
+  division.replaceChildren();category.replaceChildren();
+  for(const [v,t] of [["","All divisions"],...data.divisions.map(x=>[x,x])]){const o=el("option",t);o.value=v;division.append(o)}
+  for(const [v,t] of [["","All categories"],...data.categories.map(x=>[x,x])]){const o=el("option",t);o.value=v;category.append(o)}
+  division.value=oldDivision;category.value=oldCategory;
+  renderEvents(data.events);
+ }
+ toolbar.append(previous,next,today,month,week,list);
+ if(write)toolbar.append(button("＋ New activity",()=>{calendarSelected=new Date();calendarMode="list";load().then(()=>details.append(calendarEventForm(null,level)))},true));
+ p.append(toolbar,filters,heading,content,details);await load();
+ for(const control of [division,category,status])control.onchange=load;
+ return p
+}
+
 async function treasuryUI(write,level){let d=await api("/ops/treasury"),p=panel("In-game treasury");p.append(el("h1",moneyFormat(d.balance)),el("p","Posted balance only · pending requests do not change the balance.","muted"));if(write)p.append(form([field("direction","Type","select",[["income","Income"],["expense","Expense"]]),field("amount","Amount (whole in-game dollars)","number"),field("category","Category"),field("note","Transaction purpose")],"Submit transaction",v=>postRefresh("/ops/treasury",{...v,amount:n(v.amount)})));for(const r of d.entries){let t=el("article",null,"tile");add(t,el("h3",moneyFormat(r.amount)+" · "+r.state.toUpperCase()),el("p",r.category+" · "+r.note),el("small",r.username+" · "+dateFormat(r.created)));if(level==="approve"&&r.state==="pending"&&r.actor!==me.id)t.append(el("div",null,"row"),button("Approve",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:false}),true));p.append(t)}return p}
 async function inventoryUI(write){let d=await api("/ops/inventory"),p=panel("Vault & stock management");p.append(el("h3","Stock by vault"),lines(d.stock,s=>s.vault_name+" · "+s.item_name+" · "+s.qty),el("h3","Low stock"),lines(d.low,s=>s.name+" · "+s.total+" / minimum "+s.min_stock));if(write){p.append(form([field("name","New vault name")],"Add vault",v=>postRefresh("/ops/vault",v)),form([field("name","Item name"),field("category","Category"),field("min_stock","Minimum stock","number",null,0)],"Add item",v=>postRefresh("/ops/item",{...v,min_stock:n(v.min_stock)})));if(d.vaults.length&&d.items.length)p.append(form([field("kind","Action","select",[["deposit","Deposit"],["withdraw","Withdrawal"],["transfer","Transfer"]]),field("vault","Source / deposit vault","select",options(d.vaults)),field("destination","Destination (only for transfer)","select",options(d.vaults)),field("item","Item","select",options(d.items)),field("qty","Quantity","number"),field("note","Reason / in-game reference")],"Record movement",v=>postRefresh("/ops/move",{...v,vault:n(v.vault),destination:v.kind==="transfer"?n(v.destination):null,item:n(v.item),qty:n(v.qty)})))}p.append(el("h3","Movement history"),lines(d.movements,m=>dateFormat(m.created)+" · "+m.username+" · "+m.kind+" · "+m.vault_name+" / "+m.item_name+" · "+(m.delta>0?"+":"")+m.delta+" → "+m.after_qty+" · "+m.note));return p}
 async function craftingUI(write){let d=await api("/ops/crafting"),p=panel("Crafting & production");p.append(el("p","Record completed in-game crafting only. Stock consumption and production are recorded in one transaction.","muted"));for(const r of d.recipes)p.append(el("p",r.name+" → "+r.output_qty+" × "+r.output_name+" ("+r.ingredients.map(i=>i.qty+" × "+i.name).join(", ")+")"));if(write&&d.items.length>=2){let box=panel("New recipe (IC game items)");box.append(form([field("name","Recipe name"),field("output","Output item","select",options(d.items)),field("output_qty","Output per batch","number",null,1),field("ingredients","Ingredients: item ID:quantity, comma-separated")],"Add recipe",v=>{const ingredients=v.ingredients.split(",").map(s=>{const a=s.trim().split(":");return {item:n(a[0]),qty:n(a[1])}});if(ingredients.some(i=>!Number.isSafeInteger(i.item)||!Number.isSafeInteger(i.qty)||i.qty<=0))throw Error("Use item ID:quantity");return postRefresh("/ops/recipe",{name:v.name,output:n(v.output),output_qty:n(v.output_qty),ingredients})}),el("small",d.items.map(i=>i.id+" = "+i.name).join(" · ")));p.append(box)}if(write&&d.vaults.length&&d.recipes.length)p.append(form([field("recipe","Recipe","select",options(d.recipes)),field("vault","Vault","select",options(d.vaults)),field("batches","Completed batches","number",null,1),field("note","Production notes")],"Confirm completed crafting",v=>postRefresh("/ops/craft",{...v,recipe:n(v.recipe),vault:n(v.vault),batches:n(v.batches)})));p.append(el("h3","Production history"),lines(d.batches,b=>dateFormat(b.created)+" · "+b.recipe_name+" × "+b.batches+" · "+b.vault_name+" · "+b.username));return p}

@@ -83,3 +83,13 @@ This is the initial feature branch, not a production deployment. Do not replace 
 - Asset assignment and return update the custodian, location and available/assigned state. Each lifecycle operation is recorded in the asset history and HQ audit log.
 - Maintenance work orders record task, description, provider, estimated cost, actor, timestamps and open/completed state. Opening maintenance changes the asset state to maintenance; completion restores assigned or available state based on its custodian. Retired assets cannot be assigned or sent to maintenance.
 - The Assets dashboard provides asset status counts, the asset register, acquisition/disposal approval queue, lifecycle history and maintenance history. Access follows the existing rank-based module grants.
+
+
+## Executive Intelligence Dashboard
+
+- Internal HQ includes a read-only Executive Intelligence Dashboard backed by live database aggregates; it does not seed, fabricate, or mutate operational records.
+- The dashboard shows organization membership totals and only the operational sections granted to the signed-in member's rank: Treasury, Inventory, Assets, Operations Calendar, Case Files, and approval queues.
+- Treasury figures use posted ledger entries; pending transactions are reported separately. Inventory valuation uses the existing cost-layer valuation engine and explicitly reports unvalued units. Asset valuation is the recorded acquisition cost of non-retired assets, not a depreciation-adjusted market valuation.
+- Operations metrics are sourced from the persistent calendar event table. Case metrics include Evidence Vault file and custody-event totals when the Evidence Vault schema is available; integrity failures are shown as recorded events, not inferred incidents.
+- Organization-wide audit event details and the seven-day flagged-event summary are administrator-only. Other ranks do not receive raw audit records through this endpoint.
+- The dashboard is read-only and does not change the underlying Treasury, Inventory, Asset, Calendar, Case, Evidence, or approval records.

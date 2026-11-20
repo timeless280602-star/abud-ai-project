@@ -257,6 +257,8 @@ def _active_layers(c,vault,item):
 
 def _layer_cost_source(slices):
     sources={x["source"] for x in slices if x["qty"]>0}
+    unknown={"legacy_unvalued","unvalued","mixed_unvalued"}
+    if sources & unknown: return "mixed_unvalued" if len(sources)>1 or "mixed_unvalued" in sources else next(iter(sources))
     return next(iter(sources)) if len(sources)==1 else ("mixed" if sources else "unvalued")
 
 def _receive_cost(c,vault,item,qty,total_value,source,ref,method=None):
@@ -265,7 +267,9 @@ def _receive_cost(c,vault,item,qty,total_value,source,ref,method=None):
         active=_active_layers(c,vault,item)
         total_qty=sum(x["qty_remaining"] for x in active)+qty
         value=sum(x["value_remaining"] for x in active)+total_value
-        layer_source=source if not active else ("weighted_average_pool" if any(x["source"]!=source for x in active) else source)
+        if any(x["source"] in ("legacy_unvalued","unvalued","mixed_unvalued") for x in active) and source not in ("legacy_unvalued","unvalued","mixed_unvalued"):
+            fail(409,"Revalue legacy opening stock before adding costed receipts to a weighted-average stash")
+        layer_source=source if not active else ("mixed_unvalued" if source in ("legacy_unvalued","unvalued","mixed_unvalued") or any(x["source"] in ("legacy_unvalued","unvalued","mixed_unvalued") for x in active) else ("weighted_average_pool" if any(x["source"]!=source for x in active) else source))
         if active:
             keep=active[0]["id"]
             c.execute("UPDATE hq_cost_layer SET qty_remaining=?,value_remaining=?,source=?,reference=?,created=? WHERE id=?",

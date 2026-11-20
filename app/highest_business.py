@@ -777,8 +777,8 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             coalesce(sum(CASE WHEN delta<0 AND kind<>'transfer' THEN -delta ELSE 0 END),0) output_qty,
             coalesce(sum(CASE WHEN kind='transfer' AND delta>0 THEN delta ELSE 0 END),0) transfer_in_qty,
             coalesce(sum(CASE WHEN kind='transfer' AND delta<0 THEN -delta ELSE 0 END),0) transfer_out_qty,
-            coalesce(sum(CASE WHEN delta>0 THEN coalesce(value,0) ELSE 0 END),0) input_value,
-            coalesce(sum(CASE WHEN delta<0 THEN coalesce(value,0) ELSE 0 END),0) output_value,
+            coalesce(sum(CASE WHEN delta>0 AND kind<>'transfer' THEN coalesce(value,0) ELSE 0 END),0) input_value,
+            coalesce(sum(CASE WHEN delta<0 AND kind<>'transfer' THEN coalesce(value,0) ELSE 0 END),0) output_value,
             coalesce(sum(CASE WHEN value IS NULL THEN abs(delta) ELSE 0 END),0) unvalued_qty
             FROM hq_movement WHERE created>=? AND created<? GROUP BY kind ORDER BY movements DESC""",args)
         flow["by_item"]=rows(c,"""SELECT i.id item_id,i.name item_name,
@@ -786,8 +786,8 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             coalesce(sum(CASE WHEN m.delta<0 AND m.kind<>'transfer' THEN -m.delta ELSE 0 END),0) output_qty,
             coalesce(sum(CASE WHEN m.kind='transfer' AND m.delta>0 THEN m.delta ELSE 0 END),0) transfer_in_qty,
             coalesce(sum(CASE WHEN m.kind='transfer' AND m.delta<0 THEN -m.delta ELSE 0 END),0) transfer_out_qty,
-            coalesce(sum(CASE WHEN m.delta>0 THEN coalesce(m.value,0) ELSE 0 END),0) input_value,
-            coalesce(sum(CASE WHEN m.delta<0 THEN coalesce(m.value,0) ELSE 0 END),0) output_value
+            coalesce(sum(CASE WHEN m.delta>0 AND m.kind<>'transfer' THEN coalesce(m.value,0) ELSE 0 END),0) input_value,
+            coalesce(sum(CASE WHEN m.delta<0 AND m.kind<>'transfer' THEN coalesce(m.value,0) ELSE 0 END),0) output_value
             FROM hq_movement m JOIN hq_item i ON i.id=m.item WHERE m.created>=? AND m.created<?
             GROUP BY i.id ORDER BY input_qty+output_qty DESC LIMIT 100""",args)
         stock=rows(c,"""SELECT v.name vault_name,i.name item_name,coalesce(s.qty,0) qty,i.min_stock,

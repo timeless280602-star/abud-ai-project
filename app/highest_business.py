@@ -172,6 +172,19 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
         summary["pending_orders"]=c.execute("SELECT count(*) FROM hq_order WHERE status='pending' AND legacy_hidden=0").fetchone()[0]
         summary["ready_orders"]=c.execute("SELECT count(*) FROM hq_order WHERE status='ready' AND legacy_hidden=0").fetchone()[0]
         summary["delivery_backlog"]=summary["ready_orders"]
+        settlements=dict(c.execute("""SELECT
+            coalesce(sum(CASE WHEN m.state='pending' THEN 1 ELSE 0 END),0) pending_settlements,
+            coalesce(sum(CASE WHEN m.state='pending' THEN m.amount ELSE 0 END),0) pending_settlement_value,
+            coalesce(sum(CASE WHEN m.state='posted' THEN m.amount ELSE 0 END),0) posted_settlement_value,
+            coalesce(sum(CASE WHEN m.state='rejected' THEN 1 ELSE 0 END),0) rejected_settlements
+            FROM hq_order o JOIN hq_money m ON m.id=o.money_id
+            WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?""",args).fetchone())
+        summary.update(settlements)
+        stock_value=dict(c.execute("""SELECT
+            coalesce(sum(s.qty*coalesce(p.buy,0)),0) stock_value_estimate,
+            coalesce(sum(CASE WHEN p.item IS NULL THEN s.qty ELSE 0 END),0) unpriced_stock_qty
+            FROM hq_stock s LEFT JOIN hq_price p ON p.item=s.item""").fetchone())
+        summary.update(stock_value)
         groups=rows(c,"""SELECT o.group_name,count(DISTINCT o.id) completed_orders,
             coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell ELSE 0 END),0) sales_revenue,
             coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy ELSE 0 END),0) purchase_spend,
@@ -224,11 +237,16 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             coalesce(sum(CASE WHEN m.delta<0 THEN coalesce(m.value,0) ELSE 0 END),0) output_value
             FROM hq_movement m JOIN hq_item i ON i.id=m.item WHERE m.created>=? AND m.created<?
             GROUP BY i.id ORDER BY input_qty+output_qty DESC LIMIT 100""",args)
-        stock=rows(c,"""SELECT v.name vault_name,i.name item_name,s.qty,i.min_stock,
-            CASE WHEN s.qty<i.min_stock THEN 1 ELSE 0 END low_stock
-            FROM hq_stock s JOIN hq_vault v ON v.id=s.vault JOIN hq_item i ON i.id=s.item
-            ORDER BY low_stock DESC,v.name,i.name LIMIT 300""")
-        low_stock=[x for x in stock if x["low_stock"]]
+        stock=rows(c,"""SELECT v.name vault_name,i.name item_name,coalesce(s.qty,0) qty,i.min_stock,
+            CASE WHEN coalesce(s.qty,0)<i.min_stock THEN 1 ELSE 0 END low_stock
+            FROM hq_vault v CROSS JOIN hq_item i
+            LEFT JOIN hq_stock s ON s.vault=v.id AND s.item=i.id
+            WHERE coalesce(s.qty,0)>0 OR i.min_stock>0
+            ORDER BY low_stock DESC,v.name,i.name LIMIT 500""")
+        low_stock=rows(c,"""SELECT i.name item_name,coalesce(sum(s.qty),0) total_qty,i.min_stock
+            FROM hq_item i LEFT JOIN hq_stock s ON s.item=i.id
+            GROUP BY i.id HAVING coalesce(sum(s.qty),0)<i.min_stock
+            ORDER BY i.name LIMIT 100""")
         return reply({"period":{"start":start,"end":end},"summary":summary,
             "groups":groups,"products":products,"trend":trend,"flow":flow,
             "stock":stock,"low_stock":low_stock,

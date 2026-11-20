@@ -277,3 +277,72 @@ class BusinessTest(unittest.TestCase):
         self.assertTrue(order["receipt_no"].startswith("RCT-"))
         self.assertEqual(order["invoice_creator_name"],"cashier")
         self.assertEqual(order["receipt_completed_by"],"cashier")
+
+    def test_business_profiles_are_admin_managed_and_snapshotted_per_order(self):
+        self.assertEqual(self.get(self.u,"/admin/business-profiles").status_code,403)
+        default=self.get(self.a,"/admin/business-profiles").json()["profiles"]
+        self.assertEqual(len(default),1)
+        self.assertEqual((default[0]["code"],default[0]["invoice_prefix"],default[0]["receipt_prefix"]),("HIGHEST","INV","RCT"))
+        payload={
+            "code":"NORTH","name":"North Division","description":"Northern business operations",
+            "organization_name":"THE HIGHEST NORTH","contact_name":"North Desk",
+            "contact_details":"IC Radio 01","logo_url":"https://cdn.example.com/north.png",
+            "invoice_prefix":"NTH","receipt_prefix":"NRC","template":"executive",
+            "accent_color":"#123456","footer":"North Division · Internal IC record",
+            "active":True,"is_default":False
+        }
+        self.assertEqual(self.post(self.u,"/admin/business-profiles",payload).status_code,403)
+        created=self.post(self.a,"/admin/business-profiles",payload)
+        self.assertEqual(created.status_code,200,created.text)
+        profile_id=created.json()["id"]
+        available=self.get(self.u,"/business/orders").json()["profiles"]
+        self.assertTrue(any(x["id"]==profile_id and x["name"]=="North Division" for x in available))
+        order_payload={"nonce":"north-profile-order-123456","group_name":"North IC Group","direction":"sell",
+            "lines":[{"item":self.item,"qty":2}],"business_profile_id":profile_id}
+        created_order=self.post(self.u,"/business/orders",order_payload)
+        self.assertEqual(created_order.status_code,200,created_order.text)
+        oid=created_order.json()["id"]
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertTrue(order["invoice_no"].startswith("NTH-"))
+        self.assertEqual((order["business_profile"]["name"],order["business_profile"]["organization_name"],
+            order["business_profile"]["template"],order["business_profile"]["accent_color"]),
+            ("North Division","THE HIGHEST NORTH","executive","#123456"))
+        changed={**payload,"id":profile_id,"name":"North Division Renamed","invoice_prefix":"REN","receipt_prefix":"RCP",
+            "accent_color":"#654321","footer":"Updated footer"}
+        self.assertEqual(self.post(self.a,"/admin/business-profiles",changed).status_code,200)
+        unchanged=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual((unchanged["business_profile"]["name"],unchanged["business_profile"]["invoice_prefix"],
+            unchanged["business_profile"]["accent_color"]),("North Division","NTH","#123456"))
+        self.assertTrue(unchanged["invoice_no"].startswith("NTH-"))
+        self.advance(oid)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        completed=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertTrue(completed["receipt_no"].startswith("NRC-"))
+        self.assertEqual(completed["business_profile"]["name"],"North Division")
+
+    def test_business_profile_validation_default_protection_and_inactive_selection(self):
+        base={"code":"BAD","name":"Bad Profile","invoice_prefix":"BAD","receipt_prefix":"BAD",
+            "template":"classic","accent_color":"#b58b4a","active":True,"is_default":False}
+        for change in ({"logo_url":"http://example.com/logo.png"},{"accent_color":"red"},
+            {"invoice_prefix":"BAD-1"},{"template":"unknown"}):
+            self.assertIn(self.post(self.a,"/admin/business-profiles",{**base,**change}).status_code,(400,422))
+        default=self.get(self.a,"/admin/business-profiles").json()["profiles"][0]
+        deactivate={**default,"active":False,"is_default":False}
+        self.assertEqual(self.post(self.a,"/admin/business-profiles",deactivate).status_code,409)
+        inactive=self.post(self.a,"/admin/business-profiles",{**base,"code":"ARCHIVE","name":"Archived Unit","active":False})
+        self.assertEqual(inactive.status_code,200,inactive.text)
+        bad_order={"nonce":"inactive-profile-order-12345","group_name":"Test","direction":"sell",
+            "lines":[{"item":self.item,"qty":1}],"business_profile_id":inactive.json()["id"]}
+        self.assertEqual(self.post(self.u,"/business/orders",bad_order).status_code,400)
+
+    def test_legacy_orders_receive_default_business_snapshot(self):
+        oid=self.post(self.u,"/business/orders",{"nonce":"legacy-brand-snapshot-12345","group_name":"Legacy Group",
+            "direction":"sell","lines":[{"item":self.item,"qty":1}]}).json()["id"]
+        with sqlite3.connect(self.tmp.name+"/db.sqlite") as conn:
+            conn.execute("DELETE FROM hq_order_business_snapshot WHERE order_id=?",(oid,))
+            conn.execute("UPDATE hq_order SET business_profile_id=NULL WHERE id=?",(oid,))
+        business_init()
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual(order["business_profile"]["code"],"HIGHEST")
+        self.assertEqual(order["business_profile"]["name"],"THE HIGHEST HQ")
+        self.assertTrue(order["invoice_no"].startswith("INV-"))

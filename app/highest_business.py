@@ -1,4 +1,7 @@
 """Fictional in-game business orders and POS. No real payments."""
+import re
+import sqlite3
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -15,14 +18,45 @@ def document_number(prefix,timestamp,order_id):
 def init():
     with db() as c:
         c.executescript("""
+        CREATE TABLE IF NOT EXISTS hq_business_profile(
+            id INTEGER PRIMARY KEY,code TEXT UNIQUE COLLATE NOCASE NOT NULL,name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',organization_name TEXT NOT NULL DEFAULT '',
+            contact_name TEXT NOT NULL DEFAULT '',contact_details TEXT NOT NULL DEFAULT '',
+            logo_url TEXT NOT NULL DEFAULT '',invoice_prefix TEXT NOT NULL DEFAULT 'INV',
+            receipt_prefix TEXT NOT NULL DEFAULT 'RCT',template TEXT NOT NULL DEFAULT 'classic',
+            accent_color TEXT NOT NULL DEFAULT '#b58b4a',footer TEXT NOT NULL DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1,is_default INTEGER NOT NULL DEFAULT 0,
+            updated_by INTEGER REFERENCES users(id),created INTEGER NOT NULL,updated INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_price(item INTEGER PRIMARY KEY REFERENCES hq_item(id),buy INTEGER NOT NULL CHECK(buy>=0),sell INTEGER NOT NULL CHECK(sell>=0),updated INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS hq_order(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),nonce TEXT NOT NULL,group_name TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('buy','sell')),status TEXT NOT NULL CHECK(status IN ('pending','ready','completed')),notes TEXT NOT NULL,vault INTEGER REFERENCES hq_vault(id),treasury INTEGER NOT NULL DEFAULT 0,money_id INTEGER REFERENCES hq_money(id),version INTEGER NOT NULL DEFAULT 1,delivery_note TEXT NOT NULL DEFAULT '',completed_at INTEGER,legacy_hidden INTEGER NOT NULL DEFAULT 0,discount_scope TEXT NOT NULL DEFAULT 'none',discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(actor,nonce));
+        CREATE TABLE IF NOT EXISTS hq_order(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),nonce TEXT NOT NULL,group_name TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('buy','sell')),status TEXT NOT NULL CHECK(status IN ('pending','ready','completed')),notes TEXT NOT NULL,vault INTEGER REFERENCES hq_vault(id),treasury INTEGER NOT NULL DEFAULT 0,business_profile_id INTEGER REFERENCES hq_business_profile(id),money_id INTEGER REFERENCES hq_money(id),version INTEGER NOT NULL DEFAULT 1,delivery_note TEXT NOT NULL DEFAULT '',completed_at INTEGER,legacy_hidden INTEGER NOT NULL DEFAULT 0,discount_scope TEXT NOT NULL DEFAULT 'none',discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,updated INTEGER NOT NULL,UNIQUE(actor,nonce));
         CREATE TABLE IF NOT EXISTS hq_order_line(order_id INTEGER REFERENCES hq_order(id),item INTEGER REFERENCES hq_item(id),qty INTEGER NOT NULL CHECK(qty>0),buy INTEGER NOT NULL,sell INTEGER NOT NULL,discount_type TEXT NOT NULL DEFAULT 'none',discount_value INTEGER NOT NULL DEFAULT 0,discount_amount INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(order_id,item));
         CREATE TABLE IF NOT EXISTS hq_order_history(id INTEGER PRIMARY KEY,order_id INTEGER REFERENCES hq_order(id),actor INTEGER REFERENCES users(id),status TEXT NOT NULL,note TEXT NOT NULL,created INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_order_documents(order_id INTEGER PRIMARY KEY REFERENCES hq_order(id) ON DELETE CASCADE,invoice_no TEXT NOT NULL UNIQUE,invoice_issued_at INTEGER NOT NULL,invoice_creator_name TEXT NOT NULL DEFAULT '',receipt_no TEXT UNIQUE,receipt_issued_at INTEGER,receipt_completed_by TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS hq_order_business_snapshot(
+            order_id INTEGER PRIMARY KEY REFERENCES hq_order(id) ON DELETE CASCADE,
+            profile_id INTEGER REFERENCES hq_business_profile(id),code TEXT NOT NULL,name TEXT NOT NULL,
+            description TEXT NOT NULL,organization_name TEXT NOT NULL,contact_name TEXT NOT NULL,
+            contact_details TEXT NOT NULL,logo_url TEXT NOT NULL,invoice_prefix TEXT NOT NULL,
+            receipt_prefix TEXT NOT NULL,template TEXT NOT NULL,accent_color TEXT NOT NULL,
+            footer TEXT NOT NULL,snapshot_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_discount_policy(rank_id INTEGER PRIMARY KEY REFERENCES ranks(id) ON DELETE CASCADE,scope TEXT NOT NULL DEFAULT 'none' CHECK(scope IN ('none','all','items','both')),max_percent INTEGER NOT NULL DEFAULT 0 CHECK(max_percent BETWEEN 0 AND 100),max_fixed INTEGER NOT NULL DEFAULT 0 CHECK(max_fixed>=0),updated_by INTEGER REFERENCES users(id),updated INTEGER NOT NULL);
         """)
+        stamp=now()
+        c.execute("""INSERT OR IGNORE INTO hq_business_profile(
+            code,name,description,organization_name,invoice_prefix,receipt_prefix,template,accent_color,footer,
+            active,is_default,created,updated)
+            VALUES('HIGHEST','THE HIGHEST HQ','Official business division','THE HIGHEST','INV','RCT','classic','#b58b4a',
+            'Generated by The Highest HQ · All values are in-game currency (IC). This is an internal roleplay record, not a real-world invoice or proof of payment.',1,1,?,?)""",(stamp,stamp))
+        selected_default=c.execute("SELECT id FROM hq_business_profile WHERE active=1 AND is_default=1 ORDER BY id LIMIT 1").fetchone()
+        if not selected_default:
+            selected_default=c.execute("SELECT id FROM hq_business_profile WHERE active=1 ORDER BY id LIMIT 1").fetchone()
+            if selected_default:
+                c.execute("UPDATE hq_business_profile SET is_default=0")
+                c.execute("UPDATE hq_business_profile SET is_default=1 WHERE id=?",(selected_default["id"],))
+        else:
+            c.execute("UPDATE hq_business_profile SET is_default=CASE WHEN id=? THEN 1 ELSE 0 END",(selected_default["id"],))
         order_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_order)")}
+        if "business_profile_id" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN business_profile_id INTEGER REFERENCES hq_business_profile(id)")
         if "delivery_note" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN delivery_note TEXT NOT NULL DEFAULT ''")
         if "completed_at" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN completed_at INTEGER")
         if "legacy_hidden" not in order_columns: c.execute("ALTER TABLE hq_order ADD COLUMN legacy_hidden INTEGER NOT NULL DEFAULT 0")
@@ -39,6 +73,15 @@ def init():
         c.execute("UPDATE hq_order SET legacy_hidden=1,status='pending' WHERE status='cancelled'")
         c.execute("UPDATE hq_order SET status='pending' WHERE status IN ('confirmed','processing')")
         c.execute("UPDATE hq_order SET delivery_note='Butuh pengantaran' WHERE status='ready' AND trim(delivery_note)=''")
+        default_profile=c.execute("SELECT * FROM hq_business_profile WHERE active=1 AND is_default=1 ORDER BY id LIMIT 1").fetchone()
+        if not default_profile: fail(500,"No active default business profile is configured")
+        c.execute("UPDATE hq_order SET business_profile_id=? WHERE business_profile_id IS NULL",(default_profile["id"],))
+        c.execute("""INSERT OR IGNORE INTO hq_order_business_snapshot(
+            order_id,profile_id,code,name,description,organization_name,contact_name,contact_details,logo_url,
+            invoice_prefix,receipt_prefix,template,accent_color,footer,snapshot_at)
+            SELECT o.id,p.id,p.code,p.name,p.description,p.organization_name,p.contact_name,p.contact_details,p.logo_url,
+                p.invoice_prefix,p.receipt_prefix,p.template,p.accent_color,p.footer,coalesce(o.created,?)
+            FROM hq_order o JOIN hq_business_profile p ON p.id=o.business_profile_id""",(now(),))
         legacy_orders=c.execute("""SELECT o.id,o.created,o.status,o.completed_at,o.updated,u.display_name creator,
             coalesce((SELECT u2.display_name FROM hq_order_history h JOIN users u2 ON u2.id=h.actor
                 WHERE h.order_id=o.id AND h.status='completed' ORDER BY h.id DESC LIMIT 1),u.display_name) completed_by
@@ -46,13 +89,13 @@ def init():
         for legacy in legacy_orders:
             issued=legacy["created"] or legacy["updated"] or now()
             c.execute("""INSERT OR IGNORE INTO hq_order_documents(order_id,invoice_no,invoice_issued_at,invoice_creator_name)
-                VALUES(?,?,?,?)""",(legacy["id"],document_number("INV",issued,legacy["id"]),issued,legacy["creator"]))
+                VALUES(?,?,?,?)""",(legacy["id"],document_number((c.execute("SELECT invoice_prefix FROM hq_order_business_snapshot WHERE order_id=?",(legacy["id"],)).fetchone() or {"invoice_prefix":"INV"})["invoice_prefix"],issued,legacy["id"]),issued,legacy["creator"]))
             if legacy["status"]=="completed":
                 receipt_at=legacy["completed_at"] or legacy["updated"] or issued
                 c.execute("""UPDATE hq_order_documents SET receipt_no=coalesce(receipt_no,?),
                     receipt_issued_at=coalesce(receipt_issued_at,?),
                     receipt_completed_by=CASE WHEN trim(receipt_completed_by)='' THEN ? ELSE receipt_completed_by END
-                    WHERE order_id=?""",(document_number("RCT",receipt_at,legacy["id"]),receipt_at,legacy["completed_by"],legacy["id"]))
+                    WHERE order_id=?""",(document_number((c.execute("SELECT receipt_prefix FROM hq_order_business_snapshot WHERE order_id=?",(legacy["id"],)).fetchone() or {"receipt_prefix":"RCT"})["receipt_prefix"],receipt_at,legacy["id"]),receipt_at,legacy["completed_by"],legacy["id"]))
 class Price(BaseModel):
     item:int
     buy:int=Field(ge=0,le=1000000000)
@@ -74,6 +117,7 @@ class Order(BaseModel):
     discount_type:str="none"
     discount_value:int=Field(default=0,ge=0,le=1000000000000)
     discount_reason:str=Field(default="",max_length=500)
+    business_profile_id:int|None=None
 class Status(BaseModel):
     status:str
     version:int=Field(ge=1)
@@ -86,6 +130,22 @@ class DiscountPolicy(BaseModel):
 class DiscountReview(BaseModel):
     approve:bool
     note:str=Field(default="",max_length=500)
+class BusinessProfile(BaseModel):
+    id:int|None=None
+    code:str=Field(min_length=2,max_length=20)
+    name:str=Field(min_length=1,max_length=100)
+    description:str=Field(default="",max_length=300)
+    organization_name:str=Field(default="",max_length=120)
+    contact_name:str=Field(default="",max_length=100)
+    contact_details:str=Field(default="",max_length=250)
+    logo_url:str=Field(default="",max_length=500)
+    invoice_prefix:str=Field(default="INV",min_length=2,max_length=10)
+    receipt_prefix:str=Field(default="RCT",min_length=2,max_length=10)
+    template:str="classic"
+    accent_color:str=Field(default="#b58b4a",min_length=7,max_length=7)
+    footer:str=Field(default="",max_length=500)
+    active:bool=True
+    is_default:bool=False
 def get_order(c,oid):
     r=c.execute("""SELECT o.*,u.display_name creator,d.invoice_no,d.invoice_issued_at,
         d.invoice_creator_name,d.receipt_no,d.receipt_issued_at,d.receipt_completed_by
@@ -95,6 +155,8 @@ def get_order(c,oid):
     return r
 def order_data(c,r):
     out=dict(r)
+    brand=c.execute("SELECT * FROM hq_order_business_snapshot WHERE order_id=?",(r["id"],)).fetchone()
+    out["business_profile"]=dict(brand) if brand else None
     out["lines"]=rows(c,"SELECT l.*,coalesce(nullif(l.item_name,''),i.name) name FROM hq_order_line l JOIN hq_item i ON i.id=l.item WHERE order_id=? ORDER BY name",(r["id"],))
     for line in out["lines"]:
         unit=line["buy"] if r["direction"]=="buy" else line["sell"]
@@ -122,6 +184,73 @@ def discount_policy(c,rank):
     return dict(row) if row else {"scope":"none","max_percent":0,"max_fixed":0}
 def discount_scope_allowed(policy,scope):
     return (scope=="all" and policy["scope"] in ("all","both")) or (scope=="items" and policy["scope"] in ("items","both"))
+@router.get("/admin/business-profiles")
+def get_business_profiles(r:Request):
+    with db() as c:
+        privilege(c,r,admin=True)
+        return reply({"profiles":rows(c,"SELECT * FROM hq_business_profile ORDER BY is_default DESC,active DESC,name,id")})
+
+@router.post("/admin/business-profiles")
+def save_business_profile(p:BusinessProfile,r:Request):
+    origin(r)
+    code=clean(p.code,20).upper()
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{1,19}",code): fail(400,"Unit code must use 2–20 letters, numbers, hyphens or underscores")
+    name=clean(p.name,100)
+    description=clean(p.description,300,required=False)
+    organization=clean(p.organization_name,120,required=False)
+    contact_name=clean(p.contact_name,100,required=False)
+    contact_details=clean(p.contact_details,250,required=False)
+    logo_url=clean(p.logo_url,500,required=False)
+    if logo_url:
+        try: parsed=urlsplit(logo_url)
+        except ValueError: fail(400,"Invalid logo URL")
+        host=(parsed.hostname or "").lower()
+        if parsed.scheme!="https" or not host or parsed.username or parsed.password or host=="localhost" or host.endswith(".local"):
+            fail(400,"Logo must use a public HTTPS image URL")
+    invoice_prefix=clean(p.invoice_prefix,10).upper()
+    receipt_prefix=clean(p.receipt_prefix,10).upper()
+    if not re.fullmatch(r"[A-Z0-9]{2,10}",invoice_prefix) or not re.fullmatch(r"[A-Z0-9]{2,10}",receipt_prefix):
+        fail(400,"Document prefixes must contain 2–10 letters or numbers")
+    if p.template not in ("classic","executive","minimal"): fail(400,"Invalid document template")
+    accent_color=clean(p.accent_color,7)
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}",accent_color): fail(400,"Accent color must be a six-digit hex color")
+    footer=clean(p.footer,500,required=False)
+    if p.is_default and not p.active: fail(400,"The default business profile must be active")
+    values=(code,name,description,organization,contact_name,contact_details,logo_url,invoice_prefix,receipt_prefix,p.template,accent_color,footer,int(p.active),int(p.is_default))
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        u=privilege(c,r,admin=True)
+        existing=c.execute("SELECT * FROM hq_business_profile WHERE id=?",(p.id,)).fetchone() if p.id is not None else None
+        if p.id is not None and not existing: fail(404,"Business profile not found")
+        if existing and existing["is_default"] and not p.is_default:
+            fail(409,"Choose another active default profile before removing the current default")
+        if p.is_default:
+            c.execute("UPDATE hq_business_profile SET is_default=0")
+        if existing:
+            try:
+                c.execute("""UPDATE hq_business_profile SET code=?,name=?,description=?,organization_name=?,contact_name=?,
+                    contact_details=?,logo_url=?,invoice_prefix=?,receipt_prefix=?,template=?,accent_color=?,footer=?,
+                    active=?,is_default=?,updated_by=?,updated=? WHERE id=?""",
+                    (*values,u["id"],now(),p.id))
+            except sqlite3.IntegrityError: fail(409,"Business unit code already exists")
+            profile_id=p.id
+            action="business.profile.update"
+        else:
+            try:
+                cur=c.execute("""INSERT INTO hq_business_profile(code,name,description,organization_name,contact_name,
+                    contact_details,logo_url,invoice_prefix,receipt_prefix,template,accent_color,footer,active,is_default,
+                    updated_by,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (*values,u["id"],now(),now()))
+            except sqlite3.IntegrityError: fail(409,"Business unit code already exists")
+            profile_id=cur.lastrowid
+            action="business.profile.create"
+        if p.active and not c.execute("SELECT 1 FROM hq_business_profile WHERE active=1 AND is_default=1").fetchone():
+            c.execute("UPDATE hq_business_profile SET is_default=1 WHERE id=?",(profile_id,))
+        if not c.execute("SELECT 1 FROM hq_business_profile WHERE active=1").fetchone():
+            fail(409,"At least one active business profile must remain")
+        audit(c,u["id"],action,profile_id)
+    return {"ok":True,"id":profile_id}
+
 @router.get("/admin/discount-policies")
 def get_discount_policies(r:Request):
     with db() as c:
@@ -166,7 +295,7 @@ def orders(r:Request):
         return reply({"orders":[order_data(c,x) for x in c.execute("""SELECT o.*,u.display_name creator,d.invoice_no,d.invoice_issued_at,
             d.invoice_creator_name,d.receipt_no,d.receipt_issued_at,d.receipt_completed_by
             FROM hq_order o JOIN users u ON u.id=o.actor LEFT JOIN hq_order_documents d ON d.order_id=o.id
-            WHERE o.legacy_hidden=0 ORDER BY o.id DESC LIMIT 500""").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name"),"discount_policy":discount_policy(c,u["rank"])})
+            WHERE o.legacy_hidden=0 ORDER BY o.id DESC LIMIT 500""").fetchall()],"prices":[x for x in prices(c) if x["buy"] is not None],"vaults":rows(c,"SELECT id,name FROM hq_vault ORDER BY name"),"discount_policy":discount_policy(c,u["rank"]),"profiles":rows(c,"SELECT id,code,name,is_default FROM hq_business_profile WHERE active=1 ORDER BY is_default DESC,name,id")})
 @router.get("/business/orders/{oid}")
 def order(oid:int,r:Request):
     with db() as c:
@@ -199,6 +328,8 @@ def create(p:Order,r:Request):
         old=c.execute("SELECT id FROM hq_order WHERE actor=? AND nonce=?",(u["id"],p.nonce)).fetchone()
         if old:return {"id":old["id"],"duplicate":True}
         policy=discount_policy(c,u["rank"])
+        profile=c.execute("SELECT * FROM hq_business_profile WHERE id=? AND active=1",(p.business_profile_id,)).fetchone() if p.business_profile_id is not None else c.execute("SELECT * FROM hq_business_profile WHERE active=1 AND is_default=1 ORDER BY id LIMIT 1").fetchone()
+        if not profile: fail(400,"Select an active business profile")
         if p.discount_scope!="none" and not discount_scope_allowed(policy,p.discount_scope):
             fail(403,"Your rank is not authorized to use this discount scope")
         if p.discount_scope=="none" and p.discount_reason.strip(): fail(400,"Discount reason is only used for discounted orders")
@@ -257,13 +388,20 @@ def create(p:Order,r:Request):
         if total>1000000000000:fail(400,"Order total exceeds ledger limit")
         gid=clean(p.group_name,100)
         created_at=now()
-        oid=c.execute("""INSERT INTO hq_order(actor,nonce,group_name,direction,status,notes,vault,treasury,discount_scope,discount_type,discount_value,discount_amount,discount_state,discount_requested_amount,discount_reason,created,updated)
-            VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?)""",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),p.discount_scope,p.discount_type,p.discount_value,effective_discount,state,requested_discount,p.discount_reason.strip(),created_at,created_at)).lastrowid
+        oid=c.execute("""INSERT INTO hq_order(actor,nonce,group_name,direction,status,notes,vault,treasury,business_profile_id,discount_scope,discount_type,discount_value,discount_amount,discount_state,discount_requested_amount,discount_reason,created,updated)
+            VALUES(?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)""",(u["id"],p.nonce,gid,p.direction,p.notes.strip(),p.vault,int(p.treasury),profile["id"],p.discount_scope,p.discount_type,p.discount_value,effective_discount,state,requested_discount,p.discount_reason.strip(),created_at,created_at)).lastrowid
         c.executemany("""INSERT INTO hq_order_line(order_id,item,item_name,qty,buy,sell,discount_type,discount_value,discount_amount,requested_discount_amount)
             VALUES(?,?,?,?,?,?,?,?,?,?)""",[(oid,x["item"],x["name"],x["qty"],x["buy"],x["sell"],x["discount_type"],x["discount_value"],x["discount_amount"],x["requested_discount_amount"]) for x in items])
+        c.execute("""INSERT INTO hq_order_business_snapshot(
+            order_id,profile_id,code,name,description,organization_name,contact_name,contact_details,logo_url,
+            invoice_prefix,receipt_prefix,template,accent_color,footer,snapshot_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (oid,profile["id"],profile["code"],profile["name"],profile["description"],profile["organization_name"],
+             profile["contact_name"],profile["contact_details"],profile["logo_url"],profile["invoice_prefix"],
+             profile["receipt_prefix"],profile["template"],profile["accent_color"],profile["footer"],created_at))
         creator_name=c.execute("SELECT display_name FROM users WHERE id=?",(u["id"],)).fetchone()["display_name"]
         c.execute("INSERT INTO hq_order_documents(order_id,invoice_no,invoice_issued_at,invoice_creator_name) VALUES(?,?,?,?)",
-            (oid,document_number("INV",created_at,oid),created_at,creator_name))
+            (oid,document_number(profile["invoice_prefix"],created_at,oid),created_at,creator_name))
         history(c,oid,u["id"],"pending","Order created"+(" · Discount approval requested" if needs_approval else ""))
         audit(c,u["id"],"business.order",oid)
         if needs_approval:audit(c,u["id"],"business.discount.request",oid)
@@ -335,10 +473,12 @@ def update(oid:int,p:Status,r:Request):
         c.execute("UPDATE hq_order SET status=?,version=version+1,updated=?,delivery_note=?,completed_at=? WHERE id=?",(p.status,now(),delivery_note,completed_at,oid))
         if p.status=="completed":
             completed_by=c.execute("SELECT display_name FROM users WHERE id=?",(u["id"],)).fetchone()["display_name"]
+            brand=c.execute("SELECT receipt_prefix FROM hq_order_business_snapshot WHERE order_id=?",(oid,)).fetchone()
+            receipt_prefix=brand["receipt_prefix"] if brand else "RCT"
             c.execute("""UPDATE hq_order_documents SET receipt_no=coalesce(receipt_no,?),
                 receipt_issued_at=coalesce(receipt_issued_at,?),receipt_completed_by=CASE
                 WHEN trim(receipt_completed_by)='' THEN ? ELSE receipt_completed_by END WHERE order_id=?""",
-                (document_number("RCT",completed_at,oid),completed_at,completed_by,oid))
+                (document_number(receipt_prefix,completed_at,oid),completed_at,completed_by,oid))
         history(c,oid,u["id"],p.status,note)
         audit(c,u["id"],"business."+p.status,oid)
     return {"ok":True,"money_id":mid}

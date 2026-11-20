@@ -109,7 +109,7 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(thread["count"],3)
         self.assertEqual(thread["comments"][0]["id"],comment_id)
         self.assertEqual(thread["comments"][0]["likes"],1)
-        self.assertEqual(len(thread["comments"][0]["replies"]),1)
+        self.assertEqual(len(thread["comments"][0]["replies"]),2)
         self.assertEqual(thread["comments"][0]["replies"][0]["display_name"],"clipper")
         self.assertEqual(self.post(self.u,f"/social/comments/{comment_id}/delete",{}).status_code,403)
         self.assertEqual(self.post(self.v,f"/social/comments/{comment_id}/delete",{}).status_code,200)

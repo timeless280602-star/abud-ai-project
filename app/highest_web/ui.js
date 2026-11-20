@@ -417,7 +417,45 @@ async function inventoryUI(write){
  return p
 }
 async function craftingUI(write){let d=await api("/ops/crafting"),p=panel("Crafting & production");p.append(el("p","Record completed in-game crafting only. Stock consumption and production are recorded in one transaction.","muted"));for(const r of d.recipes)p.append(el("p",r.name+" → "+r.output_qty+" × "+r.output_name+" ("+r.ingredients.map(i=>i.qty+" × "+i.name).join(", ")+")"));if(write&&d.items.length>=2){let box=panel("New recipe (IC game items)");box.append(form([field("name","Recipe name"),field("output","Output item","select",options(d.items)),field("output_qty","Output per batch","number",null,1),field("ingredients","Ingredients: item ID:quantity, comma-separated")],"Add recipe",v=>{const ingredients=v.ingredients.split(",").map(s=>{const a=s.trim().split(":");return {item:n(a[0]),qty:n(a[1])}});if(ingredients.some(i=>!Number.isSafeInteger(i.item)||!Number.isSafeInteger(i.qty)||i.qty<=0))throw Error("Use item ID:quantity");return postRefresh("/ops/recipe",{name:v.name,output:n(v.output),output_qty:n(v.output_qty),ingredients})}),el("small",d.items.map(i=>i.id+" = "+i.name).join(" · ")));p.append(box)}if(write&&d.vaults.length&&d.recipes.length)p.append(form([field("recipe","Recipe","select",options(d.recipes)),field("vault","Vault","select",options(d.vaults)),field("batches","Completed batches","number",null,1),field("note","Production notes")],"Confirm completed crafting",v=>postRefresh("/ops/craft",{...v,recipe:n(v.recipe),vault:n(v.vault),batches:n(v.batches)})));p.append(el("h3","Production history"),lines(d.batches,b=>dateFormat(b.created)+" · "+b.recipe_name+" × "+b.batches+" · "+b.vault_name+" · "+b.username));return p}
-async function casesUI(write){let d=await api("/ops/cases"),p=panel("Roleplay intelligence & cases");p.append(el("p","IC fictional character information only. Never enter real-world private information.","muted"));if(write)p.append(form([field("name","Case title"),field("summary","IC case summary")],"Open case",v=>postRefresh("/ops/cases",v)));for(const c of d){let t=el("article",null,"tile"),details=el("div");add(t,el("h3","TH-"+String(c.id).padStart(4,"0")+" · "+c.title),el("small",c.status+" · "+dateFormat(c.updated)),el("p",c.summary),button("Open timeline",async()=>{let data=await api("/ops/cases/"+c.id);details.replaceChildren(lines(data.notes,n=>dateFormat(n.created)+" · "+n.username+" · "+n.note),await caseExtras(c.id,write));if(write)details.append(form([field("note","IC update / evidence reference"),field("status","Status","select",[["open","Open"],["review","Under review"],["closed","Closed"]],c.status)],"Save case update",v=>postRefresh("/ops/cases/"+c.id,v)))}),details);p.append(t)}return p}
+
+function intelligenceAnalyticsPanel(data){
+ const p=panel("Advanced Intelligence Analytics");
+ p.append(el("p",data.scope,"muted"));
+ const g=el("div",null,"grid");
+ const metric=(label,value,note)=>{const t=el("article",null,"tile");add(t,el("small",label),el("h2",String(value)),el("p",note||""));g.append(t)};
+ metric("Total IC cases",data.cases.total,"Open "+data.cases.open+" · Review "+data.cases.review+" · Closed "+data.cases.closed);
+ metric("Tracked entities",data.graph.total_nodes,"Characters "+data.graph.characters+" · Vehicles "+data.graph.vehicles+" · Organizations "+data.graph.organizations);
+ metric("Relationships",data.graph.relationships,"Case-scoped graph connections");
+ metric("Evidence files",data.graph.evidence_files,"Custody events "+data.graph.custody_events);
+ metric("Integrity failures",data.graph.integrity_failures,"Recorded failed integrity checks");
+ metric("Case-linked assets",data.graph.case_linked_assets,"Assets associated with IC cases");
+ p.append(g);
+ const recurring=el("section",null,"tile");add(recurring,el("h3","Recurring entities across cases"),el("p","Exact normalized name matches only. These are candidate overlaps for investigator review, not confirmed identities.","muted"));
+ recurring.append(lines(data.recurring_entities,x=>x.entity_type.toUpperCase()+" · "+x.entity_name+" · "+x.case_count+" cases · "+x.cases.map(c=>"TH-"+String(c.id).padStart(4,"0")+" "+c.title).join(" / ")));
+ p.append(recurring);
+ const overlaps=el("section",null,"tile");add(overlaps,el("h3","Potential case connections"),el("p","Cases sharing an entity name are grouped as review leads. No cross-case relationship is created automatically.","muted"));
+ overlaps.append(lines(data.candidate_case_overlaps,x=>"TH-"+String(x.left_case_id).padStart(4,"0")+" "+x.left_case+" ↔ TH-"+String(x.right_case_id).padStart(4,"0")+" "+x.right_case+" · "+x.entity_type+" · "+x.matched_name));
+ p.append(overlaps);
+ const cols=el("div",null,"grid");
+ const connected=el("section",null,"tile");add(connected,el("h3","Most connected entities"));
+ connected.append(lines(data.most_connected_entities,x=>x.name+" · "+x.entity_type+" · "+x.degree+" links · TH-"+String(x.case_id).padStart(4,"0")+" "+x.case_title));
+ cols.append(connected);
+ const patterns=el("section",null,"tile");add(patterns,el("h3","Relationship patterns"));
+ patterns.append(lines(data.relationship_patterns,x=>x.label+" · "+x.relationship_count+" links across "+x.case_count+" cases"));
+ cols.append(patterns);p.append(cols);
+ const active=el("section",null,"tile");add(active,el("h3","Most active case files"));
+ active.append(lines(data.most_active_cases,x=>"TH-"+String(x.case_id).padStart(4,"0")+" · "+x.title+" · "+x.status+" · "+x.entity_count+" entities · "+x.relationship_count+" links · "+x.evidence_count+" files · "+x.update_count+" updates"));
+ p.append(active);
+ const timeline=el("section",null,"tile");add(timeline,el("h3","IC activity timeline · WIB"),el("p","Daily case, graph, evidence and custody activity. This is a record of logged events, not an inferred event chronology.","muted"));
+ timeline.append(lines(data.activity_timeline.slice(0,30),x=>x.day+" · Cases opened "+x.cases_opened+" · Updates "+x.case_updates+" · Entities "+x.nodes_added+" · Links "+x.relationships_added+" · Evidence "+x.evidence_uploaded+" · Custody "+x.custody_events));
+ p.append(timeline);
+ const integrity=el("section",null,"tile");add(integrity,el("h3","Recorded evidence integrity incidents"));
+ integrity.append(lines(data.recorded_integrity_failures_by_case,x=>"TH-"+String(x.case_id).padStart(4,"0")+" · "+x.title+" · "+x.integrity_failures+" recorded failures"));
+ p.append(integrity);
+ p.append(el("small","Generated "+dateFormat(data.generated_at),"muted"));
+ return p
+}
+async function casesUI(write){let d=await api("/ops/cases"),intelligence=await api("/case-intelligence/analytics"),p=panel("Roleplay intelligence & cases");p.append(el("p","IC fictional character information only. Never enter real-world private information.","muted"),intelligenceAnalyticsPanel(intelligence));if(write)p.append(form([field("name","Case title"),field("summary","IC case summary")],"Open case",v=>postRefresh("/ops/cases",v)));for(const c of d){let t=el("article",null,"tile"),details=el("div");add(t,el("h3","TH-"+String(c.id).padStart(4,"0")+" · "+c.title),el("small",c.status+" · "+dateFormat(c.updated)),el("p",c.summary),button("Open timeline",async()=>{let data=await api("/ops/cases/"+c.id);details.replaceChildren(lines(data.notes,n=>dateFormat(n.created)+" · "+n.username+" · "+n.note),await caseExtras(c.id,write));if(write)details.append(form([field("note","IC update / evidence reference"),field("status","Status","select",[["open","Open"],["review","Under review"],["closed","Closed"]],c.status)],"Save case update",v=>postRefresh("/ops/cases/"+c.id,v)))}),details);p.append(t)}return p}
 
 let socialTab="moments";
 const socialTabs={moments:"Multi-POV Moments",studio:"Creator Studio",wiki:"Lore & Character Wiki",feed:"Community Feed",leaders:"Leaderboard"};

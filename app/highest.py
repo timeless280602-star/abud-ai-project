@@ -119,6 +119,8 @@ def page():
 def js(): return FileResponse(assets/"ui.js",media_type="application/javascript")
 @router.get("/ui.css")
 def css(): return FileResponse(assets/"ui.css",media_type="text/css")
+@router.get("/document.css")
+def document_css(): return FileResponse(assets/"document.css",media_type="text/css")
 @router.get("/logo.png")
 def logo():
     p=assets/"logo.png"

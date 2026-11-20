@@ -2,8 +2,9 @@
 import re
 import sqlite3
 from urllib.parse import urlsplit
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from app.highest import db, origin, clean, fail, audit
 from app.highest_ops import privilege, rows, reply, now, change
@@ -14,6 +15,146 @@ STATES={"pending":{"ready"},"ready":{"completed"},"completed":set()}
 def document_number(prefix,timestamp,order_id):
     day=datetime.fromtimestamp(int(timestamp),timezone(timedelta(hours=7))).strftime("%Y%m%d")
     return f"{prefix}-{day}-{int(order_id):06d}"
+
+def _document_cte():
+    return """
+    WITH docs AS (
+        SELECT 'invoice' AS document_type,d.invoice_no AS document_number,d.invoice_issued_at AS issued_at,
+            o.id AS order_id,coalesce(s.profile_id,o.business_profile_id) AS profile_id,
+            coalesce(s.code,'HIGHEST') AS business_code,coalesce(s.name,'THE HIGHEST HQ') AS business_name,
+            o.actor AS creator_id,coalesce(nullif(d.invoice_creator_name,''),u.display_name) AS creator_name,
+            '' AS completed_by,o.group_name,o.direction,o.status,
+            (SELECT coalesce(sum(l.qty*(CASE WHEN o.direction='buy' THEN l.buy ELSE l.sell END)-l.discount_amount),0)
+                FROM hq_order_line l WHERE l.order_id=o.id) AS total
+        FROM hq_order_documents d JOIN hq_order o ON o.id=d.order_id
+        JOIN users u ON u.id=o.actor LEFT JOIN hq_order_business_snapshot s ON s.order_id=o.id
+        WHERE o.legacy_hidden=0 AND d.invoice_no IS NOT NULL
+        UNION ALL
+        SELECT 'receipt' AS document_type,d.receipt_no AS document_number,d.receipt_issued_at AS issued_at,
+            o.id AS order_id,coalesce(s.profile_id,o.business_profile_id) AS profile_id,
+            coalesce(s.code,'HIGHEST') AS business_code,coalesce(s.name,'THE HIGHEST HQ') AS business_name,
+            o.actor AS creator_id,coalesce(nullif(d.invoice_creator_name,''),u.display_name) AS creator_name,
+            coalesce(d.receipt_completed_by,'') AS completed_by,o.group_name,o.direction,o.status,
+            (SELECT coalesce(sum(l.qty*(CASE WHEN o.direction='buy' THEN l.buy ELSE l.sell END)-l.discount_amount),0)
+                FROM hq_order_line l WHERE l.order_id=o.id) AS total
+        FROM hq_order_documents d JOIN hq_order o ON o.id=d.order_id
+        JOIN users u ON u.id=o.actor LEFT JOIN hq_order_business_snapshot s ON s.order_id=o.id
+        WHERE o.legacy_hidden=0 AND d.receipt_no IS NOT NULL AND d.receipt_issued_at IS NOT NULL
+    )
+    """
+def _local_date_timestamp(value,next_day=False):
+    try:
+        parsed=date.fromisoformat(value)
+    except (TypeError,ValueError):
+        fail(400,"Dates must use YYYY-MM-DD")
+    if parsed.isoformat()!=value: fail(400,"Dates must use YYYY-MM-DD")
+    if next_day: parsed+=timedelta(days=1)
+    return int(datetime(parsed.year,parsed.month,parsed.day,tzinfo=timezone(timedelta(hours=7))).timestamp())
+def _business_document_pdf(o,kind):
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_RIGHT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet,ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableStyle
+    receipt=kind=="receipt"
+    brand=o.get("business_profile") or {}
+    accent_value=brand.get("accent_color") or "#b58b4a"
+    accent=colors.HexColor(accent_value if re.fullmatch(r"#[0-9A-Fa-f]{6}",accent_value) else "#b58b4a")
+    muted=colors.HexColor("#777777")
+    def safe(value):
+        return escape(str(value if value is not None else "")).replace("\n","<br/>")
+    def money(value): return "$"+format(int(value or 0),",")
+    def when(value):
+        if not value: return "—"
+        return datetime.fromtimestamp(int(value),timezone(timedelta(hours=7))).strftime("%d %b %Y · %H:%M WIB")
+    number=o.get("receipt_no") if receipt else o.get("invoice_no")
+    issued=o.get("receipt_issued_at") if receipt else o.get("invoice_issued_at")
+    title="BUKTI PENYELESAIAN TRANSAKSI" if receipt else "INVOICE"
+    business_name=brand.get("name") or "THE HIGHEST HQ"
+    buffer=BytesIO()
+    doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=14*mm,leftMargin=14*mm,topMargin=14*mm,bottomMargin=19*mm,
+        title=str(number or title),author=business_name,subject="Internal FiveM roleplay economy document")
+    base=getSampleStyleSheet()
+    styles={
+        "brand":ParagraphStyle("BrandHQ",parent=base["Title"],fontName="Helvetica-Bold",fontSize=16,leading=19,textColor=colors.HexColor("#29231b"),spaceAfter=2),
+        "small":ParagraphStyle("SmallHQ",parent=base["Normal"],fontName="Helvetica",fontSize=8,leading=11,textColor=muted),
+        "doc":ParagraphStyle("DocHQ",parent=base["Title"],fontName="Helvetica-Bold",fontSize=16,leading=20,textColor=accent,alignment=TA_RIGHT),
+        "note":ParagraphStyle("NoteHQ",parent=base["Normal"],fontName="Helvetica",fontSize=8,leading=11,textColor=colors.HexColor("#29231b")),
+        "cell":ParagraphStyle("CellHQ",parent=base["Normal"],fontName="Helvetica",fontSize=7,leading=9,textColor=colors.HexColor("#29231b")),
+        "right":ParagraphStyle("RightHQ",parent=base["Normal"],fontName="Helvetica",fontSize=7,leading=9,textColor=colors.HexColor("#29231b"),alignment=TA_RIGHT),
+        "head":ParagraphStyle("HeadHQ",parent=base["Normal"],fontName="Helvetica-Bold",fontSize=6.5,leading=8,textColor=colors.white),
+        "total":ParagraphStyle("TotalHQ",parent=base["Normal"],fontName="Helvetica-Bold",fontSize=10,leading=13,textColor=accent)
+    }
+    story=[]
+    brand_lines=[f'<font color="{accent_value}"><b>{safe(brand.get("code") or "BUSINESS DIVISION")}</b></font>',f'<b>{safe(business_name)}</b>']
+    if brand.get("description"): brand_lines.append(safe(brand["description"]))
+    contact=[brand.get("organization_name"),brand.get("contact_name"),brand.get("contact_details")]
+    if any(contact): brand_lines.append(safe(" · ".join(str(x) for x in contact if x)))
+    header=Table([[Paragraph("<br/>".join(brand_lines),styles["brand"]),
+        Paragraph(f'<font size="7"><b>{"TRANSACTION RECEIPT" if receipt else "SALES / PURCHASE INVOICE"}</b></font><br/><b>{title}</b>',styles["doc"])]],
+        colWidths=[105*mm,77*mm],hAlign="LEFT")
+    header.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("ALIGN",(1,0),(1,0),"RIGHT"),("LINEBELOW",(0,0),(-1,-1),2,accent),("BOTTOMPADDING",(0,0),(-1,-1),9),("LEFTPADDING",(0,0),(-1,-1),0),("RIGHTPADDING",(0,0),(-1,-1),0)]))
+    story.extend([header,Spacer(1,6*mm)])
+    detail_pairs=[
+        ("DOCUMENT NUMBER",number or "Not issued"),("ISSUED AT",when(issued)),
+        ("ORDER REFERENCE",f"TH-BIZ-{int(o['id']):05d}"),("BUSINESS UNIT",business_name),
+        ("CUSTOMER / GROUP" if o["direction"]=="sell" else "SUPPLIER / GROUP",o.get("group_name","—")),
+        ("TRANSACTION","Sale / output" if o["direction"]=="sell" else "Purchase / input"),
+        ("CREATED BY",o.get("invoice_creator_name") or o.get("creator") or "—"),
+        ("ORDER STATUS","Completed" if o.get("status")=="completed" else ("Ready · Butuh pengantaran" if o.get("status")=="ready" else "Pending"))
+    ]
+    if receipt: detail_pairs.extend([("COMPLETED AT",when(o.get("completed_at"))),("COMPLETED BY",o.get("receipt_completed_by") or "—")])
+    detail_rows=[]
+    for index in range(0,len(detail_pairs),2):
+        pair=detail_pairs[index:index+2]
+        detail_rows.append([Paragraph(f'<font size="6" color="#777777"><b>{safe(k)}</b></font><br/><b>{safe(v)}</b>',styles["note"]) for k,v in pair])
+        if len(pair)==1: detail_rows[-1].append("")
+    details=Table(detail_rows,colWidths=[91*mm,91*mm],hAlign="LEFT")
+    details.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#f7f5f1")),("BOX",(0,0),(-1,-1),0.4,colors.HexColor("#e7e2d8")),("INNERGRID",(0,0),(-1,-1),0.3,colors.HexColor("#e7e2d8")),("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),7),("RIGHTPADDING",(0,0),(-1,-1),7),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
+    story.extend([details,Spacer(1,6*mm)])
+    item_rows=[[Paragraph(x,styles["head"]) for x in ["#","ITEM","QTY","UNIT PRICE","SUBTOTAL","DISCOUNT","NET TOTAL"]]]
+    for index,line in enumerate(o.get("lines",[]),1):
+        unit=line["buy"] if o["direction"]=="buy" else line["sell"]
+        item_rows.append([Paragraph(str(index),styles["cell"]),Paragraph(safe(line.get("name")),styles["cell"]),
+            Paragraph(format(int(line.get("qty") or 0),","),styles["right"]),Paragraph(money(unit),styles["right"]),
+            Paragraph(money(line.get("subtotal")),styles["right"]),Paragraph(money(line.get("discount_amount")),styles["right"]),
+            Paragraph(money(line.get("total")),styles["right"])])
+    items=Table(item_rows,colWidths=[8*mm,48*mm,14*mm,25*mm,25*mm,24*mm,38*mm],repeatRows=1,hAlign="LEFT")
+    items.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),accent),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("ALIGN",(2,1),(-1,-1),"RIGHT"),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#faf9f6")]),("LINEBELOW",(0,0),(-1,0),0.5,accent),("LINEBELOW",(0,1),(-1,-1),0.25,colors.HexColor("#e7e2d8")),("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
+    story.extend([items,Spacer(1,5*mm)])
+    total_rows=[[Paragraph("Subtotal",styles["cell"]),Paragraph(money(o.get("subtotal")),styles["right"])],
+        [Paragraph("Discount applied",styles["cell"]),Paragraph("− "+money(o.get("discount_amount")),styles["right"])]]
+    if o.get("discount_state")=="pending": total_rows.append([Paragraph("Discount requested · pending approval",styles["cell"]),Paragraph(money(o.get("requested_discount_amount")),styles["right"])])
+    total_rows.append([Paragraph("GRAND TOTAL",styles["note"]),Paragraph(money(o.get("total")),styles["total"])])
+    total_table=Table(total_rows,colWidths=[48*mm,34*mm],hAlign="RIGHT")
+    total_table.setStyle(TableStyle([("ALIGN",(1,0),(1,-1),"RIGHT"),("LINEABOVE",(0,-1),(-1,-1),1.4,accent),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),("LEFTPADDING",(0,0),(-1,-1),5),("RIGHTPADDING",(0,0),(-1,-1),5)]))
+    story.extend([total_table,Spacer(1,6*mm)])
+    if receipt:
+        settlement={"posted":"Posted to treasury ledger","pending":"Pending treasury approval","rejected":"Rejected by treasury reviewer"}.get(o.get("money_state"),"No treasury settlement requested")
+        note_lines=["Treasury: "+settlement,"This document confirms the order was marked Completed. Treasury settlement is shown separately and may still require approval.","Invoice reference: "+str(o.get("invoice_no") or "—")]
+        note_title="TREASURY SETTLEMENT"
+    else:
+        discount_note={"pending":"Discount request pending approval; the displayed total excludes the requested discount.","rejected":"Discount request rejected; the displayed total uses full price.","approved":"Discount approved and applied."}.get(o.get("discount_state"),"No discount applied.")
+        note_lines=[discount_note,"Invoice for an in-game order. Final discounts are subject to the rank-based approval policy."]
+        note_title="DISCOUNT & ORDER NOTES"
+    for key,label in (("notes","Order notes"),("delivery_note","Delivery"),("discount_reason","Discount reason")):
+        if o.get(key): note_lines.append(label+": "+str(o[key]))
+    note_block=Table([[Paragraph("<b>"+note_title+"</b><br/>"+"<br/>".join(safe(x) for x in note_lines),styles["note"])]],colWidths=[182*mm])
+    note_block.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#f7f5f1")),("BOX",(0,0),(-1,-1),0.6,accent),("LEFTPADDING",(0,0),(-1,-1),8),("RIGHTPADDING",(0,0),(-1,-1),8),("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8)]))
+    story.extend([note_block,Spacer(1,4*mm),Paragraph(safe(brand.get("footer") or "Generated by The Highest HQ."),styles["small"]),
+        Paragraph("Internal FiveM roleplay economy record · All values are in-game currency (IC). Not a real-world invoice, receipt, or proof of payment.",styles["small"])])
+    def page_footer(canvas,document):
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor("#e7e2d8"));canvas.line(14*mm,15*mm,196*mm,15*mm)
+        canvas.setFont("Helvetica",7);canvas.setFillColor(muted)
+        canvas.drawString(14*mm,10*mm,"THE HIGHEST HQ · INTERNAL DOCUMENT")
+        canvas.drawRightString(196*mm,10*mm,f"Page {document.page}")
+        canvas.restoreState()
+    doc.build(story,onFirstPage=page_footer,onLaterPages=page_footer)
+    return buffer.getvalue()
 
 def init():
     with db() as c:
@@ -301,6 +442,66 @@ def order(oid:int,r:Request):
     with db() as c:
         privilege(c,r,"business")
         return reply({"order":order_data(c,get_order(c,oid)),"history":rows(c,"SELECT h.*,u.display_name FROM hq_order_history h JOIN users u ON u.id=h.actor WHERE order_id=? ORDER BY h.id",(oid,))})
+
+@router.get("/business/documents")
+def business_documents(r:Request,q:str="",kind:str="all",profile_id:int|None=None,creator_id:int|None=None,
+    period:str|None=None,from_date:str|None=None,to_date:str|None=None,page:int=1,page_size:int=50):
+    if kind not in ("all","invoice","receipt"): fail(400,"Invalid document type")
+    if page<1 or page_size<1: fail(400,"Page and page size must be positive")
+    page_size=min(page_size,100)
+    q=clean(q,100,required=False)
+    if period and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])",period): fail(400,"Archive period must use YYYY-MM")
+    start=_local_date_timestamp(from_date) if from_date else None
+    end=_local_date_timestamp(to_date,True) if to_date else None
+    if start is not None and end is not None and start>=end: fail(400,"Start date must not be after end date")
+    conditions=[];args=[]
+    if q:
+        conditions.append("(document_number LIKE ? OR group_name LIKE ? OR CAST(order_id AS TEXT)=?)")
+        args.extend([f"%{q}%",f"%{q}%",q])
+    if kind!="all": conditions.append("document_type=?");args.append(kind)
+    if profile_id is not None: conditions.append("profile_id=?");args.append(profile_id)
+    if creator_id is not None: conditions.append("creator_id=?");args.append(creator_id)
+    if period: conditions.append("strftime('%Y-%m',datetime(issued_at,'unixepoch','+7 hours'))=?");args.append(period)
+    if start is not None: conditions.append("issued_at>=?");args.append(start)
+    if end is not None: conditions.append("issued_at<?");args.append(end)
+    where=(" WHERE "+" AND ".join(conditions)) if conditions else ""
+    cte=_document_cte()
+    with db() as c:
+        privilege(c,r,"business")
+        summary=c.execute(cte+f""" SELECT count(*) document_count,
+            coalesce(sum(CASE WHEN document_type='invoice' THEN 1 ELSE 0 END),0) invoice_count,
+            coalesce(sum(CASE WHEN document_type='receipt' THEN 1 ELSE 0 END),0) receipt_count,
+            count(DISTINCT order_id) order_count,
+            coalesce(sum(CASE WHEN document_type='invoice' THEN total ELSE 0 END),0) invoiced_value
+            FROM docs{where}""",args).fetchone()
+        documents=rows(c,cte+f" SELECT * FROM docs{where} ORDER BY issued_at DESC,order_id DESC,document_type LIMIT ? OFFSET ?",
+            (*args,page_size,(page-1)*page_size))
+        periods=rows(c,cte+""" SELECT strftime('%Y-%m',datetime(issued_at,'unixepoch','+7 hours')) period,
+            count(*) document_count,
+            sum(CASE WHEN document_type='invoice' THEN 1 ELSE 0 END) invoice_count,
+            sum(CASE WHEN document_type='receipt' THEN 1 ELSE 0 END) receipt_count,
+            count(DISTINCT order_id) order_count,
+            coalesce(sum(CASE WHEN document_type='invoice' THEN total ELSE 0 END),0) invoiced_value
+            FROM docs GROUP BY period ORDER BY period DESC LIMIT 48""")
+        profiles=rows(c,cte+""" SELECT DISTINCT profile_id id,business_code code,business_name name
+            FROM docs WHERE profile_id IS NOT NULL ORDER BY business_name""")
+        creators=rows(c,cte+""" SELECT DISTINCT creator_id id,creator_name name FROM docs ORDER BY creator_name""")
+    return reply({"documents":documents,"summary":dict(summary),"archive_periods":periods,"profiles":profiles,"creators":creators,
+        "page":page,"page_size":page_size,"total":int(summary["document_count"]),"pages":(int(summary["document_count"])+page_size-1)//page_size})
+
+@router.get("/business/documents/{order_id}/{kind}/pdf")
+def business_document_pdf(order_id:int,kind:str,r:Request):
+    if kind not in ("invoice","receipt"): fail(400,"Invalid document type")
+    with db() as c:
+        privilege(c,r,"business")
+        o=order_data(c,get_order(c,order_id))
+    if kind=="invoice" and not o.get("invoice_no"): fail(404,"Invoice not found")
+    if kind=="receipt" and (o.get("status")!="completed" or not o.get("receipt_no")): fail(404,"Receipt is available after the order is completed")
+    pdf=_business_document_pdf(o,kind)
+    number=o.get("receipt_no") if kind=="receipt" else o.get("invoice_no")
+    return Response(content=pdf,media_type="application/pdf",
+        headers={"Content-Disposition":f'attachment; filename="{number}.pdf"',"Cache-Control":"private, no-store"})
+
 @router.post("/business/orders")
 def create(p:Order,r:Request):
     origin(r)

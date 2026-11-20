@@ -257,7 +257,81 @@ if(kind==="invoice"&&!o.invoice_no)throw Error("Invoice belum tersedia untuk ord
 win.document.open();win.document.write(businessDocumentHTML(o,kind));win.document.close();win.document.getElementById("print-document").addEventListener("click",()=>win.print());win.focus();
 }catch(error){win.close();throw error}
 }
-async function businessUI(write,level,rights){let data=await api("/business/orders"),p=panel("Business orders & POS");p.append(el("p","Fictional FiveM economy · Every transaction is permanently attributed to the account that created it. Status changes are separately attributed to the acting account. Completed orders are retained in the analytics archive. Only three statuses are used: Pending, Ready (Butuh pengantaran), and Completed.","muted"));if(write&&data.prices.length)p.append(posUI(data,rights));else if(write)p.append(el("p","Configure item prices in Business Price Catalog first.","muted"));let filters=el("nav"),results=el("div"),memberFilter=el("select");let selected="all",selectedMember="all";for(const [value,label] of [["all","All members"],...Array.from(new Map(data.orders.map(o=>[String(o.actor),o.creator||("Member #"+o.actor)])).entries()).sort((a,b)=>a[1].localeCompare(b[1])).map(([id,name])=>[id,name])]){let option=el("option",label);option.value=value;memberFilter.append(option)}memberFilter.onchange=()=>{selectedMember=memberFilter.value;draw()};function draw(){results.replaceChildren();let orders=data.orders.filter(o=>(selected==="all"||o.status===selected)&&(selectedMember==="all"||String(o.actor)===selectedMember));if(!orders.length)results.append(el("p","No orders in this status.","muted"));for(const o of orders){let t=el("article",null,"tile"),hist=el("div");let label=o.status==="ready"?"READY · BUTUH PENGANTARAN":o.status==="completed"?"COMPLETED · ANALYTICS ARCHIVE":"PENDING";let discountLabel=o.discount_state==="pending"?"DISCOUNT APPROVAL PENDING":o.discount_state==="rejected"?"DISCOUNT REJECTED · FULL PRICE":o.discount_state==="approved"?"DISCOUNT APPROVED":"NO DISCOUNT";add(t,el("h3","TH-BIZ-"+String(o.id).padStart(5,"0")+" · "+o.group_name),el("small",o.direction.toUpperCase()+" · "+label+" · By "+(o.creator||("Member #"+o.actor))+" · "+dateFormat(o.created)),lines(o.lines,l=>l.name+" × "+l.qty+" @ "+moneyFormat(o.direction==="buy"?l.buy:l.sell)+" = "+moneyFormat(l.subtotal)+(l.discount_amount?" · Discount −"+moneyFormat(l.discount_amount)+(l.discount_type==="percent"?" ("+l.discount_value+"%)":l.discount_type==="fixed"?" ("+moneyFormat(l.discount_value)+" / unit)":""):"")+" · Net "+moneyFormat(l.total)),el("p",discountLabel+" · "+(o.discount_state==="pending"?"Requested "+moneyFormat(o.requested_discount_amount):o.discount_state==="rejected"?"Requested "+moneyFormat(o.requested_discount_amount)+" · "+o.discount_review_note:"Applied "+moneyFormat(o.discount_amount))),el("p",o.discount_reason?"Discount reason: "+o.discount_reason:""),el("p",o.discount_scope==="all"?"Discount: All items · "+(o.discount_type==="percent"?o.discount_value+"%":moneyFormat(o.discount_value)+" fixed total"):(o.discount_scope==="items"?"Discount: Selected items":"No discount")),el("p","Subtotal "+moneyFormat(o.subtotal)+" · Total discount −"+moneyFormat(o.discount_amount)),el("h3","Total "+moneyFormat(o.total)),el("p",o.estimated_margin===null?"Purchase order":"Estimated gross profit "+moneyFormat(o.estimated_margin)),el("p",o.delivery_note||""),el("p",o.notes),el("small","Vault: "+(data.vaults.find(v=>v.id===o.vault)?.name||"record only")+" · Treasury: "+(o.treasury?(o.money_state||"not submitted"):"record only")),el("p"),button("Status history",async()=>{let d=await api("/business/orders/"+o.id);hist.replaceChildren(lines(d.history,h=>dateFormat(h.created)+" · "+h.display_name+" · "+h.status+" · "+h.note))},true),hist);t.append(el("small","Business unit: "+(o.business_profile?.name||"Legacy profile")+" · Invoice: "+(o.invoice_no||"Not issued")));t.append(button("Open / Print invoice · Save PDF",()=>printBusinessDocument(o.id,"invoice"),true));if(o.status==="completed"&&o.receipt_no)t.append(button("Open / Print receipt · Save PDF",()=>printBusinessDocument(o.id,"receipt"),true));let allowed=(businessTransitions[o.status]||[]).filter(s=>write&&o.discount_state!=="pending"&&(s!=="completed"||level==="approve"));if(allowed.length)t.append(form([field("status","Next status","select",allowed.map(s=>[s,s==="ready"?"Ready · Butuh pengantaran":"Completed"])),field("note",o.status==="pending"?"Delivery instruction (optional)":"Completion note (optional)","optional")],"Update order status",v=>postRefresh("/business/orders/"+o.id+"/status",{...v,version:o.version})));if(o.status==="completed")t.append(el("small","Completed at: "+dateFormat(o.completed_at)+" · Retained for analytics"));results.append(t)}}for(const [status,label] of [["all","All orders"],["pending","Pending"],["ready","Ready · Delivery"],["completed","Completed archive"]])filters.append(button(label,()=>{selected=status;draw()},true));p.append(filters,memberFilter,results);draw();return p}
+async function businessDocumentCenter(){
+const p=panel("Business Document Center");
+let data=await api("/business/documents");
+p.append(el("p","A searchable archive of issued invoices and completed-order receipts. Documents are retained by issue period; download a PDF directly or reopen the original branded print view.","muted"));
+const filters=el("div",null,"document-filters");
+const control=(label,type,items,placeholder)=>{
+ const wrap=el("label",label),input=el(type==="select"?"select":"input");
+ if(type==="date")input.type="date";else if(type==="search"){input.type="search";input.placeholder=placeholder||""}
+ if(items){for(const [value,name] of items){let option=el("option",name);option.value=value;input.append(option)}}
+ wrap.append(input);filters.append(wrap);return input
+};
+const search=control("Search document number / group","search",null,"e.g. INV-20261120-000001");
+const kind=control("Document type","select",[["all","All documents"],["invoice","Invoices"],["receipt","Receipts"]]);
+const profile=control("Business unit","select",[["all","All business units"],...data.profiles.map(x=>[String(x.id),x.name+" · "+x.code])]);
+const creator=control("Created by","select",[["all","All creators"],...data.creators.map(x=>[String(x.id),x.name])]);
+const period=control("Archive period","select",[["all","All periods"],...data.archive_periods.map(x=>[x.period,x.period+" · "+x.document_count+" documents"])]);
+const from=control("Issued from","date"),to=control("Issued to","date");
+const actions=el("div",null,"row"),summary=el("div",null,"document-summary"),archive=el("div"),results=el("div"),pagination=el("div",null,"row");
+const addSummary=(label,value,detail)=>{let tile=el("article",null,"tile");add(tile,el("small",label),el("h2",String(value)),el("small",detail||""));summary.append(tile)};
+const draw=(d)=>{
+ data=d;summary.replaceChildren();
+ addSummary("Documents",d.summary.document_count,"Across "+d.summary.order_count+" orders");
+ addSummary("Invoices",d.summary.invoice_count,"Issued documents");
+ addSummary("Receipts",d.summary.receipt_count,"Completed orders");
+ addSummary("Invoiced value",moneyFormat(d.summary.invoiced_value),"Invoice value counted once");
+ archive.replaceChildren();archive.append(el("h3","Monthly archive"));
+ if(!d.archive_periods.length)archive.append(el("p","No archived periods yet.","muted"));
+ else{
+  const periodNav=el("nav");
+  periodNav.append(button("All periods",()=>{period.value="all";from.value="";to.value="";load(1)},period.value!=="all"));
+  for(const x of d.archive_periods.slice(0,12))periodNav.append(button(x.period+" · "+x.document_count,()=>{period.value=x.period;from.value="";to.value="";load(1)},period.value!==x.period));
+  archive.append(periodNav);
+ }
+ results.replaceChildren();
+ if(!d.documents.length)results.append(el("p","No documents match these filters.","muted"));
+ for(const doc of d.documents){
+  const card=el("article",null,"tile"),typeLabel=doc.document_type==="invoice"?"INVOICE":"RECEIPT";
+  add(card,el("h3",typeLabel+" · "+doc.document_number),
+   el("small",doc.business_name+" · "+doc.business_code+" · "+dateFormat(doc.issued_at)),
+   el("p","Order TH-BIZ-"+String(doc.order_id).padStart(5,"0")+" · "+doc.group_name+" · "+(doc.direction==="sell"?"Sale / output":"Purchase / input")),
+   el("p","Created by "+(doc.creator_name||"—")+(doc.completed_by?" · Completed by "+doc.completed_by:"")),
+   el("h3",moneyFormat(doc.total)),
+   el("small","Order status: "+(doc.status==="ready"?"Ready · Butuh pengantaran":doc.status==="completed"?"Completed":"Pending")));
+  const row=el("div",null,"row"),download=el("a","Download PDF");
+  download.href="/highest/api/business/documents/"+doc.order_id+"/"+doc.document_type+"/pdf";
+  download.download=doc.document_number+".pdf";download.className="button";
+  row.append(download,button("Open / Print",()=>printBusinessDocument(doc.order_id,doc.document_type),true));
+  card.append(row);results.append(card);
+ }
+ pagination.replaceChildren();
+ pagination.append(el("small","Showing "+(d.documents.length?((d.page-1)*d.page_size+1):0)+"–"+((d.page-1)*d.page_size+d.documents.length)+" of "+d.total+" documents"));
+ if(d.pages>1){
+  if(d.page>1)pagination.append(button("Previous",()=>load(d.page-1),true));
+  if(d.page<d.pages)pagination.append(button("Next",()=>load(d.page+1),true));
+ }
+};
+const load=async(page=1)=>{
+ const params=new URLSearchParams({page:String(page),page_size:"50"});
+ if(search.value.trim())params.set("q",search.value.trim());
+ if(kind.value!=="all")params.set("kind",kind.value);
+ if(profile.value!=="all")params.set("profile_id",profile.value);
+ if(creator.value!=="all")params.set("creator_id",creator.value);
+ if(period.value!=="all")params.set("period",period.value);
+ if(from.value)params.set("from_date",from.value);
+ if(to.value)params.set("to_date",to.value);
+ draw(await api("/business/documents?"+params.toString()));
+};
+actions.append(button("Search / Apply filters",()=>load(1)),button("Reset filters",()=>{search.value="";kind.value="all";profile.value="all";creator.value="all";period.value="all";from.value="";to.value="";load(1)},true));
+p.append(filters,actions,summary,archive,results,pagination);
+draw(data);
+return p
+}
+
+let businessSubtab="orders";
+async function businessUI(write,level,rights){let data=await api("/business/orders"),p=panel("Business operations"),tabs=el("nav");tabs.append(button("Orders & POS",async()=>{businessSubtab="orders";await render()},businessSubtab!=="orders"),button("Document Center",async()=>{businessSubtab="documents";await render()},businessSubtab!=="documents"));p.append(tabs);if(businessSubtab==="documents"){p.append(await businessDocumentCenter());return p}p.append(el("p","Fictional FiveM economy · Every transaction is permanently attributed to the account that created it. Status changes are separately attributed to the acting account. Completed orders are retained in the analytics archive. Only three statuses are used: Pending, Ready (Butuh pengantaran), and Completed.","muted"));if(write&&data.prices.length)p.append(posUI(data,rights));else if(write)p.append(el("p","Configure item prices in Business Price Catalog first.","muted"));let filters=el("nav"),results=el("div"),memberFilter=el("select");let selected="all",selectedMember="all";for(const [value,label] of [["all","All members"],...Array.from(new Map(data.orders.map(o=>[String(o.actor),o.creator||("Member #"+o.actor)])).entries()).sort((a,b)=>a[1].localeCompare(b[1])).map(([id,name])=>[id,name])]){let option=el("option",label);option.value=value;memberFilter.append(option)}memberFilter.onchange=()=>{selectedMember=memberFilter.value;draw()};function draw(){results.replaceChildren();let orders=data.orders.filter(o=>(selected==="all"||o.status===selected)&&(selectedMember==="all"||String(o.actor)===selectedMember));if(!orders.length)results.append(el("p","No orders in this status.","muted"));for(const o of orders){let t=el("article",null,"tile"),hist=el("div");let label=o.status==="ready"?"READY · BUTUH PENGANTARAN":o.status==="completed"?"COMPLETED · ANALYTICS ARCHIVE":"PENDING";let discountLabel=o.discount_state==="pending"?"DISCOUNT APPROVAL PENDING":o.discount_state==="rejected"?"DISCOUNT REJECTED · FULL PRICE":o.discount_state==="approved"?"DISCOUNT APPROVED":"NO DISCOUNT";add(t,el("h3","TH-BIZ-"+String(o.id).padStart(5,"0")+" · "+o.group_name),el("small",o.direction.toUpperCase()+" · "+label+" · By "+(o.creator||("Member #"+o.actor))+" · "+dateFormat(o.created)),lines(o.lines,l=>l.name+" × "+l.qty+" @ "+moneyFormat(o.direction==="buy"?l.buy:l.sell)+" = "+moneyFormat(l.subtotal)+(l.discount_amount?" · Discount −"+moneyFormat(l.discount_amount)+(l.discount_type==="percent"?" ("+l.discount_value+"%)":l.discount_type==="fixed"?" ("+moneyFormat(l.discount_value)+" / unit)":""):"")+" · Net "+moneyFormat(l.total)),el("p",discountLabel+" · "+(o.discount_state==="pending"?"Requested "+moneyFormat(o.requested_discount_amount):o.discount_state==="rejected"?"Requested "+moneyFormat(o.requested_discount_amount)+" · "+o.discount_review_note:"Applied "+moneyFormat(o.discount_amount))),el("p",o.discount_reason?"Discount reason: "+o.discount_reason:""),el("p",o.discount_scope==="all"?"Discount: All items · "+(o.discount_type==="percent"?o.discount_value+"%":moneyFormat(o.discount_value)+" fixed total"):(o.discount_scope==="items"?"Discount: Selected items":"No discount")),el("p","Subtotal "+moneyFormat(o.subtotal)+" · Total discount −"+moneyFormat(o.discount_amount)),el("h3","Total "+moneyFormat(o.total)),el("p",o.estimated_margin===null?"Purchase order":"Estimated gross profit "+moneyFormat(o.estimated_margin)),el("p",o.delivery_note||""),el("p",o.notes),el("small","Vault: "+(data.vaults.find(v=>v.id===o.vault)?.name||"record only")+" · Treasury: "+(o.treasury?(o.money_state||"not submitted"):"record only")),el("p"),button("Status history",async()=>{let d=await api("/business/orders/"+o.id);hist.replaceChildren(lines(d.history,h=>dateFormat(h.created)+" · "+h.display_name+" · "+h.status+" · "+h.note))},true),hist);t.append(el("small","Business unit: "+(o.business_profile?.name||"Legacy profile")+" · Invoice: "+(o.invoice_no||"Not issued")));t.append(button("Open / Print invoice · Save PDF",()=>printBusinessDocument(o.id,"invoice"),true));if(o.status==="completed"&&o.receipt_no)t.append(button("Open / Print receipt · Save PDF",()=>printBusinessDocument(o.id,"receipt"),true));let allowed=(businessTransitions[o.status]||[]).filter(s=>write&&o.discount_state!=="pending"&&(s!=="completed"||level==="approve"));if(allowed.length)t.append(form([field("status","Next status","select",allowed.map(s=>[s,s==="ready"?"Ready · Butuh pengantaran":"Completed"])),field("note",o.status==="pending"?"Delivery instruction (optional)":"Completion note (optional)","optional")],"Update order status",v=>postRefresh("/business/orders/"+o.id+"/status",{...v,version:o.version})));if(o.status==="completed")t.append(el("small","Completed at: "+dateFormat(o.completed_at)+" · Retained for analytics"));results.append(t)}}for(const [status,label] of [["all","All orders"],["pending","Pending"],["ready","Ready · Delivery"],["completed","Completed archive"]])filters.append(button(label,()=>{selected=status;draw()},true));p.append(filters,memberFilter,results);draw();return p}
 
 let businessAnalyticsTab="overview";
 async function businessAnalyticsUI(){let p=panel("Business Intelligence & Analytics"),start=new Date(),end=new Date();start.setDate(start.getDate()-29);const iso=d=>{let x=new Date(d.getTime()-d.getTimezoneOffset()*60000);return x.toISOString().slice(0,10)};let from=el("input"),to=el("input");from.type="date";to.type="date";from.value=iso(start);to.value=iso(end);let controls=el("div",null,"row"),tabs=el("nav"),content=el("div");const localEpoch=(v,addDays=0)=>{let [y,m,d]=v.split("-").map(Number);return Math.floor(new Date(y,m-1,d+addDays).getTime()/1000)};let data=null;

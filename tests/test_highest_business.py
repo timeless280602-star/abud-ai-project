@@ -1,4 +1,5 @@
 import os,sqlite3,tempfile,unittest
+from datetime import datetime,timedelta,timezone
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -346,3 +347,55 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(order["business_profile"]["code"],"HIGHEST")
         self.assertEqual(order["business_profile"]["name"],"THE HIGHEST HQ")
         self.assertTrue(order["invoice_no"].startswith("INV-"))
+
+    def test_document_center_search_archive_filters_and_pdf_download(self):
+        created=self.create()
+        self.assertEqual(created.status_code,200,created.text)
+        oid=created.json()["id"]
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        invoice=order["invoice_no"]
+        issued=datetime.fromtimestamp(order["invoice_issued_at"],timezone(timedelta(hours=7)))
+        period=issued.strftime("%Y-%m")
+        day=issued.strftime("%Y-%m-%d")
+        creator_id=self.get(self.u,"/me").json()["id"]
+        profile_id=order["business_profile"]["profile_id"]
+        center=self.get(self.u,"/business/documents")
+        self.assertEqual(center.status_code,200,center.text)
+        data=center.json()
+        self.assertEqual((data["summary"]["document_count"],data["summary"]["invoice_count"],data["summary"]["receipt_count"]),(1,1,0))
+        self.assertEqual(data["documents"][0]["document_number"],invoice)
+        self.assertEqual(data["archive_periods"][0]["period"],period)
+        self.assertEqual(self.u.get("/highest/api/business/documents",params={"q":invoice}).json()["total"],1)
+        self.assertEqual(self.u.get("/highest/api/business/documents",params={"profile_id":profile_id}).json()["total"],1)
+        self.assertEqual(self.u.get("/highest/api/business/documents",params={"creator_id":creator_id}).json()["total"],1)
+        self.assertEqual(self.u.get("/highest/api/business/documents",params={"period":period}).json()["total"],1)
+        self.assertEqual(self.u.get("/highest/api/business/documents",params={"from_date":day,"to_date":day}).json()["total"],1)
+        self.assertEqual(self.u.get("/highest/api/business/documents",params={"kind":"receipt"}).json()["total"],0)
+        self.assertEqual(self.get(self.v,"/business/documents").status_code,403)
+        invoice_pdf=self.u.get(f"/highest/api/business/documents/{oid}/invoice/pdf")
+        self.assertEqual(invoice_pdf.status_code,200,invoice_pdf.content[:200])
+        self.assertEqual(invoice_pdf.headers["content-type"],"application/pdf")
+        self.assertTrue(invoice_pdf.content.startswith(b"%PDF-"))
+        self.assertIn(invoice+".pdf",invoice_pdf.headers.get("content-disposition",""))
+        self.advance(oid)
+        self.assertEqual(self.post(self.u,"/ops/move",{"kind":"deposit","vault":self.vault,"item":self.item,"qty":3,"note":"Document Center receipt test"}).status_code,200)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed","note":"Completed for document archive test"}).status_code,200)
+        completed=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        receipt=completed["receipt_no"]
+        self.assertTrue(receipt)
+        archived=self.get(self.u,"/business/documents").json()
+        self.assertEqual((archived["summary"]["document_count"],archived["summary"]["invoice_count"],archived["summary"]["receipt_count"]),(2,1,1))
+        self.assertEqual(self.u.get("/highest/api/business/documents",params={"q":receipt,"kind":"receipt"}).json()["documents"][0]["document_number"],receipt)
+        receipt_pdf=self.u.get(f"/highest/api/business/documents/{oid}/receipt/pdf")
+        self.assertEqual(receipt_pdf.status_code,200,receipt_pdf.content[:200])
+        self.assertTrue(receipt_pdf.content.startswith(b"%PDF-"))
+        self.assertIn(receipt+".pdf",receipt_pdf.headers.get("content-disposition",""))
+
+    def test_document_center_validates_filters_and_receipt_requires_completion(self):
+        oid=self.create().json()["id"]
+        self.assertEqual(self.get(self.u,"/business/documents?kind=unknown").status_code,400)
+        self.assertEqual(self.get(self.u,"/business/documents?period=2026-13").status_code,400)
+        self.assertEqual(self.get(self.u,"/business/documents?from_date=20-11-2026").status_code,400)
+        self.assertEqual(self.get(self.u,"/business/documents?from_date=2026-11-21&to_date=2026-11-20").status_code,400)
+        self.assertEqual(self.u.get(f"/highest/api/business/documents/{oid}/receipt/pdf").status_code,404)
+        self.assertEqual(self.u.get(f"/highest/api/business/documents/{oid}/unknown/pdf").status_code,400)

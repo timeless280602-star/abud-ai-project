@@ -769,7 +769,7 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             coalesce(sum(CASE WHEN kind='transfer' AND delta<0 THEN -delta ELSE 0 END),0) transfer_out_qty,
             coalesce(sum(CASE WHEN delta>0 AND kind<>'transfer' THEN coalesce(value,0) ELSE 0 END),0) valued_input,
             coalesce(sum(CASE WHEN delta<0 AND kind<>'transfer' THEN coalesce(value,0) ELSE 0 END),0) valued_output,
-            coalesce(sum(CASE WHEN value IS NULL THEN abs(delta) ELSE 0 END),0) unvalued_movement_qty,
+            coalesce(sum(CASE WHEN cost_source IN ('unvalued','legacy_unvalued','mixed_unvalued') AND kind<>'transfer' THEN abs(delta) ELSE 0 END),0) unvalued_movement_qty,
             count(*) movement_count
             FROM hq_movement WHERE created>=? AND created<?""",args).fetchone())
         flow["by_type"]=rows(c,"""SELECT kind,count(*) movements,
@@ -779,7 +779,7 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             coalesce(sum(CASE WHEN kind='transfer' AND delta<0 THEN -delta ELSE 0 END),0) transfer_out_qty,
             coalesce(sum(CASE WHEN delta>0 AND kind<>'transfer' THEN coalesce(value,0) ELSE 0 END),0) input_value,
             coalesce(sum(CASE WHEN delta<0 AND kind<>'transfer' THEN coalesce(value,0) ELSE 0 END),0) output_value,
-            coalesce(sum(CASE WHEN value IS NULL THEN abs(delta) ELSE 0 END),0) unvalued_qty
+            coalesce(sum(CASE WHEN cost_source IN ('unvalued','legacy_unvalued','mixed_unvalued') AND kind<>'transfer' THEN abs(delta) ELSE 0 END),0) unvalued_qty
             FROM hq_movement WHERE created>=? AND created<? GROUP BY kind ORDER BY movements DESC""",args)
         flow["by_item"]=rows(c,"""SELECT i.id item_id,i.name item_name,
             coalesce(sum(CASE WHEN m.delta>0 AND m.kind<>'transfer' THEN m.delta ELSE 0 END),0) input_qty,
@@ -877,5 +877,5 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             "groups":groups,"products":products,"trend":trend,"flow":flow,
             "members":members,"stock":stock,"low_stock":low_stock,
             "data_quality":{"unvalued_movement_qty":flow["unvalued_movement_qty"],
-            "gross_profit_basis":"Estimated from the buy-price snapshot stored on completed sales orders; not FIFO/weighted-average accounting.",
-            "flow_valuation":"Only movements with a recorded unit-price snapshot contribute to valued input/output totals."}})
+            "gross_profit_basis":("Actual FIFO / moving weighted-average inventory issue cost." if summary["cogs_basis"]=="actual_inventory_cost" else ("Mixed actual inventory issue cost and catalog buy-price estimates." if summary["cogs_basis"]=="mixed_actual_and_estimated" else "Estimated from catalog buy-price snapshots where no costed stock issue is recorded.")),
+            "flow_valuation":"Costed inventory receipts and issues contribute to monetary totals; unvalued legacy quantities remain visible and are excluded from valuation."}})

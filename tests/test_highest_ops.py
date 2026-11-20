@@ -73,23 +73,24 @@ class OpsTest(unittest.TestCase):
 
     def test_fifo_and_weighted_average_costing(self):
         self.grant("inventory")
-        for name in ("FIFO Vault","WAC Vault"):
+        for name in ("FIFO Vault","FIFO Destination","WAC Vault"):
             self.assertEqual(self.post(self.u,"/ops/vault",{"name":name}).status_code,200)
         for name in ("FIFO Item","WAC Item"):
             self.assertEqual(self.post(self.u,"/ops/item",{"name":name,"category":"IC"}).status_code,200)
         data=self.get(self.u,"/ops/inventory").json()
         vaults={x["name"]:x["id"] for x in data["vaults"]}
         items={x["name"]:x["id"] for x in data["items"]}
-        fifo_v=vaults["FIFO Vault"];wac_v=vaults["WAC Vault"]
+        fifo_v=vaults["FIFO Vault"];fifo_dest=vaults["FIFO Destination"];wac_v=vaults["WAC Vault"]
         fifo_i=items["FIFO Item"];wac_i=items["WAC Item"]
         for qty,cost in ((10,10),(10,20)):
             self.assertEqual(self.post(self.u,"/ops/move",{"kind":"deposit","vault":fifo_v,"item":fifo_i,"qty":qty,"unit_cost":cost,"note":"FIFO receipt"}).status_code,200)
             self.assertEqual(self.post(self.u,"/ops/move",{"kind":"deposit","vault":wac_v,"item":wac_i,"qty":qty,"unit_cost":cost,"note":"WAC receipt"}).status_code,200)
         self.assertEqual(self.post(self.u,f"/ops/item/{wac_i}/costing",{"method":"weighted_average"}).status_code,200)
-        self.assertEqual(self.post(self.u,"/ops/move",{"kind":"withdraw","vault":fifo_v,"item":fifo_i,"qty":15,"note":"FIFO issue"}).status_code,200)
+        self.assertEqual(self.post(self.u,"/ops/move",{"kind":"transfer","vault":fifo_v,"destination":fifo_dest,"item":fifo_i,"qty":15,"note":"Move FIFO layers"}).status_code,200)
+        self.assertEqual(self.post(self.u,"/ops/move",{"kind":"withdraw","vault":fifo_dest,"item":fifo_i,"qty":15,"note":"FIFO issue"}).status_code,200)
         self.assertEqual(self.post(self.u,"/ops/move",{"kind":"withdraw","vault":wac_v,"item":wac_i,"qty":15,"note":"WAC issue"}).status_code,200)
         inventory=self.get(self.u,"/ops/inventory").json()
-        fifo_issue=next(x for x in inventory["movements"] if x["kind"]=="withdraw" and x["vault"]==fifo_v)
+        fifo_issue=next(x for x in inventory["movements"] if x["kind"]=="withdraw" and x["vault"]==fifo_dest)
         wac_issue=next(x for x in inventory["movements"] if x["kind"]=="withdraw" and x["vault"]==wac_v)
         self.assertEqual(fifo_issue["value"],200)
         self.assertEqual(wac_issue["value"],225)

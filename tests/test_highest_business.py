@@ -59,7 +59,7 @@ class BusinessTest(unittest.TestCase):
         path=f"/business/orders/{oid}/status"
         self.assertEqual(self.post(self.u,path,{"version":2,"status":"completed"}).status_code,409)
         self.assertEqual(self.get(self.u,"/ops/treasury").json()["entries"],[])
-        self.post(self.u,"/ops/move",{"kind":"deposit","vault":self.vault,"item":self.item,"qty":5,"note":"Test"})
+        self.post(self.u,"/ops/move",{"kind":"deposit","vault":self.vault,"item":self.item,"qty":5,"unit_cost":20,"note":"Test"})
         self.assertEqual(self.post(self.u,path,{"version":2,"status":"completed"}).status_code,200)
         self.assertEqual(self.post(self.u,path,{"version":2,"status":"completed"}).status_code,409)
         self.assertEqual(self.get(self.u,"/ops/inventory").json()["stock"][0]["qty"],2)
@@ -71,7 +71,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(analytics["summary"]["estimated_cogs"],60)
         self.assertEqual(analytics["summary"]["estimated_gross_profit"],45)
         self.assertEqual(analytics["flow"]["output_qty"],3)
-        self.assertEqual(analytics["flow"]["valued_output"],105)
+        self.assertEqual(analytics["flow"]["valued_output"],60)
     def test_purchase_and_permissions(self):
         oid=self.create("buy").json()["id"];self.advance(oid)
         self.grant("*","none");self.grant("business","write")
@@ -378,7 +378,7 @@ class BusinessTest(unittest.TestCase):
         self.assertTrue(invoice_pdf.content.startswith(b"%PDF-"))
         self.assertIn(invoice+".pdf",invoice_pdf.headers.get("content-disposition",""))
         self.advance(oid)
-        self.assertEqual(self.post(self.u,"/ops/move",{"kind":"deposit","vault":self.vault,"item":self.item,"qty":3,"note":"Document Center receipt test"}).status_code,200)
+        self.assertEqual(self.post(self.u,"/ops/move",{"kind":"deposit","vault":self.vault,"item":self.item,"qty":3,"unit_cost":20,"note":"Document Center receipt test"}).status_code,200)
         self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed","note":"Completed for document archive test"}).status_code,200)
         completed=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         receipt=completed["receipt_no"]

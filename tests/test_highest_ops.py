@@ -3,7 +3,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.highest import router,init,bootstrap_admin
-from app.highest_ops import router as ops,init as ops_init
+from app.highest_ops import router as ops,init as ops_init,MODULES
 
 class OpsTest(unittest.TestCase):
     def setUp(self):
@@ -75,7 +75,7 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.post(self.a,"/admin/grants",{"rank":self.rank,"module":"*","level":"write"}).status_code,400)
         self.grant("*","approve")
         rights=self.get(self.u,"/ops/access").json()
-        self.assertEqual(rights,dict.fromkeys(("treasury","inventory","crafting","cases"),"approve"))
+        self.assertEqual(rights,dict.fromkeys(MODULES,"approve"))
         self.assertEqual(self.get(self.u,"/ops/cases").status_code,200)
         self.assertEqual(self.get(self.u,"/admin/grants").status_code,403)
         self.grant("*","none")

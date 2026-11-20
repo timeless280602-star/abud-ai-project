@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.highest import db, origin, digest, cookie, fail, clean, audit, current
 
 router=APIRouter(prefix="/highest/api")
-MODULES=("treasury","inventory","crafting","cases")
+MODULES=("treasury","inventory","crafting","cases","syndicates","operations","assets","documents")
 
 def init():
     with db() as c:

@@ -69,6 +69,7 @@ def create(module:str,p:Record,r:Request):
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         u=privilege(c,r,module,"write")
+        if p.status=="archived": privilege(c,r,module,"approve")
         rid=c.execute("INSERT INTO hq_record(module,title,category,detail,owner,reference,status,actor,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",(module,*data(p,module),u["id"],now(),now())).lastrowid
         revision(c,rid,u["id"]);audit(c,u["id"],module+".create",rid)
     return {"id":rid}

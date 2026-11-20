@@ -20,6 +20,7 @@ from app.highest import router as highest_router, init as highest_init
 from app.highest_live import start_live_worker
 from app.highest_ops import router as ops_router, init as ops_init
 from app.highest_social import router as social_router, init as social_init
+from app.highest_records import router as records_router, init as records_init
 from app.skills.engine import get_relevant_skills
 
 
@@ -44,6 +45,7 @@ app.include_router(auth_router)
 app.include_router(highest_router)
 app.include_router(ops_router)
 app.include_router(social_router)
+app.include_router(records_router)
 
 
 # Endpoint internal hanya boleh diakses oleh layanan terpercaya.
@@ -445,6 +447,7 @@ async def startup():
     highest_init()
     ops_init()
     social_init()
+    records_init()
     start_live_worker()
     print("Abud Multi-Scope Memory Database initialized.")
 

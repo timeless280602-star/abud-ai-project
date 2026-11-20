@@ -298,6 +298,7 @@ def clip_media(cid:int,r:Request):
 
 @router.post("/api/admin/clips/stats/refresh")
 def refresh_clip_stats(r:Request):
+    origin(r)
     current(r,admin=True)
     import httpx
     key=os.getenv("HIGHEST_YOUTUBE_API_KEY","")

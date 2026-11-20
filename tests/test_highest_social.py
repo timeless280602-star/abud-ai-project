@@ -18,6 +18,22 @@ class SocialTest(unittest.TestCase):
         bootstrap_admin("owner")
     def post(self,c,p,d):return c.post("/highest/api"+p,json=d)
     def get(self,c,p):return c.get("/highest/api"+p)
+    def test_native_post_media_tampering_is_blocked_and_audited(self):
+        png=b"\\x89PNG\\r\\n\\x1a\\n"+b"\\x00"*16
+        uploaded=self.u.post("/highest/api/social/post/upload",data={"body":"Native post","category":"general"},files={"file":("post.png",png,"image/png")})
+        self.assertEqual(uploaded.status_code,200,uploaded.text)
+        post_id=uploaded.json()["id"]
+        with db() as c:
+            media_path=c.execute("SELECT media_path FROM hq_posts WHERE id=?",(post_id,)).fetchone()["media_path"]
+        target=os.path.join(self.tmp.name,"highest_media",media_path)
+        with open(target,"wb") as f:
+            f.write(png+b"tampered")
+        response=self.u.get(f"/highest/api/social/post/{post_id}/media")
+        self.assertEqual(response.status_code,500)
+        with db() as c:
+            event=c.execute("SELECT 1 FROM audit_log WHERE action='social.post.media.integrity_failure' AND target=?",(str(post_id),)).fetchone()
+        self.assertIsNotNone(event)
+
     def test_moderation_and_pov(self):
         self.assertEqual(self.post(self.u,"/clip",{"title":"Clip","url":"https://youtu.be/example"}).status_code,200)
         cid=self.get(self.a,"/admin").json()["clips"][0]["id"]

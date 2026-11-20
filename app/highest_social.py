@@ -271,12 +271,17 @@ async def post_upload(r:Request,body:str=Form(...),category:str=Form("general"),
 def post_media(pid:int,r:Request):
     u=current(r)
     with db() as c:
-        item=c.execute("SELECT uid,state,media_path,media_type FROM hq_posts WHERE id=?",(pid,)).fetchone()
+        item=c.execute("SELECT uid,state,media_path,media_type,media_sha256 FROM hq_posts WHERE id=?",(pid,)).fetchone()
         if not item or not item["media_path"]: fail(404,"Media not found")
         if item["state"]!="published" and int(item["uid"])!=u["id"] and not u["admin"]: fail(404,"Media not found")
         path=_media_dir()/Path(item["media_path"]).name
         if not path.is_file(): fail(404,"Media file unavailable")
-        return FileResponse(path,media_type=item["media_type"],headers={"X-Content-Type-Options":"nosniff","Cache-Control":"private, max-age=300"})
+        actual=hashlib.sha256(path.read_bytes()).hexdigest()
+        if not item["media_sha256"] or not secrets.compare_digest(actual,item["media_sha256"]):
+            audit(c,u["id"],"social.post.media.integrity_failure",pid)
+            fail(500,"Media integrity verification failed")
+        audit(c,u["id"],"social.post.media.preview",pid)
+        return FileResponse(path,media_type=item["media_type"],headers={"X-Content-Type-Options":"nosniff","Cache-Control":"private, max-age=300","Content-Security-Policy":"default-src 'none'; sandbox"})
 
 @router.post("/social/post")
 def post(p:Post,r:Request):

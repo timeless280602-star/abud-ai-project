@@ -489,7 +489,7 @@ def case_intelligence_analytics(r:Request):
         graph["integrity_failures"]=c.execute("SELECT count(*) FROM hq_evidence_event WHERE action='integrity_failed'").fetchone()[0]
         graph["case_linked_assets"]=c.execute("SELECT count(*) FROM hq_asset WHERE case_id IS NOT NULL").fetchone()[0] if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hq_asset'").fetchone() else 0
 
-        recurring=rows(c,"""SELECT entity_type,lower(trim(name)) match_key,min(name) entity_name,
+        recurring=rows(c,"""SELECT entity_type,lower(trim(name)) match_key,min(trim(name)) entity_name,
             count(DISTINCT case_id) case_count,count(*) node_count,
             group_concat(DISTINCT case_id) case_ids
             FROM hq_case_entity

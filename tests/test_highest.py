@@ -44,6 +44,25 @@ class HighestTest(unittest.TestCase):
         self.assertEqual(public.status_code,200)
         self.assertEqual(public.content,png)
 
+    def test_native_clip_tampering_is_blocked_and_audited(self):
+        path="/highest/api"
+        png=b"\\x89PNG\\r\\n\\x1a\\n"+b"\\x00"*16
+        uploaded=self.user.post(path+"/clip/upload",data={"title":"Tamper test"},files={"file":("tamper.png",png,"image/png")})
+        self.assertEqual(uploaded.status_code,200,uploaded.text)
+        clip_id=uploaded.json()["id"]
+        with db() as c:
+            media_path=c.execute("SELECT media_path FROM clips WHERE id=?",(clip_id,)).fetchone()["media_path"]
+        target=os.path.join(self.temp.name,"highest_media",media_path)
+        with open(target,"wb") as f:
+            f.write(png+b"tampered")
+        response=self.user.get(path+"/media/"+str(clip_id))
+        self.assertEqual(response.status_code,500)
+        with db() as c:
+            actions=[x["action"] for x in c.execute("SELECT action FROM hq_media_audit WHERE clip_id=?",(clip_id,))]
+            audit_event=c.execute("SELECT 1 FROM audit_log WHERE action='media.integrity_failure' AND target=?",(str(clip_id),)).fetchone()
+        self.assertIn("integrity_failure",actions)
+        self.assertIsNotNone(audit_event)
+
     def test_clip_approval_sends_private_notification(self):
         path="/highest/api"
         self.assertEqual(self.user.post(path+"/clip",json={"title":"Approval notice","url":"https://youtu.be/abcdefghijk"}).status_code,200)

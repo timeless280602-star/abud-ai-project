@@ -1396,7 +1396,7 @@ def _financial_report_data(c,start,end):
         cursor=date(cursor.year+(cursor.month==12),1 if cursor.month==12 else cursor.month+1,1)
     summary=c.execute("""SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
-        FROM hq_money WHERE state='posted' AND created>=? AND created<?""",(begin,finish)).fetchone()
+        FROM hq_money WHERE state='posted' AND transfer_ref IS NULL AND created>=? AND created<?""",(begin,finish)).fetchone()
     prior=c.execute("""SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
         FROM hq_money WHERE state='posted' AND created>=? AND created<?""",(previous_start,previous_finish)).fetchone()
@@ -1414,7 +1414,7 @@ def _financial_report_data(c,start,end):
         WHERE period>=? AND period<=? ORDER BY period,division,category""",(start,end))
     for budget in budgets:
         budget_start,budget_finish,_=_financial_bounds(budget["period"],budget["period"])
-        clauses=["m.state='posted'","m.amount<0","m.created>=?","m.created<?"];params=[budget_start,budget_finish]
+        clauses=["m.state='posted'","m.transfer_ref IS NULL","m.amount<0","m.created>=?","m.created<?"];params=[budget_start,budget_finish]
         if budget["division"]:
             clauses.append("coalesce(r.name,'Unassigned')=?");params.append(budget["division"])
         if budget["category"]:

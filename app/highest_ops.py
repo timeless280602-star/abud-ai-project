@@ -1274,7 +1274,7 @@ def asset_maintenance_complete(asset_id:int,maintenance_id:int,r:Request):
             VALUES(?,'maintenance_completed','maintenance',?,?,?,?)""",(asset_id,status,record["title"],u["id"],now()))
         audit(c,u["id"],"asset.maintenance.complete",maintenance_id)
     return {"ok":True,"status":status}
-\n
+
 @router.get("/ops/executive")
 def executive_dashboard(r:Request):
     with db() as c:

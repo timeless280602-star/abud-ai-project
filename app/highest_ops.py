@@ -122,6 +122,11 @@ class StockAdjustment(BaseModel):
     counted_qty:int=Field(ge=0,le=1000000000000)
     unit_cost:int|None=Field(default=None,ge=0,le=1000000000)
     note:str=Field(min_length=1,max_length=500)
+class OpeningValuation(BaseModel):
+    vault:int
+    item:int
+    unit_cost:int=Field(ge=0,le=1000000000)
+    note:str=Field(min_length=1,max_length=500)
 class Ingredient(BaseModel):
     item:int
     qty:int=Field(gt=0,le=1000000)
@@ -387,6 +392,28 @@ def item_costing(iid:int,p:CostingMethod,r:Request):
         c.execute("UPDATE hq_item SET costing_method=? WHERE id=?",(p.method,iid))
         audit(c,u["id"],"inventory.costing_method",iid)
     return {"ok":True,"method":p.method}
+
+@router.post("/ops/inventory/opening-valuation")
+def opening_valuation(p:OpeningValuation,r:Request):
+    import secrets
+    origin(r)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"inventory","write")
+        _ensure_cost_layers(c,p.vault,p.item)
+        stock=c.execute("SELECT qty FROM hq_stock WHERE vault=? AND item=?",(p.vault,p.item)).fetchone()
+        if not stock: fail(404,"No stock balance found for this stash and item")
+        layers=c.execute("SELECT * FROM hq_cost_layer WHERE vault=? AND item=? AND qty_remaining>0 AND source IN ('legacy_unvalued','unvalued') ORDER BY created,id",(p.vault,p.item)).fetchall()
+        if not layers: fail(409,"There is no unvalued opening stock to revalue")
+        total_qty=sum(x["qty_remaining"] for x in layers);total_value=total_qty*p.unit_cost
+        for layer in layers:
+            c.execute("UPDATE hq_cost_layer SET value_remaining=?,source='opening_valuation',reference=?,created=? WHERE id=?",
+                (layer["qty_remaining"]*p.unit_cost,"opening:"+secrets.token_hex(8),now(),layer["id"]))
+        ref=secrets.token_hex(12);method=_item_method(c,p.item)
+        c.execute("""INSERT INTO hq_movement(actor,kind,vault,item,delta,after_qty,note,ref,unit_price,value,created,cost_method,cost_source)
+            VALUES(?,'opening_valuation',?,?,0,?,?,?,?,?,?,?,'opening_valuation')""",
+            (u["id"],p.vault,p.item,stock["qty"],clean(p.note,500),ref,p.unit_cost,total_value,now(),method))
+        audit(c,u["id"],"stock.opening_valuation",p.item)
+    return {"ok":True,"reference":ref,"qty":total_qty,"value":total_value}
 
 @router.post("/ops/inventory/adjust")
 def stock_adjust(p:StockAdjustment,r:Request):

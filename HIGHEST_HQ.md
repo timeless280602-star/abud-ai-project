@@ -93,3 +93,15 @@ This is the initial feature branch, not a production deployment. Do not replace 
 - Operations metrics are sourced from the persistent calendar event table. Case metrics include Evidence Vault file and custody-event totals when the Evidence Vault schema is available; integrity failures are shown as recorded events, not inferred incidents.
 - Organization-wide audit event details and the seven-day flagged-event summary are administrator-only. Other ranks do not receive raw audit records through this endpoint.
 - The dashboard is read-only and does not change the underlying Treasury, Inventory, Asset, Calendar, Case, Evidence, or approval records.
+
+
+## Advanced Financial Reporting
+
+- A separate financial_reports rank permission controls access to consolidated reporting and monthly budgets. view reads reports, write also manages budgets, and approve inherits write access through the permission hierarchy.
+- Cash flow, monthly totals, category and division breakdowns use posted Treasury ledger entries only. Pending and rejected transactions are excluded. Internal account transfers (transfer_ref set) are excluded from income and expense totals; they do not represent organizational revenue or spend.
+- Opening and closing balances use the consolidated posted ledger balance. Monthly comparisons use the immediately preceding period with the same number of months.
+- Division attribution uses the transaction creator's current approved rank because the existing Treasury ledger does not retain a historical rank snapshot. Historical rank attribution is not implied.
+- Monthly budgets can be scoped to an organization, division/rank, category, or a division/category combination. Each budget row shows actual posted expenses matching that scope, variance, and utilization. The aggregate budget allocation is displayed separately to avoid double-counting overlapping scopes.
+- Completed POS orders are shown in a separate operating-performance section, not added to Treasury cash flow. Sales, purchases and estimated gross profit are based on completed orders; estimated COGS uses the order-line buy price. POS totals are not asserted to be settled cash.
+- Exports are available as PDF, XLSX and CSV. Reports cover up to 36 months and use WIB month boundaries.
+- The Excel export uses openpyxl; install it from requirements.txt.

@@ -17,7 +17,7 @@ def refresh():
     youtube=[]
     for item in clips:
         url=item["url"] or ""
-        match=re.search(r"(?:youtu\\.be/|youtube\\.com/(?:watch\\?(?:.*&)?v=|embed/|shorts/))([A-Za-z0-9_-]{11})",url)
+        match=re.search(r"(?:youtu\.be/|youtube\.com/(?:watch\\?(?:.*&)?v=|embed/|shorts/))([A-Za-z0-9_-]{11})",url)
         if match and youtube_key:
             youtube.append((item["id"],match.group(1)))
             continue

@@ -15,6 +15,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - run: python -c "import unittest; suite=unittest.defaultTestLoader.discover('tests', pattern='test_highest*.py'); count=suite.countTestCases(); print(f'Highest tests discovered: {count}'); assert count > 0, 'No Highest regression tests discovered'"
       - run: python -m unittest discover -s tests -p 'test_highest*.py' -v
       - run: python -m compileall -q app
       - uses: actions/setup-node@v4

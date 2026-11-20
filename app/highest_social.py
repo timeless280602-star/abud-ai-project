@@ -3,7 +3,7 @@ import time, os, re, secrets
 import sqlite3
 import httpx
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from app.highest import db, current, origin, clean, fail, audit, throttle

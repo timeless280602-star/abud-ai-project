@@ -451,7 +451,7 @@ def approval_list(r:Request,scope:str="all"):
         candidates=rows(c,"SELECT a.*,u.username requester_name FROM hq_approval_request a JOIN users u ON u.id=a.requester ORDER BY a.created DESC LIMIT 300")
         if scope=="mine": result=[a for a in candidates if a["requester"]==u["id"]]
         elif scope=="inbox": result=[a for a in candidates if a["status"]=="pending" and a["requester"]!=u["id"] and _approval_reviewer(c,u["id"],a["module"],a["current_step"],a["id"])[0]]
-        else: result=[a for a in candidates if a["requester"]==u["id"] or _approval_reviewer(c,u["id"],a["module"],a["current_step"])[0]]
+        else: result=[a for a in candidates if a["requester"]==u["id"] or _approval_reviewer(c,u["id"],a["module"],a["current_step"],a["id"])[0]]
         return reply(result)
 
 @router.post("/ops/approvals")
@@ -512,7 +512,7 @@ def approval_history(request_id:int,r:Request):
         u=privilege(c,r);item=c.execute("SELECT * FROM hq_approval_request WHERE id=?",(request_id,)).fetchone()
         if not item: fail(404,"Approval request not found")
         previous=c.execute("SELECT 1 FROM hq_approval_action WHERE request_id=? AND actor=?",(request_id,u["id"])).fetchone()
-        if item["requester"]!=u["id"] and not previous and not _approval_reviewer(c,u["id"],item["module"],item["current_step"])[0]: fail(403,"Approval history access denied")
+        if item["requester"]!=u["id"] and not previous and not _approval_reviewer(c,u["id"],item["module"],item["current_step"],request_id)[0]: fail(403,"Approval history access denied")
         return reply({"request":dict(item),"actions":rows(c,"SELECT a.*,u.username actor_name,du.username delegated_from_name FROM hq_approval_action a JOIN users u ON u.id=a.actor LEFT JOIN users du ON du.id=a.delegated_from WHERE a.request_id=? ORDER BY a.step",(request_id,))})
 
 @router.post("/ops/approvals/delegations")

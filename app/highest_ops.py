@@ -1509,8 +1509,12 @@ def financial_report_export(r:Request,start:str,end:str,format:str="csv"):
         for x in data["divisions"]: writer.writerow([x["division"],x["income"],x["expense"],x["income"]-x["expense"],x["transactions"]])
         writer.writerow([]);writer.writerow(["Category performance"]);writer.writerow(["Category","Income","Expense","Net","Transactions"])
         for x in data["categories"]: writer.writerow([x["category"],x["income"],x["expense"],x["income"]-x["expense"],x["transactions"]])
-        writer.writerow([]);writer.writerow(["Monthly budgets"]);writer.writerow(["Period","Division","Category","Budget"])
-        for x in data["budgets"]: writer.writerow([x["period"],x["division"],x["category"],x["amount"]])
+        writer.writerow([]);writer.writerow(["Business POS performance"]);writer.writerow(["Sales revenue","Purchase spend","Estimated COGS","Estimated gross profit","Completed orders"])
+        business=data["business"];writer.writerow([business["sales_revenue"],business["purchase_spend"],business["estimated_cogs"],business["estimated_gross_profit"],business["completed_orders"]])
+        writer.writerow(["Division","Sales revenue","Purchase spend","Completed orders"])
+        for x in business["divisions"]: writer.writerow([x["division"],x["sales_revenue"],x["purchase_spend"],x["completed_orders"]])
+        writer.writerow([]);writer.writerow(["Monthly budgets"]);writer.writerow(["Period","Division","Category","Budget","Actual expense","Variance","Utilization %"])
+        for x in data["budgets"]: writer.writerow([x["period"],x["division"],x["category"],x["amount"],x["actual_expense"],x["variance"],x["utilization_pct"]])
         writer.writerow([]);writer.writerow(["Data basis",data["budget_note"]])
         return Response("\ufeff"+stream.getvalue(),media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition":f'attachment; filename="{filename}.csv"'})
@@ -1531,7 +1535,13 @@ def financial_report_export(r:Request,start:str,end:str,format:str="csv"):
         sheet("Division Performance",["Division","Income","Expense","Net","Transactions"],divs,["division","income","expense","net","transactions"])
         cats=[{**x,"net":x["income"]-x["expense"]} for x in data["categories"]]
         sheet("Category Performance",["Category","Income","Expense","Net","Transactions"],cats,["category","income","expense","net","transactions"])
-        sheet("Monthly Budgets",["Period","Division","Category","Budget"],data["budgets"],["period","division","category","amount"])
+        sheet("Monthly Budgets",["Period","Division","Category","Budget","Actual Expense","Variance","Utilization %"],data["budgets"],["period","division","category","amount","actual_expense","variance","utilization_pct"])
+        business=data["business"]
+        sheet("Business POS",["Metric","Amount"],[
+            {"metric":"Sales revenue","amount":business["sales_revenue"]},{"metric":"Purchase spend","amount":business["purchase_spend"]},
+            {"metric":"Estimated COGS","amount":business["estimated_cogs"]},{"metric":"Estimated gross profit","amount":business["estimated_gross_profit"]},
+            {"metric":"Completed orders","amount":business["completed_orders"]}],["metric","amount"])
+        sheet("POS by Division",["Division","Sales Revenue","Purchase Spend","Completed Orders"],business["divisions"],["division","sales_revenue","purchase_spend","completed_orders"])
         for sh in wb.worksheets:
             sh.freeze_panes="A2";sh.auto_filter.ref=sh.dimensions
             for cell in sh[1]:
@@ -1561,7 +1571,10 @@ def financial_report_export(r:Request,start:str,end:str,format:str="csv"):
         table("Monthly Cash Flow",["Period","Income","Expense","Net","Transactions"],[[x["period"],str(x["income"]),str(x["expense"]),str(x["net"]),str(x["transactions"])] for x in data["monthly"]])
         table("Division Performance",["Division","Income","Expense","Net","Transactions"],[[x["division"],str(x["income"]),str(x["expense"]),str(x["income"]-x["expense"]),str(x["transactions"])] for x in data["divisions"]])
         table("Category Performance",["Category","Income","Expense","Net","Transactions"],[[x["category"],str(x["income"]),str(x["expense"]),str(x["income"]-x["expense"]),str(x["transactions"])] for x in data["categories"]])
-        table("Monthly Budgets",["Period","Division","Category","Budget"],[[x["period"],x["division"] or "All divisions",x["category"] or "All categories",str(x["amount"])] for x in data["budgets"]])
+        table("Monthly Budgets",["Period","Division","Category","Budget","Actual","Variance"],[[x["period"],x["division"] or "All divisions",x["category"] or "All categories",str(x["amount"]),str(x["actual_expense"]),str(x["variance"])] for x in data["budgets"]])
+        business=data["business"]
+        table("Business POS Performance",["Sales","Purchases","Estimated COGS","Estimated Gross Profit","Orders"],[[str(business["sales_revenue"]),str(business["purchase_spend"]),str(business["estimated_cogs"]),str(business["estimated_gross_profit"]),str(business["completed_orders"])]])
+        table("POS by Division",["Division","Sales Revenue","Purchase Spend","Completed Orders"],[[x["division"],str(x["sales_revenue"]),str(x["purchase_spend"]),str(x["completed_orders"])] for x in business["divisions"]])
         story.append(Paragraph(data["budget_note"],styles["Italic"]));doc.build(story);output.seek(0)
         return Response(output.getvalue(),media_type="application/pdf",
             headers={"Content-Disposition":f'attachment; filename="{filename}.pdf"'})

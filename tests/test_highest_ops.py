@@ -174,7 +174,8 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.post(delegate,f"/ops/approvals/{request_id}/review",{
             "approve":True,"note":"Delegated first step"
         }).status_code,200)
-        self.assertEqual(self.get(self.u,"/ops/approvals?scope=mine").json()[0]["current_step"],2)
+        mine=self.get(self.u,"/ops/approvals?scope=mine").json()
+        self.assertEqual(next(x for x in mine if x["id"]==request_id)["current_step"],2)
         self.assertEqual(self.post(delegate,f"/ops/approvals/{request_id}/review",{
             "approve":True
         }).status_code,403)

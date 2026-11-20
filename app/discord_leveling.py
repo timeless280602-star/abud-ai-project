@@ -194,7 +194,6 @@ def install_leveling_commands(tree, manager):
         interaction: discord.Interaction,
         enabled: bool,
         chat: bool | None = None,
-        voice: bool | None = None,
         announcement: discord.TextChannel | None = None,
         notify: bool | None = None,
     ):
@@ -250,13 +249,12 @@ def install_leveling_commands(tree, manager):
     )
     async def include(
         interaction: discord.Interaction,
-        channel: discord.TextChannel | discord.VoiceChannel,
+        channel: discord.TextChannel,
     ):
         await guard(interaction, admin=True)
         if channel.guild.id != interaction.guild_id:
             raise LevelingError("Pilih channel dari server ini.")
         manager.store.exclude(interaction.guild_id, channel.id, False)
-        manager.sync_voice(interaction.guild)
         await interaction.followup.send(
             "Channel diizinkan kembali mendapat XP.", ephemeral=True
         )

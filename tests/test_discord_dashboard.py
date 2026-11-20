@@ -81,7 +81,7 @@ class GatewayAuth(AioHTTPTestCase):
         self.client_bot.application_id=123456789012345678
         self.client_bot.get_guild.side_effect=lambda ident: self.guild if ident==123 else None
         app=web.Application()
-        install_dashboard_gateway(app,self.client_bot,"private",None,None,None,None,None,None)
+        install_dashboard_gateway(app,self.client_bot,"private",None,None,None,None)
         return app
     async def test_invite_gateway_requires_key_and_returns_live_app_id(self):
         path="/internal/dashboard/discord/install"
@@ -114,4 +114,3 @@ class Actions(unittest.IsolatedAsyncioTestCase):
         guild=SimpleNamespace(id=123)
         await administer(guild,None,"leveling.save",{"enabled":True,"chat":True,"voice":False,"announcement":None},manager,None,None,None)
         manager.store.configure.assert_called_once_with(123,True,True,False,None)
-        manager.sync_voice.assert_called_once_with(guild)

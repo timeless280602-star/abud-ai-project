@@ -280,11 +280,19 @@ async def clip_upload(r:Request,title:str=Form(...),file:UploadFile=File(...)):
 def clip_media(cid:int,r:Request):
     u=current(r)
     with db() as c:
-        item=c.execute("SELECT uid,state,media_path,media_type FROM clips WHERE id=?",(cid,)).fetchone()
+        item=c.execute("SELECT uid,state,media_path,media_type,media_sha256 FROM clips WHERE id=?",(cid,)).fetchone()
         if not item or not item["media_path"]: fail(404,"Media not found")
         if item["state"]!="published" and int(item["uid"])!=u["id"] and not u["admin"]: fail(404,"Media not found")
         path=_media_dir()/Path(item["media_path"]).name
         if not path.is_file(): fail(404,"Media file is unavailable")
+        actual=hashlib.sha256(path.read_bytes()).hexdigest()
+        if not item["media_sha256"] or not hmac.compare_digest(actual,item["media_sha256"]):
+            with db() as audit_db:
+                audit_db.execute("INSERT INTO hq_media_audit(clip_id,uid,action,created) VALUES(?,?,?,?)",(cid,u["id"],"integrity_failure",int(time.time())))
+                audit(audit_db,u["id"],"media.integrity_failure",cid)
+            fail(500,"Media integrity verification failed")
+        with db() as audit_db:
+            audit_db.execute("INSERT INTO hq_media_audit(clip_id,uid,action,created) VALUES(?,?,?,?)",(cid,u["id"],"preview",int(time.time())))
         return FileResponse(path,media_type=item["media_type"],headers={"X-Content-Type-Options":"nosniff","Cache-Control":"private, max-age=300","Content-Security-Policy":"default-src 'none'; sandbox"})
 
 @router.post("/api/admin/clips/stats/refresh")

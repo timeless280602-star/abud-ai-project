@@ -18,7 +18,6 @@ def init():
             created INTEGER NOT NULL,actor INTEGER REFERENCES users(id)
         );
         CREATE TABLE IF NOT EXISTS hq_money(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),amount INTEGER NOT NULL,category TEXT NOT NULL,note TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','posted','rejected')),reviewer INTEGER REFERENCES users(id),created INTEGER NOT NULL,account_id INTEGER REFERENCES hq_treasury_account(id),transfer_ref TEXT);
-        CREATE INDEX IF NOT EXISTS hq_money_account_state ON hq_money(account_id,state,created DESC);
         CREATE TABLE IF NOT EXISTS hq_treasury_transfer(
             id INTEGER PRIMARY KEY,actor INTEGER NOT NULL REFERENCES users(id),source_account INTEGER NOT NULL REFERENCES hq_treasury_account(id),
             destination_account INTEGER NOT NULL REFERENCES hq_treasury_account(id),amount INTEGER NOT NULL CHECK(amount>0),
@@ -87,6 +86,7 @@ def init():
             default_id=c.execute("INSERT INTO hq_treasury_account(name,description,active,created) VALUES('General Treasury','Migrated default treasury account',1,?)",(now(),)).lastrowid
         else: default_id=default_account["id"]
         c.execute("UPDATE hq_money SET account_id=? WHERE account_id IS NULL",(default_id,))
+        c.execute("CREATE INDEX IF NOT EXISTS hq_money_account_state ON hq_money(account_id,state,created DESC)")
         movement_columns={x["name"] for x in c.execute("PRAGMA table_info(hq_movement)")}
         if "unit_price" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN unit_price INTEGER")
         if "value" not in movement_columns: c.execute("ALTER TABLE hq_movement ADD COLUMN value INTEGER")
@@ -150,6 +150,7 @@ class Grant(BaseModel):
     level:str
 class Money(BaseModel):
     amount:int=Field(gt=0,le=1000000000000)
+    account_id:int|None=None
     direction:str
     category:str=Field(min_length=1,max_length=60)
     note:str=Field(min_length=1,max_length=500)
@@ -396,7 +397,7 @@ def treasury_transfer_review(transfer_id:int,p:Decision,r:Request):
             state="posted"
         c.execute("UPDATE hq_treasury_transfer SET status=?,reviewer=? WHERE id=?",(state,u["id"],transfer_id))
         notify(c,transfer["actor"],"treasury_transfer_decision","Treasury transfer "+state,
-            "Transfer #"+str(transfer_id)," /highest/internal/","treasury-transfer:"+str(transfer_id)+":decision:"+state)
+            "Transfer #"+str(transfer_id),"/highest/internal/","treasury-transfer:"+str(transfer_id)+":decision:"+state)
         audit(c,u["id"],"treasury.transfer."+state,transfer_id)
     return {"ok":True,"status":state}
 

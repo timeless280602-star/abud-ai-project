@@ -16,3 +16,5 @@ This is the initial feature branch, not a production deployment. Do not replace 
 - Rebuild only the API after merging, installing the original logo, and configuring environment:
   docker compose up -d --build --no-deps abud-api
 - Smoke-test direct HQ login, ABUD homepage button, pending membership 403, approval, revocation, rank ordering and live status. Phase 2 includes rank-scoped treasury, inventory/vault, completed crafting, IC case files and audit. Admin must grant each rank explicit module permission. Treasury uses two different members for submission and review. Inventory and crafting are manual IC ledger records, not synced to the game server. Advanced community, evidence attachments, crafting approvals and remaining planned modules are not implemented.
+
+- Rank All Access uses a wildcard grant for all registered internal operations, including future modules that use the same permission guard. Disable it to restore the existing custom module permissions. It never grants website administration or bypasses membership approval or the no-self-review rule.

@@ -36,7 +36,7 @@ def privilege(c,r,module=None,level="view",admin=False):
         return u
     if u["status"]!="approved" or u["rank"] is None: fail(403,"Membership approval required")
     if module:
-        allowed=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND module=?",(u["rank"],module)).fetchone()
+        allowed=c.execute("SELECT level FROM hq_grants WHERE rank_id=? AND (module=? OR module='*') ORDER BY CASE module WHEN '*' THEN 0 ELSE 1 END",(u["rank"],module)).fetchone()
         levels={"view":1,"write":2,"approve":3}
         if not allowed or levels[allowed["level"]]<levels[level]: fail(403,"Module permission required")
     return u
@@ -86,7 +86,9 @@ class CaseNote(BaseModel):
 def access(r:Request):
     with db() as c:
         u=privilege(c,r)
-        return reply({x["module"]:x["level"] for x in c.execute("SELECT module,level FROM hq_grants WHERE rank_id=?",(u["rank"],))})
+        configured={x["module"]:x["level"] for x in c.execute("SELECT module,level FROM hq_grants WHERE rank_id=?",(u["rank"],))}
+        if configured.get("*")=="approve": return reply(dict.fromkeys(MODULES,"approve"))
+        return reply({k:v for k,v in configured.items() if k in MODULES})
 
 @router.get("/admin/grants")
 def grants(r:Request):
@@ -97,7 +99,9 @@ def grants(r:Request):
 @router.post("/admin/grants")
 def grant(p:Grant,r:Request):
     origin(r)
-    if p.module not in MODULES or p.level not in ("none","view","write","approve"): fail(400,"Invalid grant")
+    if p.module=="*":
+        if p.level not in ("none","approve"): fail(400,"All Access must be enabled or disabled")
+    elif p.module not in MODULES or p.level not in ("none","view","write","approve"): fail(400,"Invalid grant")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         u=privilege(c,r,admin=True)

@@ -68,3 +68,20 @@ class OpsTest(unittest.TestCase):
         cid=self.post(self.u,"/ops/cases",{"name":"Case","summary":"IC"}).json()["id"]
         self.assertEqual(self.post(self.u,f"/ops/cases/{cid}",{"note":"Update","status":"closed"}).status_code,200)
         self.assertEqual(self.get(self.u,f"/ops/cases/{cid}").json()["case"]["status"],"closed")
+
+    def test_all_access(self):
+        self.grant("treasury","view")
+        self.assertEqual(self.post(self.u,"/admin/grants",{"rank":self.rank,"module":"*","level":"approve"}).status_code,403)
+        self.assertEqual(self.post(self.a,"/admin/grants",{"rank":self.rank,"module":"*","level":"write"}).status_code,400)
+        self.grant("*","approve")
+        rights=self.get(self.u,"/ops/access").json()
+        self.assertEqual(rights,dict.fromkeys(("treasury","inventory","crafting","cases"),"approve"))
+        self.assertEqual(self.get(self.u,"/ops/cases").status_code,200)
+        self.assertEqual(self.get(self.u,"/admin/grants").status_code,403)
+        self.grant("*","none")
+        self.assertEqual(self.get(self.u,"/ops/access").json(),{"treasury":"view"})
+        self.assertEqual(self.get(self.u,"/ops/cases").status_code,403)
+        self.grant("*","approve")
+        uid=self.get(self.u,"/me").json()["id"]
+        self.assertEqual(self.post(self.a,f"/admin/revoke/{uid}",{}).status_code,200)
+        self.assertEqual(self.get(self.u,"/ops/treasury").status_code,403)

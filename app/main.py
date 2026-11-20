@@ -16,6 +16,8 @@ from app import database
 from app import auth as dashboard_auth
 from app import tools as abud_tools
 from app.auth import router as auth_router
+from app.highest import router as highest_router, init as highest_init
+from app.highest_live import start_live_worker
 from app.skills.engine import get_relevant_skills
 
 
@@ -37,6 +39,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(highest_router)
 
 
 # Endpoint internal hanya boleh diakses oleh layanan terpercaya.
@@ -64,7 +67,9 @@ async def require_internal_api_key(request: Request, call_next):
     }
 
     if (
-        request.url.path.startswith("/profile-avatars/")
+        request.url.path in ("/highest", "/highest/")
+        or request.url.path.startswith("/highest/")
+        or request.url.path.startswith("/profile-avatars/")
         or request.url.path in ("/", "/health", "/favicon.svg")
         or request.url.path.startswith("/assets/")
         or request.url.path in public_auth_paths
@@ -433,6 +438,8 @@ def internal_guild_sync(payload: InternalGuildSyncRequest):
 @app.on_event("startup")
 async def startup():
     database.init_database()
+    highest_init()
+    start_live_worker()
     print("Abud Multi-Scope Memory Database initialized.")
 
 

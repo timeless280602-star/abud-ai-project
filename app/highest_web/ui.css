@@ -59,3 +59,8 @@ a.button:hover{background:#e4c383;text-decoration:none}
 .community-comment form{display:grid;gap:7px;padding:8px 0}
 .community-comment textarea{width:100%;min-height:54px;background:#101010;color:#fff;border:1px solid #716047;border-radius:7px;padding:9px;font:inherit}
 .community-comment button{margin-right:6px}
+
+/* Native community media and creator verification */
+.community-native-media{display:block;width:100%;max-width:720px;max-height:420px;object-fit:contain;background:#080808;border:1px solid var(--border);border-radius:10px;margin:10px 0}
+.evidence-upload-form input[type=file]{display:block;width:100%;max-width:100%;padding:10px;border:1px dashed #716047;border-radius:8px;background:#101010;color:var(--text)}
+.evidence-upload-form input[type=text]{width:100%;max-width:100%}

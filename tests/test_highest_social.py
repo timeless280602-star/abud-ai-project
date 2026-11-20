@@ -65,3 +65,6 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(result["wiki"][0]["display_name"],"clipper")
         self.assertEqual(mod["wiki"][0]["username"],"clipper")
         self.assertEqual(mod["posts"][0]["username"],"clipper")
+        self.assertEqual(self.post(self.a,"/social/wiki",{"kind":"lore","title":"Admin draft","body":"Self review must be blocked"}).status_code,200)
+        own=next(x for x in self.get(self.a,"/admin/social").json()["wiki"] if x["username"]=="owner")
+        self.assertEqual(self.post(self.a,f"/admin/social/wiki/{own['id']}",{"approve":True}).status_code,403)

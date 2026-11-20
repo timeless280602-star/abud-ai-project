@@ -299,7 +299,7 @@ def refresh_clip_stats(r:Request):
         url=clip["url"] or ""
         match=re.search(r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/))([A-Za-z0-9_-]{11})",url)
         if match and key: yt_ids.append((clip["id"],match.group(1)))
-        elif "tiktok.com/" in url and tik_endpoint and tik_token:
+        elif "tiktok.com/" in url and urlsplit(tik_endpoint).scheme=="https" and tik_token:
             try:
                 with httpx.Client(timeout=12,follow_redirects=False) as client: response=client.get(tik_endpoint,params={"url":url},headers={"Authorization":"Bearer "+tik_token})
                 response.raise_for_status();value=response.json().get("views")

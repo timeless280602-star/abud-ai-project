@@ -52,7 +52,38 @@ async function notificationPanel(){
  },30000);
  return p;
 }
-async function internal(){let d=await api("/internal"),root=el("div");root.append(await notificationPanel());let h=panel("Organizational hierarchy");h.append(tree(d.ranks));root.append(h);let members=panel("Personnel roster");for(const m of d.members){let rank=d.ranks.find(r=>r.id===m.rank);members.append(el("p",m.character+" · "+(m.callsign||"—")+" · "+(rank?.name||"—")+" · "+m.position))}root.append(members);root.append(await opsPanel());return root}
+
+async function executiveDashboard(){
+ const d=await api("/ops/executive"),sections=d.sections||{},p=panel("Executive Intelligence Dashboard");
+ const heading=el("div",null,"row");add(heading,el("div","Organization-wide snapshot · live database figures · permission-scoped","muted"),button("Refresh dashboard",async()=>await render(),true));p.append(heading);
+ const grid=el("div",null,"grid");
+ const metric=(label,value,sub)=>{const t=el("article",null,"tile");add(t,el("small",label),el("h2",String(value)),el("p",sub||""));grid.append(t)};
+ metric("Approved members",d.membership.active,"Across all approved ranks");
+ metric("Pending membership",d.membership.pending,"Awaiting membership review");
+ if(sections.approvals)metric("Pending approvals",sections.approvals.pending,"Within modules you can access");
+ if(sections.treasury){const x=sections.treasury;metric("Treasury balance",moneyFormat(x.balance),x.accounts+" active accounts");metric("Pending transactions",x.pending_transactions,"Awaiting Treasury review");}
+ if(sections.inventory){const x=sections.inventory;metric("Inventory stock",x.stock_units.toLocaleString("id-ID")+" units",x.items+" item types · "+x.vaults+" stash locations");metric("Inventory valuation",moneyFormat(x.stock_value),x.unvalued_units+" units without recorded cost");metric("Low-stock alerts",x.low_stock,"Items below minimum stock");}
+ if(sections.assets){const x=sections.assets;metric("Registered assets",x.total,x.available+" available · "+x.assigned+" assigned");metric("Asset acquisition value",moneyFormat(x.acquisition_cost),x.maintenance+" under maintenance · "+x.retired+" retired");}
+ if(sections.operations){const x=sections.operations;metric("Upcoming operations",x.upcoming,"Planned or in progress");metric("Operations in progress",x.in_progress,x.completed+" completed records");}
+ if(sections.cases){const x=sections.cases;metric("Registered cases",x.total,x.open+" open · "+x.review+" under review · "+x.closed+" closed");metric("Evidence files",x.evidence_files,x.evidence_events+" custody and access events");metric("Integrity failures",x.integrity_failures,"Recorded evidence integrity failures");}
+ if(sections.security){metric("Audit events · 7 days",sections.security.audit_events_7d,"Organization-wide audit activity");metric("Flagged security events",sections.security.flagged_events_7d,"Integrity, denied or failed action markers");}
+ p.append(grid);
+ const links=el("nav");
+ const navItems=[["treasury","Treasury"],["inventory","Vault & Inventory"],["assets","Assets"],["operations","Operations Calendar"],["cases","Case Files"]];
+ for(const [key,label] of navItems){if(d.permissions.includes(key))links.append(button("Open "+label,async()=>{opsTab=key;await render()},true))}
+ if(links.childElementCount){p.append(el("h3","Open operational modules"),links)}
+ if(sections.operations&&sections.operations.recent?.length){
+  p.append(el("h3","Recent operational schedule"));
+  for(const x of sections.operations.recent){const card=el("article",null,"tile");add(card,el("h3",x.title),el("p",x.category+" · "+(x.division||"Unassigned division")+" · "+(x.owner||"No owner")),el("small",new Date(x.starts_at).toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})+" WIB · "+x.status.replace("_"," ").toUpperCase()));p.append(card)}
+ }
+ if(sections.security&&sections.security.recent?.length){
+  p.append(el("h3","Recent audit activity · administrator only"));
+  for(const x of sections.security.recent){p.append(el("p",dateFormat(x.created)+" · "+(x.username||"System")+" · "+x.action+" · #"+x.target))}
+ }
+ p.append(el("small","Dashboard data is read-only. Each section is included only when your current rank has permission for its source module.","muted"));
+ return p
+}
+async function internal(){let d=await api("/internal"),root=el("div");root.append(await executiveDashboard());root.append(await notificationPanel());let h=panel("Organizational hierarchy");h.append(tree(d.ranks));root.append(h);let members=panel("Personnel roster");for(const m of d.members){let rank=d.ranks.find(r=>r.id===m.rank);members.append(el("p",m.character+" · "+(m.callsign||"—")+" · "+(rank?.name||"—")+" · "+m.position))}root.append(members);root.append(await opsPanel());return root}
 async function businessProfileAdmin(){
 let data=await api("/admin/business-profiles"),p=panel("Business profile & document branding");
 p.append(el("p","Create one profile for each business unit. Every new order stores a permanent snapshot of the selected identity, document numbering, logo and visual style. Existing invoices and receipts are not rewritten when a profile changes.","muted"));

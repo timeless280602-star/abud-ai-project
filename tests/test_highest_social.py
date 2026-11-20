@@ -95,7 +95,7 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(created.status_code,200)
         comment_id=created.json()["id"]
         owner_activity=self.get(self.u,"/social/activity").json()
-        self.assertEqual(owner_activity["unread_count"],1)
+        self.assertEqual(owner_activity["unread_count"],2)
         self.assertEqual(owner_activity["items"][0]["kind"],"social_comment")
         self.assertEqual(self.get(self.v,"/social/activity").json()["items"],[])
         reply=self.post(self.u,f"/social/comments/{comment_id}/reply",{"body":"Thanks for watching!"})

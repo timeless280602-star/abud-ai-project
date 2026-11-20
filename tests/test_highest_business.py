@@ -1,4 +1,4 @@
-import os,tempfile,unittest
+import os,sqlite3,tempfile,unittest
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -242,7 +242,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(response.status_code,200,response.text)
         oid=response.json()["id"]
         created=self.get(self.u,f"/business/orders/{oid}").json()["order"]
-        self.assertRegex(created["invoice_no"],r"^INV-\\d{8}-\\d{6}$")
+        self.assertRegex(created["invoice_no"],r"^INV-\d{8}-\d{6}$")
         self.assertEqual(created["invoice_creator_name"],"cashier")
         self.assertIsNotNone(created["invoice_issued_at"])
         self.assertIsNone(created["receipt_no"])
@@ -253,7 +253,7 @@ class BusinessTest(unittest.TestCase):
         self.advance(oid)
         self.assertEqual(self.post(self.m,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
         completed=self.get(self.u,f"/business/orders/{oid}").json()["order"]
-        self.assertRegex(completed["receipt_no"],r"^RCT-\\d{8}-\\d{6}$")
+        self.assertRegex(completed["receipt_no"],r"^RCT-\d{8}-\d{6}$")
         self.assertIsNotNone(completed["receipt_issued_at"])
         self.assertEqual(completed["receipt_completed_by"],"manager")
         self.assertEqual(completed["invoice_no"],created["invoice_no"])
@@ -265,9 +265,12 @@ class BusinessTest(unittest.TestCase):
         oid=self.create(nonce="legacy-document-backfill-12345").json()["id"]
         self.advance(oid)
         self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        with sqlite3.connect(self.tmp.name+"/db.sqlite") as conn:
+            conn.execute("DELETE FROM hq_order_documents WHERE order_id=?",(oid,))
         with patch("app.highest_business.now",return_value=1900000000):
             business_init()
         order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         self.assertTrue(order["invoice_no"].startswith("INV-"))
         self.assertTrue(order["receipt_no"].startswith("RCT-"))
+        self.assertEqual(order["invoice_creator_name"],"cashier")
         self.assertEqual(order["receipt_completed_by"],"cashier")

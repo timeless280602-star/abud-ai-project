@@ -50,7 +50,10 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual(self.post(self.u,f"/case-extras/{cid}/evidence",{"title":"RP screenshot","reference":"Screenshot 1"}).status_code,200)
         self.assertEqual(self.post(self.u,f"/case-extras/{cid}/relation",{"left_name":"Character A","right_name":"Character B","label":"Fictional relation"}).status_code,200)
         self.assertEqual(self.get(self.v,f"/case-extras/{cid}").status_code,403)
-        self.assertEqual(len(self.get(self.u,f"/case-extras/{cid}").json()["relations"]),1)
+        extras=self.get(self.u,f"/case-extras/{cid}").json()
+        self.assertEqual(len(extras["evidence"]),1)
+        self.assertEqual(len(extras["relations"]),1)
+        self.assertTrue(any(x["label"]=="Fictional relation" for x in extras["links"]))
         self.assertEqual(self.get(self.u,"/approval-center").json(),{"treasury":[],"membership":[],"clips":[],"community":{}})
         self.assertEqual(self.get(self.v,"/approval-center").status_code,403)
 

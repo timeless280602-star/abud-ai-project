@@ -412,11 +412,6 @@ def evidence_file(eid:int,r:Request,download:bool=False):
 
 @router.post("/case-extras/{cid}/evidence")
 def evidence(cid:int,p:Evidence,r:Request):
-    with db() as c:
-        privilege(c,r,"cases");check_case(c,cid)
-        return reply({"evidence":rows(c,"SELECT * FROM hq_case_evidence WHERE case_id=? ORDER BY id",(cid,)),"relations":rows(c,"SELECT * FROM hq_case_relation WHERE case_id=? ORDER BY id",(cid,))})
-@router.post("/case-extras/{cid}/evidence")
-def evidence(cid:int,p:Evidence,r:Request):
     origin(r)
     with db() as c:
         c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"cases","write");check_case(c,cid)

@@ -362,7 +362,45 @@ async function caseExtras(id,write){
  await refresh();return p;
 }
 
-async function approvalUI(){let d=await api("/approval-center"),p=panel("Approval Center");p.append(el("h3","Treasury requests awaiting your review"));for(const r of d.treasury){let t=el("article",null,"tile");add(t,el("h3",moneyFormat(r.amount)+" · "+r.category),el("p",r.note),button("Approve",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:false}),true));p.append(t)}if(!d.treasury.length)p.append(el("p","No treasury requests available for your review.","muted"));if(me.admin){p.append(el("p",d.membership.length+" membership requests · "+d.clips.length+" clips awaiting moderation"),lines(Object.entries(d.community),x=>x[0]+": "+x[1]),button("Open admin queues",()=>switchView("admin"),true))}return p}
+async function approvalUI(){
+ const d=await api("/approval-center"),p=panel("Approval Center");
+ p.append(el("h3","Treasury requests awaiting your review"));
+ for(const r of d.treasury){let t=el("article",null,"tile");add(t,el("h3",moneyFormat(r.amount)+" · "+r.category),el("p",r.note),button("Approve",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:false}),true));p.append(t)}
+ if(!d.treasury.length)p.append(el("p","No treasury requests available for your review.","muted"));
+ if(me.admin)p.append(el("p",d.membership.length+" membership requests · "+d.clips.length+" clips awaiting moderation"),lines(Object.entries(d.community),x=>x[0]+": "+x[1]),button("Open admin queues",()=>switchView("admin"),true));
+ const rights=await api("/ops/access"),modules=Object.keys(opsNames).filter(k=>rights[k]&&rights[k]!=="view");
+ const all=await api("/ops/approvals?scope=all"),box=panel("Full Approval Workflow");
+ box.append(el("p","Rank-routed, sequential decisions with independent reviewers, delegation and a permanent action history. Existing treasury and discount approvals remain in their dedicated workflows.","muted"));
+ if(modules.length)box.append(form([field("module","Approval module","select",modules.map(x=>[x,opsNames[x]])),field("reference_type","Reference type · optional","optional"),field("reference_id","Reference ID · optional","optional"),field("title","Request title"),field("description","Justification / details","textarea")],"Submit approval request",async v=>{await api("/ops/approvals",v);await render()}));
+ else box.append(el("p","You need write access to at least one module to submit an approval request.","muted"));
+ const list=el("div");
+ for(const item of all){
+  const card=el("article",null,"tile"),status=item.status.toUpperCase(),meta=item.module+" · "+status+" · Step "+item.current_step+"/"+item.total_steps;
+  add(card,el("h3",item.title),el("small",meta),el("p",item.description||"No additional details"),el("p","Submitted by "+item.requester_name+" · "+dateFormat(item.created)+(item.reference_type?" · "+item.reference_type+" #"+item.reference_id:"")));
+  const actions=el("div",null,"row");
+  if(item.status==="pending"&&item.requester===me.id)actions.append(button("Cancel request",()=>postRefresh("/ops/approvals/"+item.id+"/cancel",{}),true));
+  if(item.status==="pending"&&item.requester!==me.id&&rights[item.module]==="approve"){
+   actions.append(button("Approve current step",async()=>{const note=prompt("Decision note (optional):")||"";await api("/ops/approvals/"+item.id+"/review",{approve:true,note});await render()}),button("Reject request",async()=>{const note=prompt("Reason for rejection:");if(note===null||!note.trim())return;await api("/ops/approvals/"+item.id+"/review",{approve:false,note});await render()},true));
+  }
+  actions.append(button("View history",async()=>{const h=await api("/ops/approvals/"+item.id+"/history"),trail=el("div",null,"custody-trail");for(const a of h.actions)trail.append(el("p","Step "+a.step+" · "+a.decision.toUpperCase()+" · "+a.actor_name+(a.delegated_from_name?" (delegated by "+a.delegated_from_name+")":"")+" · "+dateFormat(a.created)+(a.note?" · "+a.note:"")));if(!h.actions.length)trail.append(el("p","No decisions recorded yet.","muted"));card.append(trail)},true));
+  card.append(actions);list.append(card);
+ }
+ if(!all.length)list.append(el("p","No approval requests to display.","muted"));box.append(el("h3","Requests & review inbox"),list);
+ if(modules.length){
+  const delegates=await api("/ops/approvals/delegations");
+  box.append(el("h3","Delegation"),el("p","Delegate a module approval task to another approved member who already has approve permission for that module. Use their HQ user ID.","muted"));
+  box.append(form([field("module","Module","select",modules.map(x=>[x,opsNames[x]])),field("delegate_user_id","Delegate user ID","number"),field("active","Delegation","select",[["true","Active"],["false","Revoke"]],"true")],"Save delegation",async v=>{await api("/ops/approvals/delegations",{module:v.module,delegate_user_id:n(v.delegate_user_id),active:v.active==="true"});await render()}));
+  box.append(lines(delegates,x=>x.module+" · "+x.delegator_name+" → "+x.delegate_name+" · "+(x.active?"ACTIVE":"REVOKED")));
+ }
+ if(me.admin){
+  const config=await api("/admin/approval-policies");
+  box.append(el("h3","Approval route configuration · administrator"),el("p","Enter rank IDs in approval order, separated by commas. Every selected rank must already have Approve permission for that module. Leave a module unconfigured to allow any member with that module's Approve permission to act as the single-step reviewer.","muted"));
+  box.append(form([field("module","Module","select",Object.keys(opsNames).map(x=>[x,opsNames[x]])),field("ranks","Sequential rank IDs","text",null,"")],"Save approval route",async v=>{const ranks=v.ranks.split(",").map(x=>Number(x.trim())).filter(Boolean);if(!ranks.length)throw Error("Enter at least one rank ID");await api("/admin/approval-policies",{module:v.module,ranks});await render()}));
+  box.append(lines(config.policies,x=>x.module+" · Step "+x.step+" → "+x.rank_name+" (rank "+x.rank_id+")"));
+  box.append(form([field("module","Clear route","select",Object.keys(opsNames).map(x=>[x,opsNames[x]]))],"Remove route · use single-step approval",async v=>{await api("/admin/approval-policies/"+v.module,undefined,"DELETE");await render()}));
+ }
+ p.append(box);return p
+}
 function safeScreen(){generation++;me=null;let p=panel("STREAMER MODE");add(p,el("h1","THE HIGHEST HQ"),el("p","Protected display · Internal workspace hidden"),el("p","No HQ records are loaded into this screen. This does not control OBS or other browser tabs.","muted"),button("Exit Streamer Mode",()=>{if(confirm("Private HQ information may become visible. Exit safe display?"))setStreamSafe(false)},true));app.replaceChildren(p)}
 function setStreamSafe(enabled){streamSafe=enabled;try{sessionStorage.setItem("highest_stream_safe",enabled?"1":"0")}catch{};if(enabled)safeScreen();else{view="community";history.replaceState(null,"","/highest/community/");boot()}}
 

@@ -28,6 +28,41 @@ class OpsTest(unittest.TestCase):
     def get(self,c,path):return c.get(self.path+path)
     def grant(self,module,level="approve"):
         self.assertEqual(self.post(self.a,"/admin/grants",{"module":module,"rank":self.rank,"level":level}).status_code,200)
+    def test_executive_dashboard_permission_scoping_and_live_treasury_metrics(self):
+        response=self.get(self.u,"/ops/executive")
+        self.assertEqual(response.status_code,200,response.text)
+        data=response.json()
+        self.assertEqual(data["membership"]["active"],2)
+        self.assertEqual(data["permissions"],[])
+        self.assertEqual(data["sections"],{})
+        self.grant("treasury","view")
+        data=self.get(self.u,"/ops/executive").json()
+        self.assertIn("treasury",data["sections"])
+        self.assertNotIn("inventory",data["sections"])
+        self.assertNotIn("assets",data["sections"])
+        self.assertNotIn("security",data["sections"])
+        self.assertEqual(data["sections"]["treasury"]["balance"],0)
+        self.grant("treasury","approve")
+        entry=self.post(self.u,"/ops/treasury",{
+            "amount":725,"direction":"income","category":"Funding","note":"Dashboard metric test"
+        })
+        self.assertEqual(entry.status_code,200,entry.text)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/{entry.json()['id']}/review",{"approve":True}).status_code,200)
+        data=self.get(self.u,"/ops/executive").json()
+        self.assertEqual(data["sections"]["treasury"]["balance"],725)
+        self.assertEqual(data["sections"]["treasury"]["pending_transactions"],0)
+        self.assertEqual(data["membership"]["active"],2)
+
+    def test_executive_dashboard_cases_section_handles_optional_evidence_schema(self):
+        self.grant("cases","view")
+        data=self.get(self.u,"/ops/executive")
+        self.assertEqual(data.status_code,200,data.text)
+        section=data.json()["sections"]["cases"]
+        self.assertEqual(section["total"],0)
+        self.assertEqual(section["evidence_files"],0)
+        self.assertEqual(section["evidence_events"],0)
+        self.assertEqual(section["integrity_failures"],0)
+
     def test_money(self):
         self.assertEqual(self.get(self.u,"/ops/treasury").status_code,403)
         self.grant("treasury")

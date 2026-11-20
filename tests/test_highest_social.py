@@ -72,6 +72,19 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(self.post(self.v,"/social/report",{"content_type":"clip","content_id":cid,"reason":"other"}).status_code,200)
         self.assertEqual(self.post(self.a,f"/admin/social/report/{self.get(self.a,'/admin/social/reports').json()['reports'][0]['id']}",{"action":"dismiss","note":"No violation"}).status_code,200)
         self.assertEqual(self.get(self.v,"/social/reports").json()["reports"][0]["status"],"dismissed")
+        self.assertEqual(self.post(self.u,"/social/wiki",{"kind":"lore","title":"Wiki report target","body":"A public lore entry"}).status_code,200)
+        wiki_id=self.get(self.a,"/admin/social").json()["wiki"][0]["id"]
+        self.assertEqual(self.post(self.a,f"/admin/social/wiki/{wiki_id}",{"approve":True}).status_code,200)
+        self.assertEqual(self.post(self.v,"/social/report",{"content_type":"wiki","content_id":wiki_id,"reason":"inappropriate"}).status_code,200)
+        wiki_report=self.get(self.a,"/admin/social/reports").json()["reports"][0]
+        self.assertEqual(wiki_report["content_type"],"wiki")
+        self.assertEqual(self.post(self.a,f"/admin/social/report/{wiki_report['id']}",{"action":"dismiss"}).status_code,200)
+        self.assertEqual(self.post(self.a,"/social/post",{"category":"general","body":"Admin-authored item"}).status_code,200)
+        admin_post=self.get(self.a,"/admin/social").json()["posts"][0]["id"]
+        self.assertEqual(self.post(self.a,f"/admin/social/post/{admin_post}",{"approve":True}).status_code,403)
+        self.assertEqual(self.post(self.v,"/social/report",{"content_type":"post","content_id":admin_post,"reason":"spam"}).status_code,200)
+        own_report=self.get(self.a,"/admin/social/reports").json()["reports"][0]
+        self.assertEqual(self.post(self.a,f"/admin/social/report/{own_report['id']}",{"action":"remove"}).status_code,403)
     def test_creator_wiki_feed(self):
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://evil.example/a"}).status_code,400)
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://www.tiktok.com/@test"}).status_code,200)

@@ -255,8 +255,6 @@ class OpsTest(unittest.TestCase):
         request_id=submitted.json()["id"]
         first_inbox=self.get(first_reviewer,"/notifications").json()
         self.assertTrue(any(x["title"]=="Approval requires your review" for x in first_inbox["items"]))
-        delegate_inbox=self.get(delegate,"/notifications").json()
-        self.assertTrue(any(x["title"]=="Approval requires your review" for x in delegate_inbox["items"]))
         self.assertEqual(self.post(self.u,f"/ops/approvals/{request_id}/review",{
             "approve":True,"note":"Self approval must fail"
         }).status_code,403)
@@ -267,6 +265,8 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.post(first_reviewer,"/ops/approvals/delegations",{
             "module":"cases","delegate_user_id":delegate_uid,"active":True
         }).status_code,200)
+        delegate_inbox=self.get(delegate,"/notifications").json()
+        self.assertTrue(any(x["title"]=="Approval requires your review" for x in delegate_inbox["items"]))
         self.assertEqual(self.post(delegate,f"/ops/approvals/{request_id}/review",{
             "approve":True,"note":"Delegated first step"
         }).status_code,200)

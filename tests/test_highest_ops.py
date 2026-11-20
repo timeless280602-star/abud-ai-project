@@ -85,3 +85,30 @@ class OpsTest(unittest.TestCase):
         uid=self.get(self.u,"/me").json()["id"]
         self.assertEqual(self.post(self.a,f"/admin/revoke/{uid}",{}).status_code,200)
         self.assertEqual(self.get(self.u,"/ops/treasury").status_code,403)
+
+    def test_operations_calendar_persistence_filters_and_history(self):
+        self.assertEqual(self.get(self.u,"/ops/calendar").status_code,403)
+        self.grant("operations","view")
+        self.assertEqual(self.get(self.u,"/ops/calendar").status_code,200)
+        payload={
+            "title":"HQ briefing","category":"Briefing","division":"Operations",
+            "detail":"Review planned activities","owner":"Officer One","location":"HQ Internal",
+            "starts_at":"2026-11-21T09:00","ends_at":"2026-11-21T10:00",
+            "status":"planned","reminder_minutes":15
+        }
+        self.assertEqual(self.post(self.u,"/ops/calendar",payload).status_code,403)
+        self.grant("operations","write")
+        created=self.post(self.u,"/ops/calendar",payload)
+        self.assertEqual(created.status_code,200)
+        event_id=created.json()["id"]
+        result=self.get(self.u,"/ops/calendar?division=Operations&status=planned")
+        self.assertEqual(len(result.json()["events"]),1)
+        self.assertTrue(result.json()["events"][0]["starts_at"].endswith("+07:00"))
+        invalid={**payload,"ends_at":"2026-11-21T08:00"}
+        self.assertEqual(self.u.put(self.path+"/ops/calendar/"+str(event_id),json=invalid).status_code,400)
+        changed={**payload,"title":"Updated HQ briefing","status":"in_progress"}
+        self.assertEqual(self.u.put(self.path+"/ops/calendar/"+str(event_id),json=changed).status_code,200)
+        history=self.get(self.u,"/ops/calendar/"+str(event_id)+"/history").json()
+        self.assertEqual([x["version"] for x in history],[2,1])
+        self.assertEqual(history[0]["title"],"Updated HQ briefing")
+        self.assertEqual(self.get(self.v,"/ops/calendar/"+str(event_id)+"/history").status_code,403)

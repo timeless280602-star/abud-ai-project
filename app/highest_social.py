@@ -166,6 +166,13 @@ def start_channel_verification(p:ChannelVerificationStart,r:Request):
         item=c.execute("SELECT id FROM hq_channel_verification WHERE uid=? AND kind=? AND platform=? AND channel=?",(u["id"],p.kind,p.platform,channel)).fetchone()
     return {"ok":True,"id":item["id"],"challenge":challenge,"instructions":"Add this exact code to your public channel description or profile bio, then press Verify ownership."}
 
+@router.get("/social/channel-verification")
+def list_channel_verifications(r:Request):
+    u=current(r)
+    with db() as c:
+        items=rows(c,"SELECT id,kind,platform,channel,profile_url,challenge,status,created,checked FROM hq_channel_verification WHERE uid=? ORDER BY id DESC LIMIT 20",(u["id"],))
+    return reply({"items":items})
+
 @router.post("/social/channel-verification/{verification_id}/check")
 def check_channel_verification(verification_id:int,r:Request):
     origin(r);u=current(r)

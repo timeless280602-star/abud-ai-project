@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.highest import router,init,bootstrap_admin,db
 from app.highest_ops import router as ops,init as ops_init,MODULES
+from app.highest_notifications import dispatch_due_reminders
 
 class OpsTest(unittest.TestCase):
     def setUp(self):
@@ -180,6 +181,29 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(self.post(self.a,f"/admin/revoke/{reviewer_id}",{}).status_code,200)
         self.assertEqual(self.get(self.v,"/ops/calendar/"+str(event_id)+"/history").status_code,403)
 
+    def test_calendar_reminders_are_deduplicated_and_private(self):
+        self.grant("operations","write")
+        from datetime import datetime, timedelta, timezone
+        start=(datetime.now(timezone.utc)-timedelta(minutes=2)).isoformat()
+        end=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()
+        payload={"title":"Reminder delivery test","category":"Briefing","division":"Operations",
+            "detail":"Reminder test","owner":"","location":"HQ","starts_at":start,"ends_at":end,
+            "status":"planned","reminder_minutes":5}
+        created=self.post(self.u,"/ops/calendar",payload)
+        self.assertEqual(created.status_code,200,created.text)
+        self.assertEqual(dispatch_due_reminders(),1)
+        inbox=self.get(self.u,"/notifications").json()
+        self.assertEqual(inbox["unread_count"],1)
+        self.assertEqual(inbox["items"][0]["title"],"Upcoming: Reminder delivery test")
+        self.assertEqual(dispatch_due_reminders(),0)
+        self.assertEqual(self.get(self.u,"/notifications").json()["unread_count"],1)
+        other=self.get(self.a,"/notifications")
+        self.assertEqual(other.status_code,403)
+        notification_id=inbox["items"][0]["id"]
+        self.assertEqual(self.post(self.u,f"/notifications/{notification_id}/read",{}).status_code,200)
+        self.assertEqual(self.get(self.u,"/notifications").json()["unread_count"],0)
+        self.assertEqual(self.post(self.u,"/notifications/read-all",{}).status_code,200)
+
     def test_full_approval_workflow_routes_delegation_and_history(self):
         self.assertEqual(self.post(self.u,"/ops/approvals",{
             "module":"cases","title":"Case review","description":"Approve case brief"
@@ -229,6 +253,8 @@ class OpsTest(unittest.TestCase):
         })
         self.assertEqual(submitted.status_code,200)
         request_id=submitted.json()["id"]
+        first_inbox=self.get(first_reviewer,"/notifications").json()
+        self.assertTrue(any(x["title"]=="Approval requires your review" for x in first_inbox["items"]))
         self.assertEqual(self.post(self.u,f"/ops/approvals/{request_id}/review",{
             "approve":True,"note":"Self approval must fail"
         }).status_code,403)
@@ -244,6 +270,8 @@ class OpsTest(unittest.TestCase):
         }).status_code,200)
         mine=self.get(self.u,"/ops/approvals?scope=mine").json()
         self.assertEqual(next(x for x in mine if x["id"]==request_id)["current_step"],2)
+        second_inbox=self.get(second_reviewer,"/notifications").json()
+        self.assertTrue(any(x["title"]=="Approval requires your review" for x in second_inbox["items"]))
         self.assertEqual(self.post(delegate,f"/ops/approvals/{request_id}/review",{
             "approve":True
         }).status_code,403)
@@ -251,6 +279,8 @@ class OpsTest(unittest.TestCase):
             "approve":True,"note":"Final approval"
         }).status_code,200)
         history=self.get(self.u,f"/ops/approvals/{request_id}/history").json()
+        requester_inbox=self.get(self.u,"/notifications").json()
+        self.assertTrue(any(x["title"]=="Approval request approved" for x in requester_inbox["items"]))
         self.assertEqual(history["request"]["status"],"approved")
         self.assertEqual([a["step"] for a in history["actions"]],[1,2])
         self.assertEqual(history["actions"][0]["delegated_from"],first_uid)

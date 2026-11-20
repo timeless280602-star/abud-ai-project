@@ -28,7 +28,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(self.post(self.a,f"/admin/review/{manager_uid}",{"approve":True,"rank":self.manager_rank,"position":"Manager"}).status_code,200)
         self.grant("*","approve")
         self.grant_rank(self.manager_rank,"business_discounts","approve")
-        self.grant_rank(self.manager_rank,"business","write")
+        self.grant_rank(self.manager_rank,"business","approve")
         self.set_discount_policy("both",100,1000000000000)
         self.post(self.u,"/ops/item",{"name":"RP Item","category":"IC"})
         self.post(self.u,"/ops/vault",{"name":"Store"})

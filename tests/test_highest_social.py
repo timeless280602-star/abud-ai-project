@@ -3,12 +3,13 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.highest import router,init,bootstrap_admin
+from app.highest_ops import init as ops_init
 from app.highest_social import router as social,init as social_init
 class SocialTest(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.env=patch.dict(os.environ,{"HIGHEST_DATABASE_PATH":self.tmp.name+"/db.sqlite","HIGHEST_ORIGIN":"https://abud.web.id"});self.env.start();self.addCleanup(self.env.stop)
-        init();social_init()
+        init();ops_init();social_init()
         app=FastAPI();app.include_router(router);app.include_router(social)
         self.a,self.u,self.v=[TestClient(app,base_url="https://abud.web.id",headers={"Origin":"https://abud.web.id"}) for _ in range(3)]
         for c,name in ((self.a,"owner"),(self.u,"clipper"),(self.v,"viewer")):
@@ -85,6 +86,45 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(self.post(self.v,"/social/report",{"content_type":"clip","content_id":admin_clip,"reason":"spam"}).status_code,200)
         own_report=self.get(self.a,"/admin/social/reports").json()["reports"][0]
         self.assertEqual(self.post(self.a,f"/admin/social/report/{own_report['id']}",{"action":"remove"}).status_code,403)
+    def test_comments_replies_likes_and_social_activity(self):
+        self.assertEqual(self.post(self.u,"/clip",{"title":"Comment thread clip","url":"https://youtu.be/comments"}).status_code,200)
+        cid=self.get(self.a,"/admin").json()["clips"][0]["id"]
+        self.assertEqual(self.post(self.a,f"/admin/clip/{cid}/published",{}).status_code,200)
+        created=self.post(self.v,"/social/comments",{"content_type":"clip","content_id":cid,"body":"Great clip!"})
+        self.assertEqual(created.status_code,200)
+        comment_id=created.json()["id"]
+        owner_activity=self.get(self.u,"/social/activity").json()
+        self.assertEqual(owner_activity["unread_count"],1)
+        self.assertEqual(owner_activity["items"][0]["kind"],"social_comment")
+        self.assertEqual(self.get(self.v,"/social/activity").json()["items"],[])
+        reply=self.post(self.u,f"/social/comments/{comment_id}/reply",{"body":"Thanks for watching!"})
+        self.assertEqual(reply.status_code,200)
+        self.assertEqual(self.get(self.v,"/social/activity").json()["items"][0]["kind"],"social_reply")
+        self.assertEqual(self.post(self.u,f"/social/comments/{comment_id}/reply",{"body":"Nested reply is not supported"}).status_code,200)
+        self.assertEqual(self.post(self.u,f"/social/comments/{reply.json()['id']}/reply",{"body":"Should not nest"}).status_code,404)
+        self.assertEqual(self.post(self.u,f"/social/comments/{comment_id}/like",{"enabled":True}).status_code,200)
+        self.assertEqual(self.post(self.u,f"/social/comments/{comment_id}/like",{"enabled":True}).status_code,200)
+        self.assertEqual(self.get(self.v,"/social/activity").json()["items"][0]["kind"],"social_comment_like")
+        thread=self.get(self.v,f"/social/comments/clip/{cid}").json()
+        self.assertEqual(thread["count"],3)
+        self.assertEqual(thread["comments"][0]["id"],comment_id)
+        self.assertEqual(thread["comments"][0]["likes"],1)
+        self.assertEqual(len(thread["comments"][0]["replies"]),1)
+        self.assertEqual(thread["comments"][0]["replies"][0]["display_name"],"clipper")
+        self.assertEqual(self.post(self.u,f"/social/comments/{comment_id}/delete",{}).status_code,403)
+        self.assertEqual(self.post(self.v,f"/social/comments/{comment_id}/delete",{}).status_code,200)
+        thread=self.get(self.v,f"/social/comments/clip/{cid}").json()
+        self.assertEqual(thread["comments"][0]["body"],"")
+        self.assertEqual(thread["comments"][0]["state"],"deleted")
+        self.assertEqual(self.post(self.v,"/social/comments",{"content_type":"clip","content_id":999,"body":"Missing target"}).status_code,404)
+        self.assertEqual(self.post(self.v,"/social/comments",{"content_type":"clip","content_id":cid,"body":"   "}).status_code,400)
+        activity=self.get(self.v,"/social/activity").json()
+        self.assertGreaterEqual(activity["unread_count"],2)
+        nid=activity["items"][0]["id"]
+        self.assertEqual(self.post(self.v,f"/social/activity/{nid}/read",{}).status_code,200)
+        self.assertEqual(self.post(self.v,"/social/activity/read-all",{}).status_code,200)
+        self.assertEqual(self.get(self.v,"/social/activity").json()["unread_count"],0)
+        self.assertEqual(self.get(self.a,f"/social/comments/clip/{cid}").status_code,200)
     def test_creator_wiki_feed(self):
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://evil.example/a"}).status_code,400)
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://www.tiktok.com/@test"}).status_code,200)

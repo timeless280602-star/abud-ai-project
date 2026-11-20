@@ -1,6 +1,7 @@
 """Public-to-authenticated community content; never reads IC internal tables."""
-import time
+import time, os, re, secrets
 import sqlite3
+import httpx
 from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -16,6 +17,11 @@ def init():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS hq_creator(uid INTEGER REFERENCES users(id),kind TEXT CHECK(kind IN ('streamer','clipper')),url TEXT NOT NULL,note TEXT NOT NULL,status TEXT NOT NULL,PRIMARY KEY(uid,kind));
+        CREATE TABLE IF NOT EXISTS hq_channel_verification(
+            id INTEGER PRIMARY KEY,uid INTEGER NOT NULL REFERENCES users(id),kind TEXT NOT NULL CHECK(kind IN ('streamer','clipper')),
+            platform TEXT NOT NULL CHECK(platform IN ('youtube','tiktok')),channel TEXT NOT NULL,profile_url TEXT NOT NULL,
+            challenge TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created INTEGER NOT NULL,checked INTEGER,UNIQUE(uid,kind,platform,channel)
+        );
         CREATE TABLE IF NOT EXISTS hq_moment(id INTEGER PRIMARY KEY,uid INTEGER REFERENCES users(id),title TEXT NOT NULL,summary TEXT NOT NULL,spoiler INTEGER NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS hq_pov(id INTEGER PRIMARY KEY,moment INTEGER REFERENCES hq_moment(id),clip INTEGER REFERENCES clips(id),label TEXT NOT NULL,uid INTEGER REFERENCES users(id),state TEXT NOT NULL,UNIQUE(moment,clip));
         CREATE TABLE IF NOT EXISTS hq_wiki(id INTEGER PRIMARY KEY,uid INTEGER REFERENCES users(id),kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,spoiler INTEGER NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL);
@@ -94,7 +100,7 @@ def social(r:Request):
             m["povs"]=rows(c,"SELECT p.id,p.label,cl.title,cl.url,u.display_name,cu.display_name clip_owner FROM hq_pov p JOIN clips cl ON p.clip=cl.id JOIN users u ON p.uid=u.id JOIN users cu ON cl.uid=cu.id WHERE p.moment=? AND p.state='published' AND cl.state='published' ORDER BY p.id",(m["id"],))
         wiki=rows(c,"SELECT w.id,w.kind,w.title,w.body,w.spoiler,w.created,u.display_name FROM hq_wiki w JOIN users u ON w.uid=u.id WHERE w.state='published' ORDER BY w.id DESC LIMIT 100")
         posts=rows(c,"SELECT p.id,p.body,p.category,p.spoiler,p.created,u.display_name FROM hq_posts p JOIN users u ON p.uid=u.id WHERE p.state='published' ORDER BY p.id DESC LIMIT 100")
-        clips=rows(c,"""SELECT cl.id,cl.title,cl.url,u.display_name,
+        clips=rows(c,"""SELECT cl.id,cl.title,cl.url,cl.media_type,cl.media_size,cl.views,cl.views_checked,cl.views_source,u.display_name,
         (SELECT count(*) FROM hq_clip_likes l WHERE l.clip=cl.id) likes,
         EXISTS(SELECT 1 FROM hq_clip_likes l WHERE l.clip=cl.id AND l.uid=?) liked,
         EXISTS(SELECT 1 FROM hq_clip_bookmarks b WHERE b.clip=cl.id AND b.uid=?) bookmarked
@@ -108,7 +114,7 @@ def social(r:Request):
 def studio(r:Request):
     u=current(r)
     with db() as c:
-        clips=rows(c,"SELECT c.id,c.title,c.url,c.state,(SELECT count(*) FROM hq_clip_likes l WHERE l.clip=c.id) likes FROM clips c WHERE uid=? ORDER BY c.id DESC LIMIT 300",(u["id"],))
+        clips=rows(c,"SELECT c.id,c.title,c.url,c.state,c.media_type,c.media_size,c.views,c.views_checked,c.views_source,(SELECT count(*) FROM hq_clip_likes l WHERE l.clip=c.id) likes FROM clips c WHERE uid=? ORDER BY c.id DESC LIMIT 300",(u["id"],))
         return reply(dict(clips=clips,verification=rows(c,"SELECT kind,url,status,note FROM hq_creator WHERE uid=?",(u["id"],)),moments=rows(c,"SELECT id,title,state FROM hq_moment WHERE uid=? ORDER BY id DESC",(u["id"],)),wiki=rows(c,"SELECT id,kind,title,state FROM hq_wiki WHERE uid=? ORDER BY id DESC",(u["id"],)),posts=rows(c,"SELECT id,category,state FROM hq_posts WHERE uid=? ORDER BY id DESC",(u["id"],)),bookmarks=rows(c,"SELECT c.id,c.title,c.url FROM hq_clip_bookmarks b JOIN clips c ON c.id=b.clip WHERE b.uid=? AND c.state='published' ORDER BY c.id DESC",(u["id"],))))
 
 @router.post("/social/creator")
@@ -121,6 +127,83 @@ def creator(p:Creator,r:Request):
         if prev and prev["status"] in ("pending","approved"): fail(409,"Already pending or verified")
         c.execute("INSERT INTO hq_creator VALUES(?,?,?,?,'pending') ON CONFLICT(uid,kind) DO UPDATE SET url=excluded.url,note=excluded.note,status='pending'",(u["id"],p.kind,valid_link(p.url),p.note.strip()))
     return {"ok":True}
+class ChannelVerificationStart(BaseModel):
+    kind:str
+    platform:str
+    channel:str=Field(min_length=1,max_length=100)
+    profile_url:str=Field(min_length=8,max_length=500)
+
+def _channel_target(platform,channel,profile_url):
+    parsed=urlsplit(profile_url)
+    if parsed.scheme!="https": fail(400,"Use an HTTPS channel/profile URL")
+    host=parsed.netloc.lower()
+    if platform=="youtube":
+        if host not in {"youtube.com","www.youtube.com","m.youtube.com"}: fail(400,"Use a YouTube channel URL")
+        match=re.fullmatch(r"/channel/(UC[A-Za-z0-9_-]{22})/?",parsed.path)
+        if match:
+            channel_id=match.group(1)
+        else:
+            handle=re.fullmatch(r"/(@[A-Za-z0-9_.-]{2,50})/?",parsed.path)
+            if not handle: fail(400,"Use a public YouTube /channel/UC... or /@handle URL")
+            channel_id=handle.group(1)
+        return channel_id
+    if platform=="tiktok":
+        if host not in {"tiktok.com","www.tiktok.com"}: fail(400,"Use a TikTok profile URL")
+        match=re.fullmatch(r"/@([A-Za-z0-9_.]{1,24})/?",parsed.path)
+        if not match: fail(400,"Use a TikTok /@username profile URL")
+        return match.group(1)
+    fail(400,"Unsupported platform")
+
+@router.post("/social/channel-verification")
+def start_channel_verification(p:ChannelVerificationStart,r:Request):
+    origin(r);u=current(r);throttle(r,"channel-verify:"+str(u["id"]))
+    if p.kind not in ("streamer","clipper") or p.platform not in ("youtube","tiktok"): fail(400,"Invalid creator or platform")
+    channel=_channel_target(p.platform,p.channel,p.profile_url)
+    challenge="ABUD-HQ-"+secrets.token_hex(6).upper()
+    with db() as c:
+        c.execute("INSERT INTO hq_channel_verification(uid,kind,platform,channel,profile_url,challenge,status,created) VALUES(?,?,?,?,?,?,'pending',?) ON CONFLICT(uid,kind,platform,channel) DO UPDATE SET profile_url=excluded.profile_url,challenge=excluded.challenge,status='pending',created=excluded.created,checked=NULL",
+            (u["id"],p.kind,p.platform,channel,p.profile_url,challenge,now()))
+        item=c.execute("SELECT id FROM hq_channel_verification WHERE uid=? AND kind=? AND platform=? AND channel=?",(u["id"],p.kind,p.platform,channel)).fetchone()
+    return {"ok":True,"id":item["id"],"challenge":challenge,"instructions":"Add this exact code to your public channel description or profile bio, then press Verify ownership."}
+
+@router.post("/social/channel-verification/{verification_id}/check")
+def check_channel_verification(verification_id:int,r:Request):
+    origin(r);u=current(r)
+    with db() as c:
+        item=c.execute("SELECT * FROM hq_channel_verification WHERE id=? AND uid=?",(verification_id,u["id"])).fetchone()
+    if not item: fail(404,"Verification request not found")
+    if item["status"]=="verified": return {"ok":True,"status":"verified"}
+    try:
+        if item["platform"]=="youtube":
+            key=os.getenv("HIGHEST_YOUTUBE_API_KEY","")
+            if not key: fail(503,"YouTube API key is not configured")
+            params={"part":"snippet","key":key}
+            params["id" if item["channel"].startswith("UC") else "forHandle"]=item["channel"]
+            with httpx.Client(timeout=15) as client: response=client.get("https://www.googleapis.com/youtube/v3/channels",params=params)
+            response.raise_for_status();items=response.json().get("items",[])
+            bio=items[0].get("snippet",{}).get("description","") if items else ""
+            found=item["challenge"] in bio
+        else:
+            endpoint=os.getenv("HIGHEST_TIKTOK_PROFILE_URL","");token=os.getenv("HIGHEST_TIKTOK_PROFILE_TOKEN","")
+            if not endpoint or not token: fail(503,"TikTok profile verification provider is not configured")
+            with httpx.Client(timeout=15,follow_redirects=False) as client: response=client.get(endpoint,params={"username":item["channel"]},headers={"Authorization":"Bearer "+token})
+            response.raise_for_status();profile=response.json()
+            bio=profile.get("bio",profile.get("description",""))
+            found=isinstance(bio,str) and item["challenge"] in bio and profile.get("username","").lower()==item["channel"].lower()
+    except HTTPException: raise
+    except Exception: fail(502,"Unable to check the public profile right now; try again later")
+    with db() as c:
+        if not found:
+            c.execute("UPDATE hq_channel_verification SET checked=?,status='pending' WHERE id=?",(now(),verification_id))
+            return {"ok":True,"status":"pending","message":"Challenge not found in the public channel description yet."}
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("UPDATE hq_channel_verification SET checked=?,status='verified' WHERE id=?",(now(),verification_id))
+        c.execute("INSERT INTO hq_creator(uid,kind,url,note,status) VALUES(?,?,?,?, 'approved') ON CONFLICT(uid,kind) DO UPDATE SET url=excluded.url,note=excluded.note,status='approved'",
+            (u["id"],item["kind"],item["profile_url"],"Automatically verified via public profile challenge"))
+        notify(c,u["id"],"channel_verified","Channel ownership verified","Your "+item["platform"]+" channel is now verified.","/highest/","channel-verified:"+str(verification_id))
+        audit(c,u["id"],"creator.channel.auto_verify",verification_id)
+    return {"ok":True,"status":"verified","message":"Channel ownership verified automatically."}
+
 @router.post("/social/moment")
 def moment(p:Moment,r:Request):
     origin(r); u=current(r); throttle(r,"moment:"+str(u["id"]))
@@ -401,6 +484,8 @@ def review_creator(uid:int,kind:str,p:Review,r:Request):
     if uid==u["id"]: fail(403,"Cannot review own verification")
     with db() as c:
         if not c.execute("UPDATE hq_creator SET status=? WHERE uid=? AND kind=? AND status='pending'",("approved" if p.approve else "rejected",uid,kind)).rowcount: fail(409,"Not pending")
+        notify(c,uid,"creator_approved" if p.approve else "creator_rejected","Creator verification approved" if p.approve else "Creator verification rejected",
+            "Your "+kind+" creator verification was "+("approved." if p.approve else "rejected."),"/highest/","creator-review:"+kind+":"+str(uid)+":"+("approved" if p.approve else "rejected"))
         audit(c,u["id"],"creator."+kind+(".approve" if p.approve else ".reject"),uid)
     return {"ok":True}
 @router.post("/admin/social/{kind}/{cid}")
@@ -415,5 +500,9 @@ def review(kind:str,cid:int,p:Review,r:Request):
         if int(submission["uid"])==u["id"]: fail(403,"Cannot review your own community submission")
         if p.approve and kind=="pov" and not c.execute("SELECT 1 FROM hq_pov p JOIN hq_moment m ON p.moment=m.id JOIN clips cl ON p.clip=cl.id WHERE p.id=? AND m.state='published' AND cl.state='published'",(cid,)).fetchone(): fail(409,"Approve moment and clip first")
         if not c.execute("UPDATE "+table+" SET state=? WHERE id=? AND state='pending'",("published" if p.approve else "rejected",cid)).rowcount: fail(409,"Not pending")
+        approved=p.approve
+        notify(c,int(submission["uid"]),"content_approved" if approved else "content_rejected",kind.title()+" approved" if approved else kind.title()+" rejected",
+            ("Your "+kind+" submission #"+str(cid)+" has been published." if approved else "Your "+kind+" submission #"+str(cid)+" was rejected."),
+            "/highest/","social-review:"+kind+":"+str(cid)+":"+("approved" if approved else "rejected"))
         audit(c,u["id"],"social."+kind+(".publish" if p.approve else ".reject"),cid)
     return {"ok":True}

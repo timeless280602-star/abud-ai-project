@@ -143,7 +143,7 @@ def update(oid:int,p:Status,r:Request):
         note=clean(p.note,500) if p.note.strip() else ("Butuh pengantaran" if p.status=="ready" else "Order completed and retained for analytics")
         c.execute("UPDATE hq_order SET status=?,version=version+1,updated=?,delivery_note=?,completed_at=? WHERE id=?",(p.status,now(),delivery_note,completed_at,oid))
         history(c,oid,u["id"],p.status,note)
-        audit(c,u["id],"business."+p.status,oid)
+        audit(c,u["id"],"business."+p.status,oid)
     return {"ok":True,"money_id":mid}
 
 @router.get("/business/analytics")

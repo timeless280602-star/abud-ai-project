@@ -28,6 +28,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(self.post(self.a,f"/admin/review/{manager_uid}",{"approve":True,"rank":self.manager_rank,"position":"Manager"}).status_code,200)
         self.grant("*","approve")
         self.grant_rank(self.manager_rank,"business_discounts","approve")
+        self.grant_rank(self.manager_rank,"business","write")
         self.set_discount_policy("both",100,1000000000000)
         self.post(self.u,"/ops/item",{"name":"RP Item","category":"IC"})
         self.post(self.u,"/ops/vault",{"name":"Store"})
@@ -216,7 +217,8 @@ class BusinessTest(unittest.TestCase):
     def test_member_analytics_attributes_orders_to_creator_not_status_editor(self):
         self.post(self.u,"/business/orders",{"nonce":"member-created-sale-12345","group_name":"Member A Group","direction":"sell","lines":[{"item":self.item,"qty":2}]})
         self.post(self.m,"/business/orders",{"nonce":"member-created-buy-12345","group_name":"Member B Group","direction":"buy","lines":[{"item":self.item,"qty":1}]})
-        oid=self.get(self.u,"/business/orders").json()["orders"][0]["id"]
+        cashier_id=self.get(self.u,"/me").json()["id"]
+        oid=next(x["id"] for x in self.get(self.u,"/business/orders").json()["orders"] if x["actor"]==cashier_id and x["nonce"]=="member-created-sale-12345")
         self.advance(oid)
         self.assertEqual(self.post(self.m,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
         analytics=self.get(self.a,"/business/analytics").json()

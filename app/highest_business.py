@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from app.highest import db, origin, clean, fail, audit
-from app.highest_ops import privilege, rows, reply, now, change
+from app.highest_ops import privilege, rows, reply, now, change, _ensure_cost_layers
 
 router=APIRouter(prefix="/highest/api")
 STATES={"pending":{"ready"},"ready":{"completed"},"completed":set()}
@@ -728,10 +728,11 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             FROM hq_order o JOIN hq_money m ON m.id=o.money_id
             WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?""",args).fetchone())
         summary.update(settlements)
+        _ensure_cost_layers(c)
         stock_value=dict(c.execute("""SELECT
-            coalesce(sum(s.qty*coalesce(p.buy,0)),0) stock_value_estimate,
-            coalesce(sum(CASE WHEN p.item IS NULL THEN s.qty ELSE 0 END),0) unpriced_stock_qty
-            FROM hq_stock s LEFT JOIN hq_price p ON p.item=s.item""").fetchone())
+            coalesce(sum(value_remaining),0) stock_value_estimate,
+            coalesce(sum(CASE WHEN source IN ('legacy_unvalued','unvalued') THEN qty_remaining ELSE 0 END),0) unpriced_stock_qty
+            FROM hq_cost_layer WHERE qty_remaining>0""").fetchone())
         summary.update(stock_value)
         groups=rows(c,"""SELECT o.group_name,count(DISTINCT o.id) completed_orders,
             coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
@@ -820,6 +821,41 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
             WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?
             GROUP BY o.actor""",args)
+        # Replace catalog-price COGS with actual FIFO / moving-average issue costs
+        # whenever a completed sales order has inventory movements; retain estimates for
+        # legacy orders that were never settled against a vault.
+        cogs_lines=rows(c,"""SELECT o.id,o.group_name,o.actor,strftime('%Y-%m-%d',o.completed_at,'unixepoch') day,
+            l.item,l.qty*l.buy catalog_cost,
+            CASE WHEN EXISTS(SELECT 1 FROM hq_movement m WHERE m.ref='order:'||o.id AND m.kind='business_sell'
+                AND m.item=l.item AND m.cost_source NOT IN ('unvalued','legacy_unvalued'))
+            THEN (SELECT coalesce(sum(m.value),0) FROM hq_movement m WHERE m.ref='order:'||o.id AND m.kind='business_sell'
+                AND m.item=l.item AND m.cost_source NOT IN ('unvalued','legacy_unvalued'))
+            ELSE l.qty*l.buy END cogs,
+            CASE WHEN EXISTS(SELECT 1 FROM hq_movement m WHERE m.ref='order:'||o.id AND m.kind='business_sell'
+                AND m.item=l.item AND m.cost_source NOT IN ('unvalued','legacy_unvalued')) THEN 1 ELSE 0 END has_actual
+            FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
+            WHERE o.status='completed' AND o.direction='sell' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?""",args)
+        def grouped_cost(key):
+            out={}
+            for line in cogs_lines: out[line[key]]=out.get(line[key],0)+line["cogs"]
+            return out
+        total_cogs=sum(x["cogs"] for x in cogs_lines)
+        summary["estimated_cogs"]=total_cogs
+        summary["estimated_gross_profit"]=summary["sales_revenue"]-total_cogs
+        summary["gross_margin_pct"]=round(summary["estimated_gross_profit"]/summary["sales_revenue"]*100,2) if summary["sales_revenue"] else 0
+        summary["cogs_basis"]="actual_inventory_cost" if cogs_lines and all(x["has_actual"] for x in cogs_lines) else ("mixed_actual_and_estimated" if any(x["has_actual"] for x in cogs_lines) else "catalog_buy_price_estimate")
+        for row in products:
+            row["estimated_cogs"]=grouped_cost("item").get(row["item_id"],0)
+            row["estimated_gross_profit"]=row["sales_revenue"]-row["estimated_cogs"]
+        for row in groups:
+            row["estimated_cogs"]=grouped_cost("group_name").get(row["group_name"],0)
+            row["estimated_gross_profit"]=row["sales_revenue"]-row["estimated_cogs"]
+        for row in trend:
+            row["estimated_cogs"]=grouped_cost("day").get(row["day"],0)
+            row["estimated_gross_profit"]=row["sales_revenue"]-row["estimated_cogs"]
+        for row in member_finance:
+            row["estimated_gross_profit"]=row["sales_revenue"]-grouped_cost("actor").get(row["actor"],0)
+            row["estimated_cogs"]=grouped_cost("actor").get(row["actor"],0)
         finance_by_actor={x["actor"]:x for x in member_finance}
         members=[]
         for member in member_activity:

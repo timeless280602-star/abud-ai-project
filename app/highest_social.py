@@ -192,7 +192,7 @@ def check_channel_verification(verification_id:int,r:Request):
             found=item["challenge"] in bio
         else:
             endpoint=os.getenv("HIGHEST_TIKTOK_PROFILE_URL","");token=os.getenv("HIGHEST_TIKTOK_PROFILE_TOKEN","")
-            if not endpoint or not token: fail(503,"TikTok profile verification provider is not configured")
+            if urlsplit(endpoint).scheme!="https" or not token: fail(503,"TikTok profile verification provider must be configured with HTTPS and a token")
             with httpx.Client(timeout=15,follow_redirects=False) as client: response=client.get(endpoint,params={"username":item["channel"]},headers={"Authorization":"Bearer "+token})
             response.raise_for_status();profile=response.json()
             bio=profile.get("bio",profile.get("description",""))

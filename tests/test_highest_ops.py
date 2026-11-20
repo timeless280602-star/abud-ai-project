@@ -107,6 +107,34 @@ class OpsTest(unittest.TestCase):
             if fmt=="csv": self.assertIn(signature,response.text)
             else: self.assertTrue(response.content.startswith(signature))
 
+    def test_financial_reports_exclude_internal_account_transfers(self):
+        self.grant("financial_reports","view")
+        self.grant("treasury","approve")
+        account=self.post(self.u,"/ops/treasury/accounts",{
+            "name":"Financial Transfer Reserve","description":"Test-only reserve"
+        })
+        self.assertEqual(account.status_code,200,account.text)
+        reserve=account.json()["id"]
+        treasury=self.get(self.u,"/ops/treasury").json()
+        general=next(x["id"] for x in treasury["accounts"] if x["name"]=="General Treasury")
+        funding=self.post(self.u,"/ops/treasury",{
+            "account_id":general,"amount":1000,"direction":"income","category":"Funding","note":"External funding"
+        })
+        self.assertEqual(funding.status_code,200,funding.text)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/{funding.json()['id']}/review",{"approve":True}).status_code,200)
+        transfer=self.post(self.u,"/ops/treasury/transfers",{
+            "source_account":general,"destination_account":reserve,"amount":300,"note":"Internal movement"
+        })
+        self.assertEqual(transfer.status_code,200,transfer.text)
+        self.assertEqual(self.post(self.v,f"/ops/treasury/transfers/{transfer.json()['id']}/review",{"approve":True}).status_code,200)
+        period=datetime.now().strftime("%Y-%m")
+        report=self.get(self.u,f"/ops/financial-reports?start={period}&end={period}")
+        self.assertEqual(report.status_code,200,report.text)
+        data=report.json()
+        self.assertEqual(data["summary"]["income"],1000)
+        self.assertEqual(data["summary"]["expense"],0)
+        self.assertEqual(data["summary"]["transactions"],1)
+
     def test_money(self):
         self.assertEqual(self.get(self.u,"/ops/treasury").status_code,403)
         self.grant("treasury")

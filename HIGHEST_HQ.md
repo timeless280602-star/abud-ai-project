@@ -121,21 +121,24 @@ This is the initial feature branch, not a production deployment. Do not replace 
 ## Community review — current scope and verified behavior
 
 - Community routes are authenticated but remain separate from approved internal HQ access. Community content is stored in its own social tables and does not query case, evidence, treasury, inventory or other internal IC records.
-- Public clips, moments, POVs, wiki entries, feed posts and verified creator profiles are returned only after publication/approval. Creator verification remains a manual administrator review of the submitted public profile URL.
+- Public clips, moments, POVs, wiki entries, feed posts and verified creator profiles are returned only after publication/approval.
 - Clip likes and bookmarks are idempotent per member/clip. Streamer follows are stored per member/streamer. The all-time leaderboard counts published clips and website likes only.
 - POV attribution distinguishes the member submitting the POV from the member who owns the linked clip. Wiki entries and moderation queues expose the submitting member for accountability.
-- Moderators cannot approve or reject their own pending community submissions. Creator verification already prevents self-review.
-- CI covers social moderation, creator verification, POV publication prerequisites, clip likes/bookmarks, community permissions, author attribution and self-review boundaries.
+- Moderators cannot approve or reject their own pending community submissions. Creator verification prevents self-review.
+- Published-content reports support moderator dismissal, soft removal and administrator restoration. Comment threads support top-level comments, one-level replies, likes and author deletion; related activity is delivered to the member's private HQ inbox.
+- Clip and feed-post uploads are private until approved. Supported formats are JPG/JPEG, PNG, WEBP, GIF, MP4 and WEBM. Images are limited to 10 MB and videos to 50 MB. Random storage names, SHA-256 checks and private media routes protect stored uploads.
+- Every native clip preview verifies the stored SHA-256 digest and records upload, preview or integrity-failure activity in the media audit table and HQ audit log. Feed-post media preview verifies its digest and records preview/integrity failure in the HQ audit log.
+- Approval/rejection notifications are sent to content authors. Followed streamers generate a notification when their status transitions into live; repeated polling during the same live session does not send duplicate alerts.
+- YouTube channel ownership uses a public-description challenge checked through YouTube Data API. TikTok ownership verification requires an operator-configured HTTPS profile adapter.
+- YouTube view counts use YouTube Data API videos.list statistics. TikTok view counts use an operator-configured HTTPS statistics adapter. A background worker refreshes available statistics every six hours by default; missing credentials/provider data remain unavailable and are never fabricated as zero.
+- YouTube live polling uses the Data API search endpoint (100 quota units per channel check); size the interval and roster against the project's API quota. TikTok live status requires an operator-supplied HTTPS provider and bearer token; no provider is bundled.
 
 Known community limitations retained for a future phase:
-- No user-facing content reporting, published-content takedown workflow, comments/replies, or direct member-to-member messaging.
-- No notifications to authors when content is approved/rejected, and following a streamer does not yet send a live-start notification.
-- Creator channel ownership is not automatically verified; administrators perform manual review.
-- No native media uploads or external-platform view analytics. Clip engagement metrics are website likes only.
-- YouTube live polling uses the Data API search endpoint (100 quota units per channel check); size the interval and roster against the project's API quota. TikTok live status requires an operator-supplied HTTPS provider and bearer token; no provider is bundled.
-- The current moderation queue is a pending-submission review queue, not a full trust-and-safety console for already-published content.
-
-
+- No direct member-to-member messaging, email notifications, Discord DMs, browser push or mobile push provider.
+- No member appeals, strike/penalty system, moderator assignment/SLA or automated content scanning.
+- TikTok ownership, live status and view-count features require authorized operator-configured providers; no TikTok provider is bundled.
+- External platform statistics and livestream state cannot be refreshed when provider credentials are missing, quota is exhausted or the provider is unavailable. The UI should retain the last known check timestamp/status and must not invent values.
+- The current moderation queue is a pending-submission review queue plus a separate report queue, not a full enterprise trust-and-safety case-management system.
 
 ## Community Trust & Safety — implementation
 

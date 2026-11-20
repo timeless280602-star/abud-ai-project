@@ -1386,7 +1386,7 @@ def _financial_report_data(c,start,end):
     monthly=rows(c,"""SELECT strftime('%Y-%m',datetime(created,'unixepoch','+7 hours')) period,
         coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
-        FROM hq_money WHERE state='posted' AND created>=? AND created<?
+        FROM hq_money WHERE state='posted' AND transfer_ref IS NULL AND created>=? AND created<?
         GROUP BY period ORDER BY period""",(begin,finish))
     monthly_map={x["period"]:x for x in monthly};periods=[];cursor=first
     while cursor<=last:
@@ -1404,7 +1404,7 @@ def _financial_report_data(c,start,end):
         coalesce(sum(CASE WHEN m.amount>0 THEN m.amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN m.amount<0 THEN -m.amount ELSE 0 END),0) expense,count(*) transactions
         FROM hq_money m LEFT JOIN membership mb ON mb.uid=m.actor LEFT JOIN ranks r ON r.id=mb.rank
-        WHERE m.state='posted' AND m.created>=? AND m.created<?
+        WHERE m.state='posted' AND m.transfer_ref IS NULL AND m.created>=? AND m.created<?
         GROUP BY division ORDER BY division""",(begin,finish))
     by_category=rows(c,"""SELECT category,coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
@@ -1423,6 +1423,33 @@ def _financial_report_data(c,start,end):
         budget["variance"]=budget["amount"]-budget["actual_expense"]
         budget["utilization_pct"]=round(budget["actual_expense"]*100/budget["amount"],2) if budget["amount"] else None
     budget_total=sum(x["amount"] for x in budgets);expense_total=summary["expense"]
+    business={"available":False,"sales_revenue":0,"purchase_spend":0,"estimated_cogs":0,"estimated_gross_profit":0,"completed_orders":0,"divisions":[],"monthly":[]}
+    has_orders=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hq_order'").fetchone()
+    has_lines=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hq_order_line'").fetchone()
+    if has_orders and has_lines:
+        business["available"]=True
+        pos=c.execute("""SELECT
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy-l.discount_amount ELSE 0 END),0) purchase_spend,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.buy ELSE 0 END),0) estimated_cogs,
+            count(DISTINCT o.id) completed_orders
+            FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
+            WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?""",(begin,finish)).fetchone()
+        business.update(dict(pos));business["estimated_gross_profit"]=business["sales_revenue"]-business["estimated_cogs"]
+        business["divisions"]=rows(c,"""SELECT coalesce(r.name,'Unassigned') division,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy-l.discount_amount ELSE 0 END),0) purchase_spend,
+            count(DISTINCT o.id) completed_orders
+            FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
+            LEFT JOIN membership mb ON mb.uid=o.actor LEFT JOIN ranks r ON r.id=mb.rank
+            WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?
+            GROUP BY division ORDER BY division""",(begin,finish))
+        business["monthly"]=rows(c,"""SELECT strftime('%Y-%m',datetime(o.completed_at,'unixepoch','+7 hours')) period,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy-l.discount_amount ELSE 0 END),0) purchase_spend
+            FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
+            WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?
+            GROUP BY period ORDER BY period""",(begin,finish))
     return {"period":{"start":start,"end":end,"months":count},
         "summary":{"opening_balance":opening,"income":summary["income"],"expense":expense_total,
             "net_cash_flow":summary["income"]-expense_total,"closing_balance":opening+summary["income"]-expense_total,
@@ -1433,7 +1460,7 @@ def _financial_report_data(c,start,end):
             "income":prior["income"],"expense":prior["expense"],"net_cash_flow":prior["income"]-prior["expense"],
             "income_change":summary["income"]-prior["income"],"expense_change":expense_total-prior["expense"],
             "net_change":(summary["income"]-expense_total)-(prior["income"]-prior["expense"])},
-        "monthly":periods,"divisions":by_division,"categories":by_category,"budgets":budgets,
+        "monthly":periods,"divisions":by_division,"categories":by_category,"budgets":budgets,"business":business,
         "budget_note":"Expenses are attributed to the member's current approved rank, not a historical rank snapshot. Internal account transfers are excluded. Only posted Treasury ledger entries are included.",
         "generated_at":now()}
 

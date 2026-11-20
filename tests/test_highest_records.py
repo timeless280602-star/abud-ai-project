@@ -89,10 +89,8 @@ class RecordsTest(unittest.TestCase):
             data={"title":"Interview record","category":"document","detail":"Second file with the same display title","related_entity_id":str(person)},
             files={"file":("interview-copy.pdf",pdf,"application/pdf")})
         self.assertEqual(duplicate.status_code,200,duplicate.text)
+        self.assertNotEqual(duplicate.json()["entity_id"],evidence["entity_id"])
         storage=Path(self.tmp.name)/"evidence"
-        with __import__("app.highest_records",fromlist=["evidence_root"]).evidence_root().open("a") if False else open(os.devnull,"w") as _unused:
-            pass
-        from app.highest_records import evidence_root
         self.assertEqual(stat.S_IMODE(storage.stat().st_mode),0o700)
         from app.highest import db
         with db() as c:

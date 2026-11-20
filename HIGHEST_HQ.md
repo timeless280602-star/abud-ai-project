@@ -147,3 +147,14 @@ Known community limitations retained for a future phase:
 - Members can view their own report history and resolution notes in Creator Studio.
 - Added automated tests for duplicate reports, invalid categories, self-report prevention, queue attribution, takedown, restore, dismissal and closed-report behavior.
 - This is an initial moderation workflow, not a full appeal/strike system. It does not yet provide automatic notifications, member appeals, moderator assignment/SLA, or automated content scanning.
+
+
+Community Engagement & Social Interaction:
+- Added comment threads to published clips, Moments, POVs, Wiki entries and Community Feed posts.
+- Each content item supports top-level comments and one-level replies; nested replies are rejected to keep discussions readable.
+- Members can like/unlike comments. Duplicate likes are prevented by a composite database key.
+- Comment authors can soft-delete their own comments. Deleted comments retain thread context for replies but their body is cleared; likes are removed. Administrators can remove comments when necessary.
+- Notifications are delivered through the existing private HQ notification store for new comments, replies and comment likes. Community activity endpoints expose only the signed-in member's own social notification records, not internal approval or operations notifications.
+- Added a dedicated Community Activity tab with unread counts, individual read state and mark-all-read.
+- All comment creation, replies, likes and deletes are authenticated; comment creation is rate-limited. Content must still be published when a comment is read or created.
+- No nested reply chains, image/GIF attachments, mentions, emoji reactions, or edit-history feature are included in this iteration.

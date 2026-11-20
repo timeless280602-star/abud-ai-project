@@ -1,5 +1,5 @@
 """Transactional IC ledger, warehouse, crafting and case files for FiveM."""
-import time
+import time, hashlib
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field

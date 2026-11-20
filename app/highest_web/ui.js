@@ -218,7 +218,25 @@ async function operationsCalendarUI(write,level){
  return p
 }
 
-async function treasuryUI(write,level){let d=await api("/ops/treasury"),p=panel("In-game treasury");p.append(el("h1",moneyFormat(d.balance)),el("p","Posted balance only · pending requests do not change the balance.","muted"));if(write)p.append(form([field("direction","Type","select",[["income","Income"],["expense","Expense"]]),field("amount","Amount (whole in-game dollars)","number"),field("category","Category"),field("note","Transaction purpose")],"Submit transaction",v=>postRefresh("/ops/treasury",{...v,amount:n(v.amount)})));for(const r of d.entries){let t=el("article",null,"tile");add(t,el("h3",moneyFormat(r.amount)+" · "+r.state.toUpperCase()),el("p",r.category+" · "+r.note),el("small",r.username+" · "+dateFormat(r.created)));if(level==="approve"&&r.state==="pending"&&r.actor!==me.id)t.append(el("div",null,"row"),button("Approve",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:false}),true));p.append(t)}return p}
+async function treasuryUI(write,level){
+ let d=await api("/ops/treasury"),p=panel("Financial Control & Treasury");
+ p.append(el("h1",moneyFormat(d.balance)),el("p","Consolidated posted balance · no shifts, work hours or time-based restrictions.","muted"));
+ p.append(el("h3","Treasury accounts"),lines(d.accounts,a=>a.name+" · "+moneyFormat(a.balance)+(a.description?" · "+a.description:"")));
+ const accountOptions=d.accounts.map(a=>[a.id,a.name+" · "+moneyFormat(a.balance)]);
+ if(write){
+  p.append(form([field("name","Account name"),field("description","Description")],"Create treasury account",v=>postRefresh("/ops/treasury/accounts",v)));
+  p.append(form([field("account_id","Account","select",accountOptions),field("direction","Transaction type","select",[["income","Cash in / income"],["expense","Cash out / expense"]]),field("amount","Amount (whole in-game dollars)","number"),field("category","Category"),field("note","Transaction purpose / reference")],"Submit cash transaction",v=>postRefresh("/ops/treasury",{...v,account_id:n(v.account_id),amount:n(v.amount)})));
+  if(d.accounts.length>1)p.append(form([field("source_account","From account","select",accountOptions),field("destination_account","To account","select",accountOptions),field("amount","Transfer amount","number"),field("note","Transfer purpose / reference")],"Request internal account transfer",v=>postRefresh("/ops/treasury/transfers",{...v,source_account:n(v.source_account),destination_account:n(v.destination_account),amount:n(v.amount)})));
+  if(d.accounts.length)p.append(form([field("account_id","Account to reconcile","select",accountOptions),field("counted_balance","Physically counted balance","number"),field("note","Counting basis / discrepancy explanation")],"Submit balance reconciliation",v=>postRefresh("/ops/treasury/reconciliations",{...v,account_id:n(v.account_id),counted_balance:n(v.counted_balance)})));
+ }
+ p.append(el("h3","Cash transaction ledger"));
+ for(const r of d.entries){let t=el("article",null,"tile");add(t,el("h3",moneyFormat(r.amount)+" · "+r.state.toUpperCase()),el("p",(r.account_name||"General Treasury")+" · "+r.category+" · "+r.note),el("small",r.username+" · "+dateFormat(r.created)));if(level==="approve"&&r.state==="pending"&&r.actor!==me.id)t.append(el("div",null,"row"),button("Approve",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:false}),true));p.append(t)}
+ p.append(el("h3","Internal account transfers"));
+ for(const x of d.transfers){let t=el("article",null,"tile");add(t,el("h3",x.source_name+" → "+x.destination_name+" · "+moneyFormat(x.amount)),el("p",x.note+" · "+x.status.toUpperCase()),el("small",x.username+" · "+dateFormat(x.created)+" · "+x.transfer_ref));if(level==="approve"&&x.status==="pending"&&x.actor!==me.id)t.append(el("div",null,"row"),button("Approve transfer",()=>postRefresh("/ops/treasury/transfers/"+x.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/transfers/"+x.id+"/review",{approve:false}),true));p.append(t)}
+ p.append(el("h3","Balance reconciliation history"));
+ for(const x of d.reconciliations){let t=el("article",null,"tile");add(t,el("h3",x.account_name+" · "+x.status.toUpperCase()),el("p","Expected "+moneyFormat(x.expected_balance)+" · Counted "+moneyFormat(x.counted_balance)+" · Variance "+moneyFormat(x.difference)),el("small",x.note+" · "+x.username+" · "+dateFormat(x.created)));if(level==="approve"&&x.status==="pending"&&x.actor!==me.id)t.append(el("div",null,"row"),button("Approve record",()=>postRefresh("/ops/treasury/reconciliations/"+x.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/reconciliations/"+x.id+"/review",{approve:false}),true));p.append(t)}
+ return p
+}
 async function inventoryUI(write){
  let d=await api("/ops/inventory"),p=panel("Inventory & multi-stash management");
  p.append(el("p","Manage multiple independent vaults / stashes, transfer stock between locations, and preserve a complete cost and movement trail.","muted"));

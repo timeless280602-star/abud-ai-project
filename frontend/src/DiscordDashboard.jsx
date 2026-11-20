@@ -21,7 +21,7 @@ function useFields(initial){const [v,set]=useState(initial);return [v,(k,x)=>set
 function Section({title,children}){return <section className="dd-card"><h2>{title}</h2>{children}</section>}
 function Level({s,run}) {
  const [v,set]=useFields(s.leveling), [channel,setChannel]=useState('');
- const all=s.channels.filter(c=>c.type!=='category'), text=all.filter(c=>c.type==='text');
+ const all=s.channels.filter(c=>c.type==='text'), text=all;
  return <><Section title="Pengaturan XP"><Toggle label="Aktifkan Leveling" value={v.enabled} onChange={x=>set('enabled',x)}/><Toggle label="XP dari chat" value={v.chat} onChange={x=>set('chat',x)}/><Select label="Channel pengumuman level-up (opsional)" value={v.announcement} change={x=>set('announcement',x)} options={text} optional/><p className="dd-note">Anti-spam dan batas XP sudah ditentukan oleh bot. Tidak ada role hadiah otomatis.</p>{btn('Simpan pengaturan',()=>run('leveling.save',{...{enabled:v.enabled,chat:v.chat,voice:false},announcement:v.announcement||null}))}</Section><Section title="Channel yang tidak mendapatkan XP"><Select label="Pilih channel" value={channel} change={setChannel} options={all}/>{btn('Kecualikan channel',()=>run('leveling.exclude',{channel,excluded:true}),!channel)}{v.excluded.map(id=><div className="dd-line" key={id}><span>{all.find(c=>c.id===id)?.name||'Channel '+id}</span>{btn('Izinkan XP',()=>run('leveling.exclude',{channel:id,excluded:false}))}</div>)}</Section></>
 }
 function Welcome({s,run}) {

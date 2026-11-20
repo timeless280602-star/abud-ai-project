@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CHAT_CAP = 1000
-VOICE_CAP = 600
 WIB = timezone(timedelta(hours=7))
 
 
@@ -61,7 +60,7 @@ class LevelStore:
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS guilds (
           guild INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
-          chat INTEGER NOT NULL DEFAULT 1, voice INTEGER NOT NULL DEFAULT 1,
+          chat INTEGER NOT NULL DEFAULT 1, voice INTEGER NOT NULL DEFAULT 0,
           announcement INTEGER);
         CREATE TABLE IF NOT EXISTS excluded (
           guild INTEGER NOT NULL, channel INTEGER NOT NULL, PRIMARY KEY(guild,channel));
@@ -86,7 +85,7 @@ class LevelStore:
                 "guild": guild,
                 "enabled": 0,
                 "chat": 1,
-                "voice": 1,
+                "voice": 0,
                 "announcement": None,
             }
         )
@@ -95,7 +94,7 @@ class LevelStore:
         with self.db:
             self.db.execute(
                 "INSERT INTO guilds VALUES(?,?,?,?,?) ON CONFLICT(guild) DO UPDATE SET enabled=excluded.enabled,chat=excluded.chat,voice=excluded.voice,announcement=excluded.announcement",
-                (guild, int(enabled), int(chat), int(voice), announcement),
+                (guild, int(enabled), int(chat), 0, announcement),
             )
 
     def excludes(self, guild):
@@ -158,13 +157,13 @@ class LevelStore:
         ).fetchone()[0]
 
     def award(self, guild, member, name, kind, now, *, content=None, amount=5):
-        if kind not in ("chat", "voice"):
-            raise ValueError("Unknown XP source")
+        if kind != "chat":
+            raise ValueError("Only chat XP is supported")
         config = self.config(guild)
-        if not config["enabled"] or not config[kind]:
+        if not config["enabled"] or not config["chat"]:
             return None
-        digest = fingerprint(content or "") if kind == "chat" else None
-        if kind == "chat" and digest is None:
+        digest = fingerprint(content or "")
+        if digest is None:
             return None
         if not 1 <= amount <= 25:
             raise ValueError("Invalid XP amount")
@@ -177,50 +176,41 @@ class LevelStore:
             row = self.db.execute(
                 "SELECT * FROM members WHERE guild=? AND member=?", (guild, member)
             ).fetchone()
-            last = row["last_" + kind]
+            last = row["last_chat"]
             if last is not None and now - last < 60:
                 return None
-            if digest:
-                seen = self.db.execute(
-                    "SELECT received FROM messages WHERE guild=? AND member=? AND hash=?",
-                    (guild, member, digest),
-                ).fetchone()
-                if seen and now - seen[0] < 600:
-                    return None
+            seen = self.db.execute(
+                "SELECT received FROM messages WHERE guild=? AND member=? AND hash=?",
+                (guild, member, digest),
+            ).fetchone()
+            if seen and now - seen[0] < 600:
+                return None
             chat_today = row["daily_chat"] if row["day"] == day else 0
-            voice_today = row["daily_voice"] if row["day"] == day else 0
-            today, cap = (
-                (chat_today, CHAT_CAP) if kind == "chat" else (voice_today, VOICE_CAP)
-            )
-            earned = min(amount, cap - today)
+            earned = min(amount, CHAT_CAP - chat_today)
             if earned <= 0:
                 return None
             self.db.execute(
-                "UPDATE members SET name=?,xp=xp+?,chat_xp=chat_xp+?,voice_xp=voice_xp+?,last_chat=?,last_voice=?,day=?,daily_chat=?,daily_voice=? WHERE guild=? AND member=?",
+                "UPDATE members SET name=?,xp=xp+?,chat_xp=chat_xp+?,last_chat=?,day=?,daily_chat=? WHERE guild=? AND member=?",
                 (
                     name[:100],
                     earned,
-                    earned if kind == "chat" else 0,
-                    earned if kind == "voice" else 0,
-                    now if kind == "chat" else row["last_chat"],
-                    now if kind == "voice" else row["last_voice"],
+                    earned,
+                    now,
                     day,
-                    chat_today + (earned if kind == "chat" else 0),
-                    voice_today + (earned if kind == "voice" else 0),
+                    chat_today + earned,
                     guild,
                     member,
                 ),
             )
-            if digest:
-                self.db.execute(
-                    "INSERT OR REPLACE INTO messages VALUES(?,?,?,?)",
-                    (guild, member, digest, now),
-                )
-                # Retain at most ten hashes per member, without storing message text.
-                self.db.execute(
-                    "DELETE FROM messages WHERE guild=? AND member=? AND hash NOT IN (SELECT hash FROM messages WHERE guild=? AND member=? ORDER BY received DESC LIMIT 10)",
-                    (guild, member, guild, member),
-                )
+            self.db.execute(
+                "INSERT OR REPLACE INTO messages VALUES(?,?,?,?)",
+                (guild, member, digest, now),
+            )
+            # Retain at most ten hashes per member, without storing message text.
+            self.db.execute(
+                "DELETE FROM messages WHERE guild=? AND member=? AND hash NOT IN (SELECT hash FROM messages WHERE guild=? AND member=? ORDER BY received DESC LIMIT 10)",
+                (guild, member, guild, member),
+            )
             return Award(guild, member, row["xp"], row["xp"] + earned, earned)
 
     def close(self):

@@ -2,7 +2,7 @@ import os,tempfile,unittest
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.highest import router,init,bootstrap_admin
+from app.highest import router,init,bootstrap_admin,db
 from app.highest_ops import router as ops,init as ops_init,MODULES
 
 class OpsTest(unittest.TestCase):
@@ -96,6 +96,32 @@ class OpsTest(unittest.TestCase):
         valuation={(x["vault_id"],x["item_id"]):(x["qty"],x["value"]) for x in inventory["valuation"]}
         self.assertEqual(valuation[(fifo_v,fifo_i)],(5,100))
         self.assertEqual(valuation[(wac_v,wac_i)],(5,75))
+
+
+    def test_legacy_opening_stock_valuation(self):
+        self.grant("inventory")
+        self.post(self.u,"/ops/vault",{"name":"Legacy Vault"})
+        self.post(self.u,"/ops/item",{"name":"Legacy Item","category":"IC"})
+        data=self.get(self.u,"/ops/inventory").json()
+        vault=data["vaults"][0]["id"];item=data["items"][0]["id"]
+        with db() as c:
+            c.execute("INSERT INTO hq_stock(vault,item,qty) VALUES(?,?,?)",(vault,item,4))
+        inventory=self.get(self.u,"/ops/inventory").json()
+        legacy=next(x for x in inventory["valuation"] if x["vault_id"]==vault and x["item_id"]==item)
+        self.assertEqual((legacy["qty"],legacy["value"],legacy["unvalued_qty"]),(4,0,4))
+        valued=self.post(self.u,"/ops/inventory/opening-valuation",{
+            "vault":vault,"item":item,"unit_cost":25,"note":"Opening stock physical valuation"
+        })
+        self.assertEqual(valued.status_code,200,valued.text)
+        self.assertEqual((valued.json()["qty"],valued.json()["value"]),(4,100))
+        inventory=self.get(self.u,"/ops/inventory").json()
+        row=next(x for x in inventory["valuation"] if x["vault_id"]==vault and x["item_id"]==item)
+        self.assertEqual((row["qty"],row["value"],row["unvalued_qty"]),(4,100,0))
+        self.assertEqual(self.post(self.u,"/ops/move",{
+            "kind":"withdraw","vault":vault,"item":item,"qty":1,"note":"Test opening cost"
+        }).status_code,200)
+        movement=self.get(self.u,"/ops/inventory").json()["movements"][0]
+        self.assertEqual((movement["kind"],movement["value"]),( "withdraw",25))
 
     def test_cases(self):
         self.grant("cases","view")

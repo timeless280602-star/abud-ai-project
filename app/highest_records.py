@@ -464,3 +464,100 @@ def approval(r:Request):
             for kind,table,state in [("creators","hq_creator","status"),("moments","hq_moment","state"),("povs","hq_pov","state"),("wiki","hq_wiki","state"),("posts","hq_posts","state")]:
                 result["community"][kind]=c.execute("SELECT count(*) FROM "+table+" WHERE "+state+"='pending'").fetchone()[0]
         return reply(result)
+
+
+@router.get("/case-intelligence/analytics")
+def case_intelligence_analytics(r:Request):
+    """Read-only aggregate intelligence across fictional IC case files."""
+    with db() as c:
+        privilege(c,r,"cases")
+        case_totals=dict(c.execute("""SELECT count(*) total,
+            coalesce(sum(status='open'),0) open,
+            coalesce(sum(status='review'),0) review,
+            coalesce(sum(status='closed'),0) closed
+            FROM hq_case""").fetchone())
+        graph=dict(c.execute("""SELECT
+            count(*) total_nodes,
+            coalesce(sum(entity_type='character'),0) characters,
+            coalesce(sum(entity_type='vehicle'),0) vehicles,
+            coalesce(sum(entity_type='organization'),0) organizations,
+            coalesce(sum(entity_type='evidence'),0) evidence_nodes
+            FROM hq_case_entity WHERE entity_type<>'case'""").fetchone())
+        graph["relationships"]=c.execute("SELECT count(*) FROM hq_case_entity_link").fetchone()[0]
+        graph["evidence_files"]=c.execute("SELECT count(*) FROM hq_evidence_file").fetchone()[0]
+        graph["custody_events"]=c.execute("SELECT count(*) FROM hq_evidence_event").fetchone()[0]
+        graph["integrity_failures"]=c.execute("SELECT count(*) FROM hq_evidence_event WHERE action='integrity_failed'").fetchone()[0]
+        graph["case_linked_assets"]=c.execute("SELECT count(*) FROM hq_asset WHERE case_id IS NOT NULL").fetchone()[0] if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hq_asset'").fetchone() else 0
+
+        recurring=rows(c,"""SELECT entity_type,lower(trim(name)) match_key,min(name) entity_name,
+            count(DISTINCT case_id) case_count,count(*) node_count,
+            group_concat(DISTINCT case_id) case_ids
+            FROM hq_case_entity
+            WHERE entity_type IN ('character','vehicle','organization')
+                AND trim(name)<>''
+            GROUP BY entity_type,lower(trim(name))
+            HAVING count(DISTINCT case_id)>1
+            ORDER BY case_count DESC,node_count DESC,entity_type,entity_name LIMIT 100""")
+        for item in recurring:
+            ids=[int(x) for x in (item.pop("case_ids") or "").split(",") if x]
+            item["cases"]=rows(c,"SELECT id,title,status FROM hq_case WHERE id IN ("+",".join("?" for _ in ids)+") ORDER BY id",ids) if ids else []
+            item["interpretation"]="Exact normalized name match across cases; this is a review lead, not proof of shared identity."
+
+        central=rows(c,"""SELECT e.id entity_id,e.case_id,c.title case_title,e.entity_type,e.name,
+            count(l.id) degree
+            FROM hq_case_entity e JOIN hq_case c ON c.id=e.case_id
+            LEFT JOIN hq_case_entity_link l ON l.case_id=e.case_id AND (l.source_id=e.id OR l.target_id=e.id)
+            WHERE e.entity_type<>'case'
+            GROUP BY e.id ORDER BY degree DESC,e.name LIMIT 30""")
+        rel_labels=rows(c,"""SELECT label,count(*) relationship_count,
+            count(DISTINCT case_id) case_count
+            FROM hq_case_entity_link GROUP BY label
+            ORDER BY relationship_count DESC,label LIMIT 30""")
+        clusters=rows(c,"""SELECT a.case_id left_case_id,ca.title left_case,
+            b.case_id right_case_id,cb.title right_case,
+            a.entity_type,a.name matched_name
+            FROM hq_case_entity a JOIN hq_case_entity b
+              ON a.entity_type=b.entity_type AND lower(trim(a.name))=lower(trim(b.name))
+             AND a.case_id<b.case_id
+            JOIN hq_case ca ON ca.id=a.case_id
+            JOIN hq_case cb ON cb.id=b.case_id
+            WHERE a.entity_type IN ('character','vehicle','organization') AND trim(a.name)<>''
+            GROUP BY a.case_id,b.case_id,a.entity_type,lower(trim(a.name))
+            ORDER BY a.name LIMIT 100""")
+        timeline=rows(c,"""SELECT day, sum(cases_opened) cases_opened,
+            sum(case_updates) case_updates,sum(nodes_added) nodes_added,
+            sum(relationships_added) relationships_added,sum(evidence_uploaded) evidence_uploaded,
+            sum(custody_events) custody_events
+            FROM (
+                SELECT strftime('%Y-%m-%d',created,'unixepoch','+7 hours') day,1 cases_opened,
+                    0 case_updates,0 nodes_added,0 relationships_added,0 evidence_uploaded,0 custody_events
+                    FROM hq_case
+                UNION ALL
+                SELECT strftime('%Y-%m-%d',created,'unixepoch','+7 hours'),0,1,0,0,0,0 FROM hq_case_note
+                UNION ALL
+                SELECT strftime('%Y-%m-%d',created,'unixepoch','+7 hours'),0,0,1,0,0,0
+                    FROM hq_case_entity WHERE entity_type<>'case'
+                UNION ALL
+                SELECT strftime('%Y-%m-%d',created,'unixepoch','+7 hours'),0,0,0,1,0,0 FROM hq_case_entity_link
+                UNION ALL
+                SELECT strftime('%Y-%m-%d',created,'unixepoch','+7 hours'),0,0,0,0,1,0 FROM hq_evidence_file
+                UNION ALL
+                SELECT strftime('%Y-%m-%d',created,'unixepoch','+7 hours'),0,0,0,0,0,1 FROM hq_evidence_event
+            ) activity GROUP BY day ORDER BY day DESC LIMIT 180""")
+        busiest=rows(c,"""SELECT c.id case_id,c.title,c.status,c.created,c.updated,
+            (SELECT count(*) FROM hq_case_entity e WHERE e.case_id=c.id AND e.entity_type<>'case') entity_count,
+            (SELECT count(*) FROM hq_case_entity_link l WHERE l.case_id=c.id) relationship_count,
+            (SELECT count(*) FROM hq_evidence_file f WHERE f.case_id=c.id) evidence_count,
+            (SELECT count(*) FROM hq_case_note n WHERE n.case_id=c.id) update_count
+            FROM hq_case c ORDER BY (entity_count+relationship_count+evidence_count+update_count) DESC,c.updated DESC LIMIT 20""")
+        integrity_by_case=rows(c,"""SELECT c.id case_id,c.title,count(ev.id) integrity_failures
+            FROM hq_case c JOIN hq_evidence_event ev ON ev.case_id=c.id AND ev.action='integrity_failed'
+            GROUP BY c.id ORDER BY integrity_failures DESC,c.id""")
+        return reply({
+            "scope":"Fictional IC roleplay records only. Exact name matches are candidate overlaps and must be manually verified.",
+            "cases":case_totals,"graph":graph,"recurring_entities":recurring,
+            "most_connected_entities":central,"relationship_patterns":rel_labels,
+            "candidate_case_overlaps":clusters,"activity_timeline":timeline,
+            "most_active_cases":busiest,"recorded_integrity_failures_by_case":integrity_by_case,
+            "generated_at":now()
+        })

@@ -113,13 +113,11 @@ async def administer(guild, actor, action, data, level, onboarding, tickets, not
             if not (perms.view_channel and perms.send_messages and perms.embed_links):
                 raise LevelingError("Izin bot pada channel pengumuman belum lengkap.")
         level.store.configure(gid, toggle(data, "enabled"), toggle(data, "chat"),
-                              toggle(data, "voice"), channel.id if channel else None)
-        level.forget(gid)
+                              False, channel.id if channel else None)
     elif action == "leveling.exclude":
         level.require(guild)
         channel = resource(guild, data, "channel", discord.TextChannel)
         level.store.exclude(gid, channel.id, toggle(data, "excluded"))
-        level.sync_voice(guild)
     elif action == "welcome.save":
         onboarding.require(guild)
         enabled = toggle(data, "enabled")

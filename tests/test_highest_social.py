@@ -2,7 +2,7 @@ import os,tempfile,unittest
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.highest import router,init,bootstrap_admin
+from app.highest import router,init,bootstrap_admin,db
 from app.highest_ops import init as ops_init
 from app.highest_social import router as social,init as social_init
 class SocialTest(unittest.TestCase):
@@ -125,6 +125,21 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(self.post(self.v,"/social/activity/read-all",{}).status_code,200)
         self.assertEqual(self.get(self.v,"/social/activity").json()["unread_count"],0)
         self.assertEqual(self.get(self.a,f"/social/comments/clip/{cid}").status_code,200)
+    def test_pov_discussion_requires_published_parent_and_clip(self):
+        self.assertEqual(self.post(self.u,"/clip",{"title":"POV clip","url":"https://youtu.be/pov-comments"}).status_code,200)
+        clip_id=self.get(self.a,"/admin").json()["clips"][0]["id"]
+        self.assertEqual(self.post(self.a,f"/admin/clip/{clip_id}/published",{}).status_code,200)
+        moment_id=self.post(self.u,"/social/moment",{"title":"POV event","summary":"Public RP event"}).json()["id"]
+        self.assertEqual(self.post(self.a,f"/admin/social/moment/{moment_id}",{"approve":True}).status_code,200)
+        self.assertEqual(self.post(self.v,f"/social/moment/{moment_id}/pov",{"clip":clip_id,"label":"Viewer POV"}).status_code,200)
+        pov_id=self.get(self.a,"/admin/social").json()["povs"][0]["id"]
+        self.assertEqual(self.get(self.v,f"/social/comments/pov/{pov_id}").status_code,404)
+        self.assertEqual(self.post(self.a,f"/admin/social/pov/{pov_id}",{"approve":True}).status_code,200)
+        self.assertEqual(self.get(self.v,f"/social/comments/pov/{pov_id}").status_code,200)
+        with db() as c:
+            c.execute("UPDATE hq_moment SET state='removed' WHERE id=?",(moment_id,))
+        self.assertEqual(self.get(self.v,f"/social/comments/pov/{pov_id}").status_code,404)
+
     def test_creator_wiki_feed(self):
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://evil.example/a"}).status_code,400)
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://www.tiktok.com/@test"}).status_code,200)

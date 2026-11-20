@@ -108,8 +108,11 @@ class StoreTests(unittest.TestCase):
         self.chat()
         self.store.configure(1, False, True, False, None)
         self.assertIsNone(self.chat(BASE + 61, "Bincang komunitas saat jeda"))
-        self.store.configure(1, True, False, False, None)
+        self.store.configure(1, True, False, True, None)
+        self.assertFalse(self.store.config(1)["voice"])
         self.assertIsNone(self.chat(BASE + 122, "Bincang komunitas chat mati"))
+        with self.assertRaisesRegex(ValueError, "Only chat XP"):
+            self.store.award(1, 10, "X", "voice", BASE + 122)
         self.assertEqual(self.store.member(1, 10)["xp"], 20)
 
     def test_stable_tie_ranking_is_isolated_by_guild(self):

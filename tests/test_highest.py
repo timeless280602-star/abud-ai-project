@@ -29,12 +29,14 @@ class HighestTest(unittest.TestCase):
 
     def test_native_clip_upload_is_private_until_published(self):
         path="/highest/api"
-        png=b"\\x89PNG\\r\\n\\x1a\\n"+b"\\x00"*16
+        png=b"\x89PNG\r\n\x1a\n"+b"\x00"*16
         response=self.user.post(path+"/clip/upload",data={"title":"Native upload"},files={"file":("native.png",png,"image/png")})
         self.assertEqual(response.status_code,200,response.text)
         clip_id=response.json()["id"]
         self.assertEqual(self.user.get(path+"/media/"+str(clip_id)).status_code,200)
-        self.assertEqual(self.admin.get(path+"/media/"+str(clip_id)).status_code,404)
+        outsider=TestClient(self.admin.app,base_url="https://abud.web.id",headers={"Origin":"https://abud.web.id"})
+        self.assertEqual(outsider.post(path+"/register",json={"username":"outsider","display_name":"outsider","password":"long-test-password"}).status_code,200)
+        self.assertEqual(outsider.get(path+"/media/"+str(clip_id)).status_code,404)
         pending=self.admin.get(path+"/admin").json()["clips"]
         self.assertEqual(pending[0]["media_type"],"image/png")
         self.assertEqual(self.admin.post(path+f"/admin/clip/{clip_id}/published").status_code,200)

@@ -1304,7 +1304,7 @@ def executive_dashboard(r:Request):
         if "treasury" in allowed:
             posted=c.execute("SELECT coalesce(sum(amount),0) FROM hq_money WHERE state='posted'").fetchone()[0]
             pending=c.execute("SELECT count(*) FROM hq_money WHERE state='pending'").fetchone()[0]
-            flow=c.execute("SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense FROM hq_money WHERE state='posted' AND created>=?",(now()-30*86400,)).fetchone()
+            flow=c.execute("SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense FROM hq_money WHERE state='posted' AND transfer_ref IS NULL AND created>=?",(now()-30*86400,)).fetchone()
             data["sections"]["treasury"]={"balance":posted,"pending_transactions":pending,
                 "accounts":c.execute("SELECT count(*) FROM hq_treasury_account WHERE active=1").fetchone()[0],
                 "income_30d":flow["income"],"expense_30d":flow["expense"]}
@@ -1399,7 +1399,7 @@ def _financial_report_data(c,start,end):
         FROM hq_money WHERE state='posted' AND transfer_ref IS NULL AND created>=? AND created<?""",(begin,finish)).fetchone()
     prior=c.execute("""SELECT coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
-        FROM hq_money WHERE state='posted' AND created>=? AND created<?""",(previous_start,previous_finish)).fetchone()
+        FROM hq_money WHERE state='posted' AND transfer_ref IS NULL AND created>=? AND created<?""",(previous_start,previous_finish)).fetchone()
     by_division=rows(c,"""SELECT coalesce(r.name,'Unassigned') division,
         coalesce(sum(CASE WHEN m.amount>0 THEN m.amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN m.amount<0 THEN -m.amount ELSE 0 END),0) expense,count(*) transactions
@@ -1408,7 +1408,7 @@ def _financial_report_data(c,start,end):
         GROUP BY division ORDER BY division""",(begin,finish))
     by_category=rows(c,"""SELECT category,coalesce(sum(CASE WHEN amount>0 THEN amount ELSE 0 END),0) income,
         coalesce(sum(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) expense,count(*) transactions
-        FROM hq_money WHERE state='posted' AND created>=? AND created<?
+        FROM hq_money WHERE state='posted' AND transfer_ref IS NULL AND created>=? AND created<?
         GROUP BY category ORDER BY category""",(begin,finish))
     budgets=rows(c,"""SELECT period,division,category,amount FROM hq_financial_budget
         WHERE period>=? AND period<=? ORDER BY period,division,category""",(start,end))

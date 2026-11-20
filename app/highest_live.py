@@ -30,11 +30,20 @@ def check(s):
 
 def poll():
     with db() as c: streams=[dict(x) for x in c.execute("SELECT * FROM streamers")]
-    for s in streams:
-        try: status,url=check(s)
+    for stream in streams:
+        try: status,url=check(stream)
         except Exception: status,url="unknown",None
+        checked=int(time.time())
         with db() as c:
-            c.execute("UPDATE streamers SET status=?,checked=?,live_url=? WHERE id=?",(status,int(time.time()),url,s["id"]))
+            c.execute("BEGIN IMMEDIATE")
+            previous=c.execute("SELECT status FROM streamers WHERE id=?",(stream["id"],)).fetchone()
+            old_status=previous["status"] if previous else "unknown"
+            c.execute("UPDATE streamers SET status=?,checked=?,live_url=? WHERE id=?",(status,checked,url,stream["id"]))
+            if status=="live" and old_status!="live":
+                from app.highest_ops import notify
+                followers=[x["uid"] for x in c.execute("SELECT uid FROM hq_follows WHERE streamer=?",(stream["id"],))]
+                for uid in followers:
+                    notify(c,uid,"streamer_live",stream["name"]+" is live now","Your followed "+stream["platform"]+" streamer just started a live stream.",url or "/highest/","streamer-live:"+str(stream["id"])+":"+str(checked))
 def worker():
     while True:
         try: poll()

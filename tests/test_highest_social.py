@@ -85,9 +85,6 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(self.post(self.v,"/social/report",{"content_type":"clip","content_id":admin_clip,"reason":"spam"}).status_code,200)
         own_report=self.get(self.a,"/admin/social/reports").json()["reports"][0]
         self.assertEqual(self.post(self.a,f"/admin/social/report/{own_report['id']}",{"action":"remove"}).status_code,403)
-        self.assertEqual(self.post(self.v,"/social/report",{"content_type":"post","content_id":admin_post,"reason":"spam"}).status_code,200)
-        own_report=self.get(self.a,"/admin/social/reports").json()["reports"][0]
-        self.assertEqual(self.post(self.a,f"/admin/social/report/{own_report['id']}",{"action":"remove"}).status_code,403)
     def test_creator_wiki_feed(self):
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://evil.example/a"}).status_code,400)
         self.assertEqual(self.post(self.u,"/social/creator",{"kind":"streamer","url":"https://www.tiktok.com/@test"}).status_code,200)

@@ -6,6 +6,13 @@ const panel=(title)=>add(el("section",null,"panel"),el("h2",title));
 const button=(label,fn,secondary=false)=>{let b=el("button",label,secondary?"secondary":"");b.type="button";b.onclick=async()=>{b.disabled=true;try{await fn()}catch(e){showError(e)}finally{b.disabled=false}};return b};
 const link=(label,url)=>{let a=el("a",label);a.href=url;a.target="_blank";a.rel="noopener noreferrer";return a};
 async function api(path,body){let r=await fetch("/highest/api"+path,{credentials:"same-origin",cache:"no-store",...(body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})});let data=await r.json();if(!r.ok){const e=new Error(typeof data.detail==="string"?data.detail:"Invalid request");e.status=r.status;throw e}return data}
+
+async function uploadApi(path,data){
+ let response=await fetch("/highest/api"+path,{method:"POST",credentials:"same-origin",cache:"no-store",body:data});
+ let result=await response.json();
+ if(!response.ok){const error=new Error(typeof result.detail==="string"?result.detail:"Upload failed");error.status=response.status;throw error}
+ return result
+}
 function showError(e){if(streamSafe)return;let p=document.getElementById("notice");if(p)p.textContent=e.message;else app.prepend(el("p",e.message,"error"))}
 function form(fields,submit,fn){const f=el("form");const inputs={};for(const [key,label,type,opts,value] of fields){let l=el("label",label);let i=el(type==="select"?"select":type==="textarea"?"textarea":"input");i.name=key;i.required=type!=="optional"&&key!=="parent";if(type==="select"){for(const [val,txt] of opts){let o=el("option",txt);o.value=val;i.append(o)}}else if(type!=="textarea"){i.type=type==="password"?"password":type==="number"?"number":"text";if(type==="password"){i.minLength=12;i.maxLength=128;i.autocomplete=key==="confirm"?"new-password":"current-password"}if(key==="username")i.autocomplete="username"}if(value!=null)i.value=value;inputs[key]=i;l.append(i);f.append(l)}let b=el("button",submit);b.type="submit";f.append(b);f.onsubmit=async e=>{e.preventDefault();b.disabled=true;try{await fn(Object.fromEntries(Object.entries(inputs).map(([k,v])=>[k,v.value]))); }catch(err){showError(err)}finally{b.disabled=false}};return f}
 let streamSafe=false;try{streamSafe=sessionStorage.getItem("highest_stream_safe")==="1"}catch{};
@@ -107,7 +114,148 @@ assets:["Asset name","Vehicle / property / other","IC asset details and conditio
 documents:["Document title","SOP / policy / meeting minutes","Document text","Responsible division","Document reference",["draft","active","archived"]]};
 function recordForm(module,entry,level){let [title,category,detail,owner,reference,statuses]=recordLabels[module];let options=statuses.filter(s=>s!=="archived"||level==="approve"||entry?.status==="archived").map(s=>[s,s.replaceAll("_"," ")]);return form([field("title",title,"text",null,entry?.title),field("category",category,"text",null,entry?.category),field("detail",detail,"textarea",null,entry?.detail),field("owner",owner,"optional",null,entry?.owner),field("reference",reference,"optional",null,entry?.reference),field("status","Status","select",options,entry?.status)],entry?"Save new revision":"Create record",v=>postRefresh("/records/"+module+(entry?"/"+entry.id:""),{...v,version:entry?.version??null}))}
 async function recordUI(module,write,level){let d=await api("/records/"+module),p=panel(opsNames[module]);p.append(el("p","Fictional FiveM records only. Do not enter real-world private information.","muted"));if(write)p.append(recordForm(module,null,level));for(const r of d){let t=el("article",null,"tile"),details=el("div");add(t,el("h3",r.title),el("small",r.category+" · "+r.status+" · v"+r.version),el("p",r.detail),el("p","Owner: "+(r.owner||"—")+" · Reference: "+(r.reference||"—")),button("Revision history",async()=>{let data=await api("/records/"+module+"/"+r.id);details.replaceChildren();for(const old of data.revisions){let rev=el("section",null,"tile");add(rev,el("h3","Version "+old.version+" · "+dateFormat(old.created)),el("p",old.title+" · "+old.category+" · "+old.status),el("p",old.detail),el("small",(old.owner||"—")+" / "+(old.reference||"—")));details.append(rev)}},true),details);if(module==="documents"&&r.status==="active"){t.append(el("p","Acknowledged by "+r.ack_count+" members"));if(!r.acknowledged)t.append(button("Acknowledge this version",()=>postRefresh("/records/documents/"+r.id+"/ack",{})));else t.append(el("p","You have acknowledged this version.","muted"))}if(write&&(r.status!=="archived"||level==="approve")){let edit=el("details");edit.append(el("summary","Edit record"),recordForm(module,r,level));t.append(edit)}p.append(t)}return p}
-async function caseExtras(id,write){let data=await api("/case-extras/"+id),p=panel("IC case references & relationships");p.append(el("h3","Evidence references"),lines(data.evidence,e=>e.title+" · "+e.reference+" · "+e.detail),el("h3","Relationship board"));for(const r of data.relations){let row=el("div",null,"row");add(row,el("strong",r.left_name),el("span"," — "+r.label+" → "),el("strong",r.right_name));p.append(row)}if(write)p.append(form([field("title","Evidence title"),field("reference","In-game screenshot / VOD reference"),field("detail","IC notes","optional")],"Add evidence reference",v=>postRefresh("/case-extras/"+id+"/evidence",v)),form([field("left_name","Fictional character A"),field("right_name","Fictional character B"),field("label","Storyline relationship")],"Add relationship",v=>postRefresh("/case-extras/"+id+"/relation",v)));return p}
+async function caseExtras(id,write){
+ const p=panel("IC case workspace · Evidence & relationships");
+ const body=el("div");p.append(body);
+ const fileUrl=eid=>"/highest/api/case-extras/evidence/"+eid+"/file";
+ const refresh=async()=>{
+  const data=await api("/case-extras/"+id);body.replaceChildren();
+  const graphPanel=el("section",null,"case-graph-panel");
+  add(graphPanel,el("h3","Relationship intelligence map"),el("p","Case entities, vehicles, organizations and evidence are connected in one case-scoped graph. Drag nodes to arrange the map; positions are saved for the next visit.","muted"));
+  const graphWrap=el("div",null,"relationship-scroll"),canvas=el("div",null,"relationship-canvas");
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 1000 520");svg.setAttribute("preserveAspectRatio","none");svg.classList.add("relationship-edges");
+  canvas.append(svg);graphWrap.append(canvas);graphPanel.append(graphWrap);
+  const nodes=new Map(data.nodes.map(node=>[node.id,node])),edgeShapes=[];
+  const updateEdges=()=>{
+   for(const shape of edgeShapes){
+    const a=nodes.get(shape.link.source_id),b=nodes.get(shape.link.target_id);if(!a||!b)continue;
+    shape.line.setAttribute("x1",a.x);shape.line.setAttribute("y1",a.y);
+    shape.line.setAttribute("x2",b.x);shape.line.setAttribute("y2",b.y);
+    shape.label.setAttribute("x",(a.x+b.x)/2);shape.label.setAttribute("y",(a.y+b.y)/2-8);
+   }
+  };
+  for(const link of data.links){
+   const line=document.createElementNS("http://www.w3.org/2000/svg","line");
+   line.setAttribute("stroke","#b9975b");line.setAttribute("stroke-width","2");line.setAttribute("opacity","0.8");
+   const label=document.createElementNS("http://www.w3.org/2000/svg","text");
+   label.textContent=link.label;label.setAttribute("text-anchor","middle");label.setAttribute("font-size","12");label.setAttribute("fill","#e8d5ad");
+   svg.append(line,label);edgeShapes.push({link,line,label});
+  }
+  for(const node of data.nodes){
+   const card=el("div",node.name,"graph-node graph-node-"+node.entity_type);
+   card.style.left=(Number(node.x)/1000*100)+"%";card.style.top=Number(node.y)+"px";
+   add(card,el("small",node.entity_type.toUpperCase()),el("p",node.description||node.reference||"No additional details"));
+   if(node.reference&&node.description)card.append(el("small",node.reference));
+   if(write){
+    card.title="Drag to arrange this node";
+    let drag=null;card.style.touchAction="none";
+    card.onpointerdown=e=>{
+     if(e.button!==0)return;
+     drag={x:e.clientX,y:e.clientY,originX:Number(node.x),originY:Number(node.y)};
+     card.setPointerCapture(e.pointerId);e.preventDefault();
+    };
+    card.onpointermove=e=>{
+     if(!drag)return;
+     const rect=canvas.getBoundingClientRect();
+     node.x=Math.max(85,Math.min(915,drag.originX+(e.clientX-drag.x)/rect.width*1000));
+     node.y=Math.max(90,Math.min(475,drag.originY+(e.clientY-drag.y)));
+     card.style.left=(node.x/1000*100)+"%";card.style.top=node.y+"px";updateEdges();
+    };
+    card.onpointerup=async()=>{
+     if(!drag)return;drag=null;
+     try{await api("/case-extras/"+id+"/nodes/"+node.id+"/position",{x:Math.round(node.x),y:Math.round(node.y)})}
+     catch(error){showError(error)}
+    };
+    card.onpointercancel=()=>{drag=null};
+   }
+   canvas.append(card);
+  }
+  updateEdges();
+  if(!data.links.length)graphPanel.append(el("p","No entity relationships yet. Add nodes and connect them below.","muted"));
+  const legend=el("div",null,"graph-legend");
+  for(const type of [["case","Case"],["character","Character"],["vehicle","Vehicle"],["organization","Organization"],["evidence","Evidence"]])legend.append(el("span",type[1],"legend-"+type[0]));
+  graphPanel.append(legend);
+  if(write){
+   graphPanel.append(el("h3","Add case entity"));
+   graphPanel.append(form([
+    field("entity_type","Entity type","select",[["character","Character"],["vehicle","Vehicle"],["organization","Organization"]]),
+    field("name","Entity name"),field("description","IC description","textarea"),field("reference","In-game reference / identifier","optional")
+   ],"Add node",async values=>{await api("/case-extras/"+id+"/nodes",values);await refresh()}));
+   if(data.nodes.length>=2){
+    graphPanel.append(el("h3","Connect entities"));
+    const nodeOptions=data.nodes.map(node=>[String(node.id),node.entity_type.toUpperCase()+" · "+node.name]);
+    graphPanel.append(form([
+     field("source_id","From entity","select",nodeOptions),field("target_id","To entity","select",nodeOptions),field("label","Relationship / connection")
+    ],"Create relationship",async values=>{
+     if(values.source_id===values.target_id)throw Error("Choose two different entities");
+     await api("/case-extras/"+id+"/links",{source_id:n(values.source_id),target_id:n(values.target_id),label:values.label});
+     await refresh();
+    }));
+   }
+  }
+  body.append(graphPanel);
+  const evidencePanel=panel("Evidence Vault");
+  evidencePanel.append(el("p","Secure case-scoped storage for PDF and image evidence. Files are limited to 15 MB. Each upload receives a SHA-256 fingerprint; every upload, preview, download and integrity failure is recorded in a hash-linked custody trail.","muted"));
+  if(write){
+   const uploadForm=el("form",null,"evidence-upload-form");
+   const addField=(label,control)=>{const wrap=el("label",label);wrap.append(control);uploadForm.append(wrap);return control};
+   const title=addField("Evidence title",el("input"));
+   title.name="title";title.required=true;title.maxLength=120;title.placeholder="e.g. Vehicle photo — east entrance";
+   const category=el("select");category.name="category";
+   for(const pair of [["document","Document / PDF"],["photo","Photo / image"],["other","Other supported file"]]){const option=el("option",pair[1]);option.value=pair[0];category.append(option)}
+   addField("Evidence category",category);
+   const related=el("select");related.name="related_entity_id";
+   const empty=el("option","No related entity");empty.value="";related.append(empty);
+   for(const node of data.nodes.filter(x=>x.entity_type!=="case"&&x.entity_type!=="evidence")){
+    const option=el("option",node.entity_type.toUpperCase()+" · "+node.name);option.value=String(node.id);related.append(option);
+   }
+   addField("Link evidence to an entity (optional)",related);
+   const detail=el("textarea");detail.name="detail";detail.maxLength=2000;detail.rows=3;detail.placeholder="Source, context and IC notes";
+   addField("Evidence notes",detail);
+   const file=el("input");file.type="file";file.name="file";file.required=true;file.accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp";
+   addField("File · PDF / PNG / JPG / WEBP · max 15 MB",file);
+   const submit=el("button","Upload evidence");submit.type="submit";uploadForm.append(submit);
+   uploadForm.onsubmit=async event=>{
+    event.preventDefault();submit.disabled=true;
+    try{
+     if(!file.files||!file.files[0])throw Error("Choose an evidence file first");
+     if(file.files[0].size>15*1024*1024)throw Error("Evidence files are limited to 15 MB");
+     const payload=new FormData();payload.append("title",title.value);payload.append("category",category.value);
+     payload.append("related_entity_id",related.value);payload.append("detail",detail.value);payload.append("file",file.files[0]);
+     await uploadApi("/case-extras/"+id+"/files",payload);await refresh();
+    }catch(error){showError(error)}finally{submit.disabled=false}
+   };
+   evidencePanel.append(uploadForm);
+  }
+  if(!data.files.length)evidencePanel.append(el("p","No uploaded evidence files yet.","muted"));
+  for(const file of data.files){
+   const card=el("article",null,"tile"),size=(file.size/1024/1024).toFixed(2)+" MB";
+   add(card,el("h3",file.title),el("small",file.original_filename+" · "+file.category.toUpperCase()+" · "+size),
+    el("p","Uploaded by "+(file.uploader||"Unknown")+" · "+dateFormat(file.created)),
+    el("p",file.detail||"No additional notes"),el("small","SHA-256 · "+file.sha256),
+    el("small","Linked entity · "+(file.related_name||"Not linked")+" · "+file.event_count+" custody events"));
+   if(file.content_type.startsWith("image/")){
+    const image=el("img");image.src=fileUrl(file.id);image.alt=file.title;image.loading="lazy";image.className="evidence-preview";card.append(image);
+   }
+   const actions=el("div",null,"row");
+   const download=el("a","Download original");download.href=fileUrl(file.id)+"?download=true";download.download=file.original_filename;download.className="button";
+   actions.append(download,button("Chain of custody",async()=>{
+    const trail=await api("/case-extras/evidence/"+file.id+"/custody");
+    const details=el("div",null,"custody-trail");
+    add(details,el("strong",trail.chain_valid?"Hash chain verified":"WARNING · Hash chain invalid"),el("p",trail.events.length+" recorded events"));
+    for(const item of trail.events)add(details,el("p",dateFormat(item.created)+" · "+item.actor_name+" · "+item.action.toUpperCase()),el("small","Event hash · "+item.event_hash));
+    card.append(details);
+   },true));
+   card.append(actions);evidencePanel.append(card);
+  }
+  body.append(evidencePanel);
+  const refs=panel("Legacy evidence references");refs.append(lines(data.evidence,e=>e.title+" · "+e.reference+" · "+e.detail));body.append(refs);
+  const oldRelations=panel("Legacy relationship notes");oldRelations.append(lines(data.relations,r=>r.left_name+" — "+r.label+" → "+r.right_name));body.append(oldRelations);
+ };
+ await refresh();return p;
+}
+
 async function approvalUI(){let d=await api("/approval-center"),p=panel("Approval Center");p.append(el("h3","Treasury requests awaiting your review"));for(const r of d.treasury){let t=el("article",null,"tile");add(t,el("h3",moneyFormat(r.amount)+" · "+r.category),el("p",r.note),button("Approve",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:true})),button("Reject",()=>postRefresh("/ops/treasury/"+r.id+"/review",{approve:false}),true));p.append(t)}if(!d.treasury.length)p.append(el("p","No treasury requests available for your review.","muted"));if(me.admin){p.append(el("p",d.membership.length+" membership requests · "+d.clips.length+" clips awaiting moderation"),lines(Object.entries(d.community),x=>x[0]+": "+x[1]),button("Open admin queues",()=>switchView("admin"),true))}return p}
 function safeScreen(){generation++;me=null;let p=panel("STREAMER MODE");add(p,el("h1","THE HIGHEST HQ"),el("p","Protected display · Internal workspace hidden"),el("p","No HQ records are loaded into this screen. This does not control OBS or other browser tabs.","muted"),button("Exit Streamer Mode",()=>{if(confirm("Private HQ information may become visible. Exit safe display?"))setStreamSafe(false)},true));app.replaceChildren(p)}
 function setStreamSafe(enabled){streamSafe=enabled;try{sessionStorage.setItem("highest_stream_safe",enabled?"1":"0")}catch{};if(enabled)safeScreen();else{view="community";history.replaceState(null,"","/highest/community/");boot()}}

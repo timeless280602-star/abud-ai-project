@@ -1,7 +1,6 @@
 name: Highest HQ checks
 on:
   pull_request:
-    paths: ['app/highest*','app/highest_web/**','tests/test_highest*.py','frontend/**','app/main.py']
 permissions:
   contents: read
 jobs:

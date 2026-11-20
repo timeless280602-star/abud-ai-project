@@ -2,6 +2,7 @@
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from app.highest_ops import db, notify
 
 _started = False
@@ -46,7 +47,7 @@ def dispatch_due_reminders():
                     (event_id,version,uid,dispatched_at) VALUES(?,?,?,?)""",
                     (event["id"],event["version"],uid,int(current.timestamp())))
                 if inserted.rowcount:
-                    body = event["category"] + " · " + start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                    body = event["category"] + " · " + start.astimezone(ZoneInfo("Asia/Jakarta")).strftime("%d %b %Y %H:%M WIB")
                     if event["location"]:
                         body += " · " + event["location"]
                     if event["division"]:

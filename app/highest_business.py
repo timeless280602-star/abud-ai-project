@@ -26,6 +26,7 @@ def init():
             if name not in line_columns: c.execute(f"ALTER TABLE hq_order_line ADD COLUMN {name} {definition}")
         c.execute("UPDATE hq_order SET completed_at=updated WHERE status='completed' AND completed_at IS NULL")
         c.execute("UPDATE hq_order SET discount_requested_amount=discount_amount WHERE discount_requested_amount=0 AND discount_amount>0")
+        c.execute("UPDATE hq_order SET discount_state='none' WHERE discount_amount=0 AND discount_requested_amount=0 AND discount_state='approved'")
         c.execute("UPDATE hq_order_line SET requested_discount_amount=discount_amount WHERE requested_discount_amount=0 AND discount_amount>0")
         c.execute("UPDATE hq_order SET legacy_hidden=1,status='pending' WHERE status='cancelled'")
         c.execute("UPDATE hq_order SET status='pending' WHERE status IN ('confirmed','processing')")

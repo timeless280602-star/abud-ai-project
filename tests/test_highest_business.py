@@ -190,7 +190,7 @@ class BusinessTest(unittest.TestCase):
         self.assertEqual(self.post(self.m,f"/business/orders/{oid}/discount-review",{"approve":False,"note":"Exceeds approved promotion budget"}).status_code,200)
         order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
         self.assertEqual((order["discount_state"],order["discount_amount"],order["requested_discount_amount"],order["total"]),("rejected",0,20,105))
-        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":1,"status":"ready"}).status_code,200)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"ready"}).status_code,200)
 
     def test_discount_requires_reason_and_policy_admin_is_protected(self):
         self.assertEqual(self.get(self.u,"/admin/discount-policies").status_code,403)

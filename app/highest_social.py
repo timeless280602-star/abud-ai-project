@@ -58,8 +58,8 @@ def social(r:Request):
     with db() as c:
         moments=rows(c,"SELECT m.id,title,summary,spoiler,created,u.display_name FROM hq_moment m JOIN users u ON m.uid=u.id WHERE m.state='published' ORDER BY m.id DESC LIMIT 100")
         for m in moments:
-            m["povs"]=rows(c,"SELECT p.id,p.label,cl.title,cl.url,u.display_name FROM hq_pov p JOIN clips cl ON p.clip=cl.id JOIN users u ON cl.uid=u.id WHERE p.moment=? AND p.state='published' AND cl.state='published' ORDER BY p.id",(m["id"],))
-        wiki=rows(c,"SELECT id,kind,title,body,spoiler,created FROM hq_wiki WHERE state='published' ORDER BY id DESC LIMIT 100")
+            m["povs"]=rows(c,"SELECT p.id,p.label,cl.title,cl.url,u.display_name,cu.display_name clip_owner FROM hq_pov p JOIN clips cl ON p.clip=cl.id JOIN users u ON p.uid=u.id JOIN users cu ON cl.uid=cu.id WHERE p.moment=? AND p.state='published' AND cl.state='published' ORDER BY p.id",(m["id"],))
+        wiki=rows(c,"SELECT w.id,w.kind,w.title,w.body,w.spoiler,w.created,u.display_name FROM hq_wiki w JOIN users u ON w.uid=u.id WHERE w.state='published' ORDER BY id DESC LIMIT 100")
         posts=rows(c,"SELECT p.id,p.body,p.category,p.spoiler,p.created,u.display_name FROM hq_posts p JOIN users u ON p.uid=u.id WHERE p.state='published' ORDER BY p.id DESC LIMIT 100")
         clips=rows(c,"""SELECT cl.id,cl.title,cl.url,u.display_name,
         (SELECT count(*) FROM hq_clip_likes l WHERE l.clip=cl.id) likes,
@@ -143,7 +143,7 @@ def follow(sid:int,p:Toggle,r:Request):
 def moderation(r:Request):
     current(r,admin=True)
     with db() as c:
-        return reply(dict(creators=rows(c,"SELECT h.*,u.username FROM hq_creator h JOIN users u ON h.uid=u.id WHERE status='pending'"),moments=rows(c,"SELECT * FROM hq_moment WHERE state='pending'"),povs=rows(c,"SELECT p.*,m.title moment_title,cl.title clip_title,cl.url FROM hq_pov p JOIN hq_moment m ON p.moment=m.id JOIN clips cl ON p.clip=cl.id WHERE p.state='pending'"),wiki=rows(c,"SELECT * FROM hq_wiki WHERE state='pending'"),posts=rows(c,"SELECT * FROM hq_posts WHERE state='pending'")))
+        return reply(dict(creators=rows(c,"SELECT h.*,u.username,u.display_name FROM hq_creator h JOIN users u ON h.uid=u.id WHERE h.status='pending'"),moments=rows(c,"SELECT m.*,u.username,u.display_name FROM hq_moment m JOIN users u ON m.uid=u.id WHERE m.state='pending'"),povs=rows(c,"SELECT p.*,m.title moment_title,cl.title clip_title,cl.url,pu.username,pu.display_name,cu.display_name clip_owner FROM hq_pov p JOIN hq_moment m ON p.moment=m.id JOIN clips cl ON p.clip=cl.id JOIN users pu ON p.uid=pu.id JOIN users cu ON cl.uid=cu.id WHERE p.state='pending'"),wiki=rows(c,"SELECT w.*,u.username,u.display_name FROM hq_wiki w JOIN users u ON w.uid=u.id WHERE w.state='pending'"),posts=rows(c,"SELECT p.*,u.username,u.display_name FROM hq_posts p JOIN users u ON p.uid=u.id WHERE p.state='pending'")))
 @router.post("/admin/social/creator/{uid}/{kind}")
 def review_creator(uid:int,kind:str,p:Review,r:Request):
     origin(r); u=current(r,admin=True)

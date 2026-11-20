@@ -1319,18 +1319,20 @@ def executive_dashboard(r:Request):
                 "retired":c.execute("SELECT count(*) FROM hq_asset WHERE status='retired'").fetchone()[0],
                 "acquisition_cost":c.execute("SELECT coalesce(sum(purchase_cost),0) FROM hq_asset WHERE status<>'retired'").fetchone()[0]}
         if "operations" in allowed:
-            data["sections"]["operations"]={"upcoming":c.execute("SELECT count(*) FROM hq_operation_event WHERE status IN ('planned','in_progress') AND ends_at>=datetime('now')").fetchone()[0],
+            data["sections"]["operations"]={"upcoming":c.execute("SELECT count(*) FROM hq_operation_event WHERE status IN ('planned','in_progress') AND datetime(ends_at)>=datetime('now')").fetchone()[0],
                 "in_progress":c.execute("SELECT count(*) FROM hq_operation_event WHERE status='in_progress'").fetchone()[0],
                 "completed":c.execute("SELECT count(*) FROM hq_operation_event WHERE status='completed'").fetchone()[0],
                 "recent":rows(c,"SELECT id,title,category,division,owner,starts_at,ends_at,status FROM hq_operation_event WHERE status NOT IN ('cancelled','archived') ORDER BY starts_at DESC LIMIT 5")}
         if "cases" in allowed:
+            evidence_ready=all(c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone()
+                for table in ("hq_evidence_file","hq_evidence_event"))
             data["sections"]["cases"]={"total":c.execute("SELECT count(*) FROM hq_case").fetchone()[0],
                 "open":c.execute("SELECT count(*) FROM hq_case WHERE status='open'").fetchone()[0],
                 "review":c.execute("SELECT count(*) FROM hq_case WHERE status='review'").fetchone()[0],
                 "closed":c.execute("SELECT count(*) FROM hq_case WHERE status='closed'").fetchone()[0],
-                "evidence_files":c.execute("SELECT count(*) FROM hq_evidence_file").fetchone()[0],
-                "evidence_events":c.execute("SELECT count(*) FROM hq_evidence_event").fetchone()[0],
-                "integrity_failures":c.execute("SELECT count(*) FROM hq_evidence_event WHERE action='integrity_failed'").fetchone()[0]}
+                "evidence_files":c.execute("SELECT count(*) FROM hq_evidence_file").fetchone()[0] if evidence_ready else 0,
+                "evidence_events":c.execute("SELECT count(*) FROM hq_evidence_event").fetchone()[0] if evidence_ready else 0,
+                "integrity_failures":c.execute("SELECT count(*) FROM hq_evidence_event WHERE action='integrity_failed'").fetchone()[0] if evidence_ready else 0}
         if "business_analytics" in allowed:
             data["sections"]["business_analytics"]={"available":True}
         if u["admin"]:

@@ -205,7 +205,11 @@ MAX_EVIDENCE_BYTES=15*1024*1024
 EVIDENCE_TYPES={".pdf":"application/pdf",".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".webp":"image/webp"}
 def evidence_root():
     default_db=os.getenv("HIGHEST_DATABASE_PATH",str(Path(os.getenv("ABUD_DATABASE_PATH","/app/data/abud_memory.db")).parent/"highest.db"))
-    return Path(os.getenv("HIGHEST_EVIDENCE_PATH",str(Path(default_db).parent/"highest_evidence")))
+    root=Path(os.getenv("HIGHEST_EVIDENCE_PATH",str(Path(default_db).parent/"highest_evidence"))).resolve()
+    public_root=(Path(__file__).parent/"highest_web").resolve()
+    if root==public_root or public_root in root.parents:
+        fail(500,"Evidence storage must be outside public web assets")
+    return root
 def detect_evidence_type(data):
     if data.startswith(b"%PDF-"): return "application/pdf"
     if data.startswith(b"\x89PNG\r\n\x1a\n"): return "image/png"
@@ -328,6 +332,9 @@ async def upload_case_evidence(cid:int,r:Request,file:UploadFile=File(...),title
     extension=Path(raw_name).suffix.lower()
     expected=EVIDENCE_TYPES.get(extension)
     if not expected: fail(400,"Only PDF, PNG, JPG and WEBP evidence files are accepted")
+    if file.size is not None and file.size>MAX_EVIDENCE_BYTES:
+        await file.close()
+        fail(413,"Evidence files are limited to 15 MB")
     content=await file.read(MAX_EVIDENCE_BYTES+1)
     await file.close()
     if not content: fail(400,"Evidence file is empty")
@@ -338,18 +345,23 @@ async def upload_case_evidence(cid:int,r:Request,file:UploadFile=File(...),title
     sha=hashlib.sha256(content).hexdigest()
     stored=uuid.uuid4().hex+extension
     root=evidence_root()
-    root.mkdir(parents=True,exist_ok=True)
+    root.mkdir(mode=0o700,parents=True,exist_ok=True)
+    os.chmod(root,0o700)
     target=(root/stored).resolve()
     if target.parent!=root.resolve(): fail(400,"Invalid evidence storage path")
     try:
         with target.open("xb") as output: output.write(content)
+        os.chmod(target,0o600)
         with db() as c:
             c.execute("BEGIN IMMEDIATE");u=privilege(c,r,"cases","write");check_case(c,cid)
             if related_id is not None and not c.execute("SELECT 1 FROM hq_case_entity WHERE id=? AND case_id=? AND entity_type<>'case'",(related_id,cid)).fetchone():
                 fail(404,"Related entity not found in this case")
             x,y=evidence_node_position(c,cid)
+            node_name=title
+            if c.execute("SELECT 1 FROM hq_case_entity WHERE case_id=? AND entity_type='evidence' AND name=?",(cid,node_name)).fetchone():
+                node_name=title[:86]+" · "+stored[:8]
             entity_id=c.execute("""INSERT INTO hq_case_entity(case_id,entity_type,name,description,reference,x,y,actor,created,updated)
-                VALUES(?,'evidence',?,?,?,?,?,?,?,?)""",(cid,title,detail,"SHA-256 "+sha[:16],x,y,u["id"],now(),now())).lastrowid
+                VALUES(?,'evidence',?,?,?,?,?,?,?,?)""",(cid,node_name,detail,"SHA-256 "+sha[:16],x,y,u["id"],now(),now())).lastrowid
             file_id=c.execute("""INSERT INTO hq_evidence_file(case_id,entity_id,related_entity_id,title,category,detail,original_filename,
                 stored_name,content_type,size,sha256,actor,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (cid,entity_id,related_id,title,category,detail,original,stored,actual,len(content),sha,u["id"],now())).lastrowid

@@ -243,7 +243,7 @@ async function caseExtras(id,write){
    actions.append(download,button("Chain of custody",async()=>{
     const trail=await api("/case-extras/evidence/"+file.id+"/custody");
     const details=el("div",null,"custody-trail");
-    add(details,el("strong",trail.chain_valid?"Hash chain verified":"WARNING · Hash chain invalid"),el("p",trail.events.length+" recorded events"));
+    add(details,el("strong",trail.chain_valid?"Custody log hash chain valid":"WARNING · Custody log hash chain invalid"),el("p",trail.events.length+" recorded events"));
     for(const item of trail.events)add(details,el("p",dateFormat(item.created)+" · "+item.actor_name+" · "+item.action.toUpperCase()),el("small","Event hash · "+item.event_hash));
     card.append(details);
    },true));

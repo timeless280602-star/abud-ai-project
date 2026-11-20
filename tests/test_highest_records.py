@@ -1,4 +1,4 @@
-import os,tempfile,unittest,hashlib
+import os,tempfile,unittest,hashlib,stat
 from pathlib import Path
 from unittest.mock import patch
 from fastapi import FastAPI
@@ -85,6 +85,19 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual(len(data["files"]),1)
         self.assertEqual(data["files"][0]["related_name"],"Alex Morgan")
         self.assertEqual(next(n for n in data["nodes"] if n["id"]==evidence["entity_id"])["entity_type"],"evidence")
+        duplicate=self.u.post(f"/highest/api/case-extras/{cid}/files",
+            data={"title":"Interview record","category":"document","detail":"Second file with the same display title","related_entity_id":str(person)},
+            files={"file":("interview-copy.pdf",pdf,"application/pdf")})
+        self.assertEqual(duplicate.status_code,200,duplicate.text)
+        storage=Path(self.tmp.name)/"evidence"
+        with __import__("app.highest_records",fromlist=["evidence_root"]).evidence_root().open("a") if False else open(os.devnull,"w") as _unused:
+            pass
+        from app.highest_records import evidence_root
+        self.assertEqual(stat.S_IMODE(storage.stat().st_mode),0o700)
+        from app.highest import db
+        with db() as c:
+            stored_name=c.execute("SELECT stored_name FROM hq_evidence_file WHERE id=?",(evidence["id"],)).fetchone()["stored_name"]
+        self.assertEqual(stat.S_IMODE((storage/stored_name).stat().st_mode),0o600)
         self.assertTrue(any(x["source_id"]==evidence["entity_id"] and x["target_id"]==person for x in data["links"]))
         download=self.u.get(f"/highest/api/case-extras/evidence/{evidence['id']}/file?download=true")
         self.assertEqual(download.status_code,200)
@@ -98,10 +111,7 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual(self.u.post(f"/highest/api/case-extras/{cid}/files",
             data={"title":"Bad extension","category":"document"},
             files={"file":("not-a-pdf.pdf",b"not a PDF","application/pdf")}).status_code,400)
-        from app.highest import db
-        with db() as c:
-            stored=c.execute("SELECT stored_name FROM hq_evidence_file WHERE id=?",(evidence["id"],)).fetchone()["stored_name"]
-        (Path(self.tmp.name)/"evidence"/stored).write_bytes(b"tampered")
+        (Path(self.tmp.name)/"evidence"/stored_name).write_bytes(b"tampered")
         blocked=self.u.get(f"/highest/api/case-extras/evidence/{evidence['id']}/file")
         self.assertEqual(blocked.status_code,409)
         final_custody=self.get(self.u,f"/case-extras/evidence/{evidence['id']}/custody").json()

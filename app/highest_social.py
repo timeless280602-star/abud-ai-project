@@ -130,7 +130,7 @@ def creator(p:Creator,r:Request):
 class ChannelVerificationStart(BaseModel):
     kind:str
     platform:str
-    channel:str=Field(min_length=1,max_length=100)
+    channel:str=Field(default="",max_length=100)
     profile_url:str=Field(min_length=8,max_length=500)
 
 def _channel_target(platform,channel,profile_url):

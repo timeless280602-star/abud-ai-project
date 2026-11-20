@@ -116,7 +116,9 @@ async function assetsUI(write,level){
  p.append(el("p","Central register for organizational vehicles, property and equipment. Acquisition and disposal require independent approval; assignments, maintenance and every lifecycle change are recorded.","muted"));
  const counts={};for(const a of d.assets)counts[a.status]=(counts[a.status]||0)+1;
  const summary=el("div",null,"grid");
- for(const [key,label] of [["available","Available"],["assigned","Assigned"],["maintenance","Maintenance"],["retired","Retired"]])summary.append(el("article",null,"tile"),el("small",label),el("h2",String(counts[key]||0)));
+ for(const [key,label] of [["available","Available"],["assigned","Assigned"],["maintenance","Maintenance"],["retired","Retired"]]){
+  const tile=el("article",null,"tile");tile.append(el("small",label),el("h2",String(counts[key]||0)));summary.append(tile);
+ }
  p.append(summary);
  const active=d.assets.filter(a=>a.status!=="retired"),assetOptions=options(active.map(a=>({id:a.id,name:a.asset_tag+" · "+a.name})));
  if(write){

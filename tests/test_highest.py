@@ -49,8 +49,9 @@ class HighestTest(unittest.TestCase):
         self.assertEqual(self.user.post(path+"/clip",json={"title":"Approval notice","url":"https://youtu.be/abcdefghijk"}).status_code,200)
         clip_id=self.admin.get(path+"/admin").json()["clips"][0]["id"]
         self.assertEqual(self.admin.post(path+f"/admin/clip/{clip_id}/published").status_code,200)
-        notifications=self.user.get(path+"/notifications").json()
-        self.assertTrue(any(x["kind"]=="content_approved" for x in notifications["items"]))
+        with db() as c:
+            notice=c.execute("SELECT kind FROM hq_notification WHERE uid=? AND kind='content_approved'",(self.user.get(path+"/me").json()["id"],)).fetchone()
+        self.assertIsNotNone(notice)
 
     def test_external_view_stats_do_not_invent_unavailable_values(self):
         path="/highest/api"

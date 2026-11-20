@@ -31,7 +31,7 @@ class SocialTest(unittest.TestCase):
         response=self.u.get(f"/highest/api/social/post/{post_id}/media")
         self.assertEqual(response.status_code,500)
         with db() as c:
-            event=c.execute("SELECT 1 FROM audit_log WHERE action='social.post.media.integrity_failure' AND target=?",(str(post_id),)).fetchone()
+            event=c.execute("SELECT 1 FROM audit WHERE action='social.post.media.integrity_failure' AND target=?",(str(post_id),)).fetchone()
         self.assertIsNotNone(event)
 
     def test_moderation_and_pov(self):

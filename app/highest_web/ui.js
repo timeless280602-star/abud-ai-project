@@ -22,7 +22,7 @@ function switchView(next){view=next;history.replaceState(null,"","/highest/"+nex
 function heading(){let box=el("section",null,"hero");add(box,el("small","THE OFFICIAL HEADQUARTERS"),el("h1",view==="internal"?"Internal HQ":view==="admin"?"Administration Center":"Beyond the hierarchy."),el("p","Welcome, "+me.display_name+" · Membership: "+me.status));let nav=el("nav");nav.append(button("Community Hub",()=>switchView("community"),true));if(me.status==="approved")nav.append(button("Internal HQ",()=>switchView("internal"),true));if(me.admin)nav.append(button("Admin Center",()=>switchView("admin"),true));nav.append(button("Streamer Mode",()=>setStreamSafe(true),true));nav.append(button("Sign out",async()=>{await api("/logout",{});location.href="/highest/"},true));box.append(nav);return box}
 async function community(){let [d,social]=await Promise.all([api("/community"),api("/social")]);let root=el("div"),live=panel("Live Stream Center"),cards=el("div",null,"grid");let order={live:0,offline:1,unknown:2};d.streamers.sort((a,b)=>order[a.status]-order[b.status]);for(const s of d.streamers){let t=el("article",null,"tile");add(t,el("small",s.platform.toUpperCase()),el("h3",s.name),el("p",s.status==="unknown"?"● STATUS UNAVAILABLE":"● "+s.status.toUpperCase(),"status "+s.status),link(s.status==="live"?"Watch now ↗":"Open channel ↗",s.url),el("p"),button(social.follows.includes(s.id)?"Following":"Follow",()=>postRefresh("/social/follow/"+s.id,{enabled:!social.follows.includes(s.id)}),true));cards.append(t)}if(!cards.children.length)cards.append(el("p","Streamer directory is waiting for admin setup.","muted"));live.append(cards);root.append(live);
 let member=panel("The Highest Membership");member.append(el("p","Status: "+me.status));if(me.status==="pending")member.append(el("p","Waiting for administrator approval. Your account remains community-only.","muted"));else if(me.status!=="approved")member.append(form([["character","Nama karakter IC","text"],["callsign","Callsign (opsional)","optional"],["requested","Jabatan IC (opsional)","optional"]],"Apply as HT Member",async d=>{await api("/apply",d);await boot()}));root.append(member);
-let clips=panel("Clip Center");clips.append(form([["title","Clip title","text"],["url","YouTube or TikTok link","text"]],"Submit for review",async d=>{await api("/clip",d);alert("Clip submitted for moderator review.");await render()}));let list=el("div",null,"grid");for(const c of social.clips){let t=el("article",null,"tile");add(t,el("h3",c.title),el("small","By "+c.display_name),el("p"),link("Watch clip ↗",c.url),el("p"),button((c.liked?"Unlike":"Like")+" · "+c.likes,()=>postRefresh("/social/clip/"+c.id+"/like",{enabled:!c.liked}),true),button(c.bookmarked?"Saved":"Bookmark",()=>postRefresh("/social/clip/"+c.id+"/bookmark",{enabled:!c.bookmarked}),true),reportControl("clip",c.id));list.append(t)}if(!list.children.length)list.append(el("p","No published clips yet.","muted"));clips.append(list);root.append(clips,await socialPanel(social));return root}
+let clips=panel("Clip Center");clips.append(form([["title","Clip title","text"],["url","YouTube or TikTok link","text"]],"Submit for review",async d=>{await api("/clip",d);alert("Clip submitted for moderator review.");await render()}));let list=el("div",null,"grid");for(const c of social.clips){let t=el("article",null,"tile");add(t,el("h3",c.title),el("small","By "+c.display_name),el("p"),link("Watch clip ↗",c.url),el("p"),button((c.liked?"Unlike":"Like")+" · "+c.likes,()=>postRefresh("/social/clip/"+c.id+"/like",{enabled:!c.liked}),true),button(c.bookmarked?"Saved":"Bookmark",()=>postRefresh("/social/clip/"+c.id+"/bookmark",{enabled:!c.bookmarked}),true),reportControl("clip",c.id),commentWidget("clip",c.id));list.append(t)}if(!list.children.length)list.append(el("p","No published clips yet.","muted"));clips.append(list);root.append(clips,await socialPanel(social));return root}
 function tree(ranks,parent=null,seen=new Set()){let t=el("div",null,"tree");for(const r of ranks.filter(r=>r.parent===parent)){if(seen.has(r.id))continue;seen.add(r.id);t.append(el("p",r.name+" · "+r.position),tree(ranks,r.id,seen))}return t}
 let notificationPoller=null;
 async function notificationPanel(){
@@ -458,19 +458,70 @@ function intelligenceAnalyticsPanel(data){
 async function casesUI(write){let d=await api("/ops/cases"),intelligence=await api("/case-intelligence/analytics"),p=panel("Roleplay intelligence & cases");p.append(el("p","IC fictional character information only. Never enter real-world private information.","muted"),intelligenceAnalyticsPanel(intelligence));if(write)p.append(form([field("name","Case title"),field("summary","IC case summary")],"Open case",v=>postRefresh("/ops/cases",v)));for(const c of d){let t=el("article",null,"tile"),details=el("div");add(t,el("h3","TH-"+String(c.id).padStart(4,"0")+" · "+c.title),el("small",c.status+" · "+dateFormat(c.updated)),el("p",c.summary),button("Open timeline",async()=>{let data=await api("/ops/cases/"+c.id);details.replaceChildren(lines(data.notes,n=>dateFormat(n.created)+" · "+n.username+" · "+n.note),await caseExtras(c.id,write));if(write)details.append(form([field("note","IC update / evidence reference"),field("status","Status","select",[["open","Open"],["review","Under review"],["closed","Closed"]],c.status)],"Save case update",v=>postRefresh("/ops/cases/"+c.id,v)))}),details);p.append(t)}return p}
 
 let socialTab="moments";
-const socialTabs={moments:"Multi-POV Moments",studio:"Creator Studio",wiki:"Lore & Character Wiki",feed:"Community Feed",leaders:"Leaderboard"};
+const socialTabs={moments:"Multi-POV Moments",studio:"Creator Studio",wiki:"Lore & Character Wiki",feed:"Community Feed",leaders:"Leaderboard",activity:"Activity"};
 const spoilerChoices=[["false","No"],["true","Yes — spoiler"]];
 const bool=v=>v==="true";
 function spoilerBlock(hidden,content){if(!hidden)return content;let box=el("div");let detail=el("details");detail.append(el("summary","Spoiler — click to reveal"),content);box.append(detail);return box}
 async function socialPanel(d){let p=panel("Community & Creator Ecosystem"),nav=el("nav");for(const [k,name] of Object.entries(socialTabs))nav.append(button(name,async()=>{socialTab=k;await render()},k!==socialTab));p.append(nav);
 if(socialTab==="moments"){
 p.append(form([field("title","Moment title"),field("summary","Published RP event summary"),field("spoiler","Contains story spoilers?","select",spoilerChoices)],"Submit moment for review",async v=>{await api("/social/moment",{...v,spoiler:bool(v.spoiler)});alert("Submitted for review. Add POVs from Creator Studio.");await render()}));
-for(const m of d.moments){let t=el("article",null,"tile"),c=el("div");t.append(el("h3",m.spoiler?"Spoiler moment":m.title));add(c,el("h3",m.title),el("p",m.summary),el("small","By "+m.display_name+" · "+dateFormat(m.created)));for(const pov of m.povs){let item=el("div",null,"community-content-item");add(item,el("p",pov.label+" · submitted by "+pov.display_name+" · clip by "+pov.clip_owner),link(pov.title+" ↗",pov.url),reportControl("pov",pov.id));c.append(item)}c.append(reportControl("moment",m.id));if(d.clips.length)c.append(povForm(m.id,d.clips));t.append(spoilerBlock(m.spoiler,c));p.append(t)}
+for(const m of d.moments){let t=el("article",null,"tile"),c=el("div");t.append(el("h3",m.spoiler?"Spoiler moment":m.title));add(c,el("h3",m.title),el("p",m.summary),el("small","By "+m.display_name+" · "+dateFormat(m.created)));for(const pov of m.povs){let item=el("div",null,"community-content-item");add(item,el("p",pov.label+" · submitted by "+pov.display_name+" · clip by "+pov.clip_owner),link(pov.title+" ↗",pov.url),reportControl("pov",pov.id),commentWidget("pov",pov.id));c.append(item)}c.append(reportControl("moment",m.id),commentWidget("moment",m.id));if(d.clips.length)c.append(povForm(m.id,d.clips));t.append(spoilerBlock(m.spoiler,c));p.append(t)}
 }else if(socialTab==="studio"){p.append(await studioUI(d))}
-else if(socialTab==="wiki"){p.append(form([field("kind","Type","select",[["lore","Lore"],["character","Character profile"],["recap","Weekly recap"]]),field("title","Title"),field("body","Public story / biography"),field("spoiler","Spoiler?","select",spoilerChoices)],"Submit article",v=>postRefresh("/social/wiki",{...v,spoiler:bool(v.spoiler)})));for(const w of d.wiki){let c=el("article",null,"tile");add(c,el("small",w.kind.toUpperCase()),el("h3",w.title),el("p",w.body),el("small","By "+w.display_name+" · "+dateFormat(w.created)));c.append(reportControl("wiki",w.id));p.append(spoilerBlock(w.spoiler,c))}}
-else if(socialTab==="feed"){p.append(form([field("category","Category","select",[["general","General"],["storyline","Storyline"],["fan_art","Fan art discussion"],["clips","Clips"],["memes","Memes"]]),field("body","Post"),field("spoiler","Spoiler?","select",spoilerChoices)],"Submit post",v=>postRefresh("/social/post",{...v,spoiler:bool(v.spoiler)})));for(const post of d.posts){let c=el("article",null,"tile");add(c,el("h3",post.display_name),el("small",post.category+" · "+dateFormat(post.created)),el("p",post.body),reportControl("post",post.id));p.append(spoilerBlock(post.spoiler,c))}}
+else if(socialTab==="wiki"){p.append(form([field("kind","Type","select",[["lore","Lore"],["character","Character profile"],["recap","Weekly recap"]]),field("title","Title"),field("body","Public story / biography"),field("spoiler","Spoiler?","select",spoilerChoices)],"Submit article",v=>postRefresh("/social/wiki",{...v,spoiler:bool(v.spoiler)})));for(const w of d.wiki){let c=el("article",null,"tile");add(c,el("small",w.kind.toUpperCase()),el("h3",w.title),el("p",w.body),el("small","By "+w.display_name+" · "+dateFormat(w.created)));c.append(reportControl("wiki",w.id),commentWidget("wiki",w.id));p.append(spoilerBlock(w.spoiler,c))}}
+else if(socialTab==="feed"){p.append(form([field("category","Category","select",[["general","General"],["storyline","Storyline"],["fan_art","Fan art discussion"],["clips","Clips"],["memes","Memes"]]),field("body","Post"),field("spoiler","Spoiler?","select",spoilerChoices)],"Submit post",v=>postRefresh("/social/post",{...v,spoiler:bool(v.spoiler)})));for(const post of d.posts){let c=el("article",null,"tile");add(c,el("h3",post.display_name),el("small",post.category+" · "+dateFormat(post.created)),el("p",post.body),reportControl("post",post.id),commentWidget("post",post.id));p.append(spoilerBlock(post.spoiler,c))}}
 else{p.append(el("h3","Top Clippers · Website likes"),lines(d.leaderboard,(r)=>r.display_name+" · "+r.clips+" approved clips · "+r.likes+" likes"),el("h3","Verified creators"));for(const creator of d.creators)p.append(el("p",creator.display_name+" · Verified "+creator.kind),link("Creator channel ↗",creator.url))}
 return p}
+function commentWidget(kind,id){
+ const box=el("details",null,"community-comments"),summary=el("summary","Comments"),content=el("div",null,"community-comment-list");
+ box.append(summary,content);
+ let loaded=false;
+ const refresh=async()=>{
+  const data=await api("/social/comments/"+kind+"/"+id,undefined,"GET");
+  summary.textContent="Comments · "+data.count;
+  content.replaceChildren();
+  content.append(form([field("body","Join the discussion","textarea")],"Post comment",async values=>{
+   await api("/social/comments",{content_type:kind,content_id:id,body:values.body});
+   await refresh();
+  }));
+  const renderComment=(item,isReply=false)=>{
+   const card=el("article",null,"community-comment");
+   const body=item.state==="deleted"?"[comment deleted]":item.body;
+   add(card,el("p",body),el("small",(item.display_name||"Member")+" · "+dateFormat(item.created)+" · "+item.likes+" likes"));
+   if(item.state!=="deleted"){
+    card.append(button((item.liked?"Unlike":"Like")+" · "+item.likes,async()=>{
+     await api("/social/comments/"+item.id+"/like",{enabled:!item.liked});await refresh();
+    },true));
+    if(item.mine)card.append(button("Delete",async()=>{
+     if(confirm("Delete this comment?")){await api("/social/comments/"+item.id+"/delete",{});await refresh()}
+    },true));
+    if(!isReply)card.append(form([field("body","Reply to "+(item.display_name||"member"),"textarea")],"Reply",async values=>{
+     await api("/social/comments/"+item.id+"/reply",{body:values.body});await refresh();
+    }));
+   }
+   if(!isReply)for(const reply of item.replies||[])card.append(renderComment(reply,true));
+   return card;
+  };
+  if(!data.comments.length)content.append(el("p","Be the first to comment.","muted"));
+  for(const item of data.comments)content.append(renderComment(item));
+  loaded=true;
+ };
+ box.ontoggle=async()=>{if(box.open&&!loaded){try{await refresh()}catch(error){showError(error)}}};
+ return box;
+}
+async function socialActivityPanel(){
+ const p=panel("Community Activity & Notifications");
+ const data=await api("/social/activity",undefined,"GET");
+ add(p,el("p",data.unread_count+" unread community notifications","muted"));
+ if(data.unread_count)p.append(button("Mark all as read",async()=>{await api("/social/activity/read-all",{});await render()},true));
+ for(const item of data.items){
+  const card=el("article",null,"tile");
+  add(card,el("h3",item.title),el("small",dateFormat(item.created)),el("p",item.body||""));
+  if(!item.read_at)card.append(button("Mark as read",async()=>{await api("/social/activity/"+item.id+"/read",{});await render()},true));
+  p.append(card);
+ }
+ if(!data.items.length)p.append(el("p","No community activity yet. Replies and comment likes will appear here.","muted"));
+ return p;
+}
 function reportControl(kind,id){
  const details=el("details",null,"community-report");
  details.append(el("summary","Report content"));

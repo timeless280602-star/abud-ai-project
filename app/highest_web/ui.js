@@ -225,7 +225,7 @@ async function financialReportsUI(write){
    for(const x of data.divisions)content.append(el("p",x.division+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions"));
   }else if(tab==="categories"){
    content.append(el("h3","Financial performance by category"));
-   for(const x of data.categories)content.append(el("p",x.category+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions));
+   for(const x of data.categories)content.append(el("p",x.category+" · Income "+fmt(x.income)+" · Expenses "+fmt(x.expense)+" · Net "+fmt(x.income-x.expense)+" · "+x.transactions+" transactions"));
   }else if(tab==="business"){
    const b=data.business;content.append(el("h3","Completed business POS activity"));
    if(!b.available)content.append(el("p","Business POS schema is not initialized yet.","muted"));

@@ -212,12 +212,6 @@ def money_review(mid:int,p:Decision,r:Request):
 def catalog(c):
     return {"vaults":rows(c,"SELECT * FROM hq_vault ORDER BY name"),"items":rows(c,"SELECT * FROM hq_item ORDER BY name")}
 
-@router.get("/ops/inventory")
-def inventory(r:Request):
-    with db() as c:
-        privilege(c,r,"inventory")
-        return reply({**catalog(c),"stock":rows(c,"SELECT s.*,v.name vault_name,i.name item_name FROM hq_stock s JOIN hq_vault v ON v.id=s.vault JOIN hq_item i ON i.id=s.item ORDER BY v.name,i.name"),"movements":rows(c,"SELECT m.*,v.name vault_name,i.name item_name,u.username FROM hq_movement m JOIN hq_vault v ON v.id=m.vault JOIN hq_item i ON i.id=m.item JOIN users u ON u.id=m.actor ORDER BY m.id DESC LIMIT 300"),"low":rows(c,"SELECT i.id,i.name,i.min_stock,coalesce(sum(s.qty),0) total FROM hq_item i LEFT JOIN hq_stock s ON s.item=i.id GROUP BY i.id HAVING total<i.min_stock")})
-
 @router.post("/ops/vault")
 def vault(p:Name,r:Request):
     origin(r)

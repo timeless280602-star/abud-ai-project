@@ -150,7 +150,7 @@ def update(oid:int,p:Status,r:Request):
 def analytics(r:Request,start:int|None=None,end:int|None=None):
     with db() as c:
         privilege(c,r,"business_analytics")
-        end=now() if end is None else end
+        end=now()+1 if end is None else end
         start=end-30*86400 if start is None else start
         if start<0 or end<=start or end-start>5*366*86400: fail(400,"Invalid analytics date range (maximum five years)")
         args=(start,end)

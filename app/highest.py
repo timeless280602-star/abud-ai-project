@@ -1,8 +1,8 @@
 """Separate authentication and membership for the fictional FiveM HQ."""
-import hashlib, hmac, os, re, secrets, sqlite3, time
+import hashlib, hmac, os, re, secrets, sqlite3, time, uuid, mimetypes
 from contextlib import contextmanager
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -34,7 +34,11 @@ def init():
         CREATE INDEX IF NOT EXISTS attempt_idx ON attempts(bucket,ts);
         CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY, uid INTEGER REFERENCES users(id), title TEXT, url TEXT, state TEXT DEFAULT 'pending');
         CREATE TABLE IF NOT EXISTS streamers(id INTEGER PRIMARY KEY, name TEXT, platform TEXT CHECK(platform IN ('youtube','tiktok')), channel TEXT, status TEXT DEFAULT 'unknown', checked INTEGER DEFAULT 0, live_url TEXT, UNIQUE(platform,channel));
+        CREATE TABLE IF NOT EXISTS hq_media_audit(id INTEGER PRIMARY KEY,clip_id INTEGER NOT NULL,uid INTEGER NOT NULL,action TEXT NOT NULL,created INTEGER NOT NULL);
         """)
+        clip_columns={x["name"] for x in c.execute("PRAGMA table_info(clips)")}
+        for name,definition in (("media_path","TEXT"),("media_type","TEXT"),("media_size","INTEGER"),("media_sha256","TEXT"),("views","INTEGER"),("views_checked","INTEGER"),("views_source","TEXT")):
+            if name not in clip_columns: c.execute("ALTER TABLE clips ADD COLUMN "+name+" "+definition)
 
 def fail(status,detail): raise HTTPException(status,detail)
 def origin(r):
@@ -169,7 +173,7 @@ def apply(p:Apply,r:Request):
 def admin(r:Request):
     current(r,admin=True)
     with db() as c:
-        return {"members":[dict(x) for x in c.execute("SELECT m.*,u.username FROM membership m JOIN users u ON m.uid=u.id ORDER BY status,username")],"ranks":[dict(x) for x in c.execute("SELECT * FROM ranks ORDER BY position,id")],"clips":[dict(x) for x in c.execute("SELECT * FROM clips WHERE state='pending'")]}
+        return {"members":[dict(x) for x in c.execute("SELECT m.*,u.username FROM membership m JOIN users u ON m.uid=u.id ORDER BY status,username")],"ranks":[dict(x) for x in c.execute("SELECT * FROM ranks ORDER BY position,id")],"clips":[dict(x) for x in c.execute("SELECT * FROM clips WHERE state='pending'")], "published_clips":[dict(x) for x in c.execute("SELECT id,title,url,views,views_checked,views_source,media_type,media_size FROM clips WHERE state='published' ORDER BY id DESC LIMIT 200")]}
 @router.post("/api/admin/rank")
 def rank(p:Rank,r:Request):
     origin(r); u=current(r,admin=True)
@@ -241,12 +245,95 @@ def clip(p:Clip,r:Request):
     if url.scheme!="https" or url.netloc.lower() not in {"www.youtube.com","youtube.com","youtu.be","www.tiktok.com","tiktok.com","vm.tiktok.com","vt.tiktok.com"} or not url.path.strip("/"): fail(400,"YouTube or TikTok link required")
     with db() as c: c.execute("INSERT INTO clips(uid,title,url) VALUES(?,?,?)",(u["id"],clean(p.title,100),p.url))
     return {"ok":True}
+def _media_dir():
+    base=os.getenv("HIGHEST_DATABASE_PATH","/app/data/highest.db")
+    path=Path(os.getenv("HIGHEST_MEDIA_DIR",str(Path(base).parent/"highest_media")))
+    path.mkdir(parents=True,exist_ok=True,mode=0o750)
+    return path
+
+@router.post("/api/clip/upload")
+async def clip_upload(r:Request,title:str=Form(...),file:UploadFile=File(...)):
+    origin(r);u=current(r);throttle(r,"clip-upload:"+str(u["id"]))
+    title=clean(title,100)
+    allowed={".jpg":"image/jpeg",".jpeg":"image/jpeg",".png":"image/png",".webp":"image/webp",".gif":"image/gif",".mp4":"video/mp4",".webm":"video/webm"}
+    name=(file.filename or "").lower()
+    ext=Path(name).suffix
+    content_type=allowed.get(ext)
+    if not content_type: fail(400,"Supported media: JPG, PNG, WEBP, GIF, MP4 and WEBM")
+    if file.content_type and file.content_type not in (content_type,"application/octet-stream"): fail(400,"File type does not match its extension")
+    limit=50*1024*1024 if content_type.startswith("video/") else 10*1024*1024
+    data=await file.read(limit+1)
+    if not data or len(data)>limit: fail(413,"Image limit is 10 MB and video limit is 50 MB")
+    valid=(ext in (".jpg",".jpeg") and data.startswith(b"\\xff\\xd8\\xff")) or (ext==".png" and data.startswith(b"\\x89PNG\\r\\n\\x1a\\n")) or (ext==".gif" and data[:6] in (b"GIF87a",b"GIF89a")) or (ext==".webp" and data[:4]==b"RIFF" and data[8:12]==b"WEBP") or (ext==".mp4" and len(data)>12 and data[4:8]==b"ftyp") or (ext==".webm" and data.startswith(b"\\x1a\\x45\\xdf\\xa3"))
+    if not valid: fail(400,"File content is not a valid supported media file")
+    digest_value=hashlib.sha256(data).hexdigest();filename=uuid.uuid4().hex+ext;target=_media_dir()/filename
+    target.write_bytes(data);os.chmod(target,0o640)
+    try:
+        with db() as c:
+            cid=c.execute("INSERT INTO clips(uid,title,url,media_path,media_type,media_size,media_sha256) VALUES(?,?, '',?,?,?,?)",(u["id"],title,filename,content_type,len(data),digest_value)).lastrowid
+            c.execute("INSERT INTO hq_media_audit(clip_id,uid,action,created) VALUES(?,?,?,?)",(cid,u["id"],"upload",int(time.time())))
+    except Exception:
+        target.unlink(missing_ok=True);raise
+    return {"ok":True,"id":cid,"state":"pending","media_url":"/highest/api/media/"+str(cid),"sha256":digest_value}
+
+@router.get("/api/media/{cid}")
+def clip_media(cid:int,r:Request):
+    u=current(r)
+    with db() as c:
+        item=c.execute("SELECT uid,state,media_path,media_type FROM clips WHERE id=?",(cid,)).fetchone()
+        if not item or not item["media_path"]: fail(404,"Media not found")
+        if item["state"]!="published" and int(item["uid"])!=u["id"] and not u["admin"]: fail(404,"Media not found")
+        path=_media_dir()/Path(item["media_path"]).name
+        if not path.is_file(): fail(404,"Media file is unavailable")
+        return FileResponse(path,media_type=item["media_type"],headers={"X-Content-Type-Options":"nosniff","Cache-Control":"private, max-age=300","Content-Security-Policy":"default-src 'none'; sandbox"})
+
+@router.post("/api/admin/clips/stats/refresh")
+def refresh_clip_stats(r:Request):
+    current(r,admin=True)
+    import httpx
+    key=os.getenv("HIGHEST_YOUTUBE_API_KEY","")
+    tik_endpoint=os.getenv("HIGHEST_TIKTOK_STATS_URL","");tik_token=os.getenv("HIGHEST_TIKTOK_STATS_TOKEN","")
+    with db() as c: clips=[dict(x) for x in c.execute("SELECT id,url,state FROM clips WHERE state='published'")]
+    updated=0;unavailable=[];yt_ids=[]
+    for clip in clips:
+        url=clip["url"] or ""
+        match=re.search(r"(?:youtu\\.be/|youtube\\.com/(?:watch\\?(?:.*&)?v=|embed/|shorts/))([A-Za-z0-9_-]{11})",url)
+        if match and key: yt_ids.append((clip["id"],match.group(1)))
+        elif "tiktok.com/" in url and tik_endpoint and tik_token:
+            try:
+                with httpx.Client(timeout=12,follow_redirects=False) as client: response=client.get(tik_endpoint,params={"url":url},headers={"Authorization":"Bearer "+tik_token})
+                response.raise_for_status();value=response.json().get("views")
+                if type(value) is not int or value<0: raise ValueError("Invalid view count")
+                with db() as c:c.execute("UPDATE clips SET views=?,views_checked=?,views_source='tiktok_provider' WHERE id=?",(value,int(time.time()),clip["id"]))
+                updated+=1
+            except Exception: unavailable.append(clip["id"])
+        else: unavailable.append(clip["id"])
+    for offset in range(0,len(yt_ids),50):
+        batch=yt_ids[offset:offset+50]
+        try:
+            with httpx.Client(timeout=15) as client: response=client.get("https://www.googleapis.com/youtube/v3/videos",params={"part":"statistics","id":",".join(x[1] for x in batch),"key":key})
+            response.raise_for_status();items=response.json().get("items")
+            if not isinstance(items,list): raise ValueError("Malformed YouTube response")
+            values={x.get("id"):int(x["statistics"]["viewCount"]) for x in items if x.get("id") and str(x.get("statistics",{}).get("viewCount","")).isdigit()}
+            with db() as c:
+                for cid,video_id in batch:
+                    if video_id in values:c.execute("UPDATE clips SET views=?,views_checked=?,views_source='youtube_data_api' WHERE id=?",(values[video_id],int(time.time()),cid));updated+=1
+                    else: unavailable.append(cid)
+        except Exception: unavailable.extend(cid for cid,_ in batch)
+    return {"ok":True,"updated":updated,"unavailable":unavailable,"total":len(clips)}
+
 @router.post("/api/admin/clip/{cid}/{decision}")
 def moderate(cid:int,decision:str,r:Request):
     origin(r); u=current(r,admin=True)
     if decision not in ("published","rejected"): fail(400,"Invalid decision")
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        item=c.execute("SELECT uid,title FROM clips WHERE id=? AND state='pending'",(cid,)).fetchone()
+        if not item: fail(409,"Not pending")
         if not c.execute("UPDATE clips SET state=? WHERE id=? AND state='pending'",(decision,cid)).rowcount: fail(409,"Not pending")
+        from app.highest_ops import notify
+        approved=decision=="published"
+        notify(c,int(item["uid"]),"content_approved" if approved else "content_rejected","Clip approved" if approved else "Clip rejected",("Your clip \""+item["title"]+"\" is now published." if approved else "Your clip \""+item["title"]+"\" was rejected."),"/highest/","clip-review:"+str(cid)+":"+decision)
         audit(c,u["id"],"clip."+decision,cid)
     return {"ok":True}
 @router.post("/api/admin/streamer")

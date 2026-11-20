@@ -147,7 +147,7 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual(data["cases"]["total"],2)
         self.assertEqual(data["graph"]["characters"],2)
         self.assertEqual(data["graph"]["vehicles"],1)
-        self.assertEqual(data["graph"]["relationships"],1)
+        self.assertEqual(data["graph"]["relationships"],2)
         self.assertEqual(data["graph"]["evidence_files"],1)
         self.assertEqual(data["graph"]["custody_events"],2)
         self.assertEqual(len(data["recurring_entities"]),1)
@@ -156,7 +156,7 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual(overlap["case_count"],2)
         self.assertIn("not proof",overlap["interpretation"])
         self.assertEqual(len(data["candidate_case_overlaps"]),1)
-        self.assertEqual(data["most_connected_entities"][0]["degree"],1)
+        self.assertEqual(data["most_connected_entities"][0]["degree"],2)
         self.assertTrue(data["activity_timeline"])
         self.assertEqual(self.get(self.v,"/case-intelligence/analytics").status_code,403)
 

@@ -59,7 +59,7 @@ class HighestTest(unittest.TestCase):
         self.assertEqual(response.status_code,500)
         with db() as c:
             actions=[x["action"] for x in c.execute("SELECT action FROM hq_media_audit WHERE clip_id=?",(clip_id,))]
-            audit_event=c.execute("SELECT 1 FROM audit_log WHERE action='media.integrity_failure' AND target=?",(str(clip_id),)).fetchone()
+            audit_event=c.execute("SELECT 1 FROM audit WHERE action='media.integrity_failure' AND target=?",(str(clip_id),)).fetchone()
         self.assertIn("integrity_failure",actions)
         self.assertIsNotNone(audit_event)
 

@@ -305,7 +305,7 @@ def order_data(c,r):
         line["total"]=line["subtotal"]-line["discount_amount"]
     catalog_cost=sum(x["qty"]*x["buy"] for x in out["lines"])
     actual_cost_row=c.execute("""SELECT sum(value) actual_cogs,count(*) movement_count FROM hq_movement
-        WHERE ref=? AND kind='business_sell' AND cost_source NOT IN ('unvalued','legacy_unvalued')""",("order:"+str(r["id"]),)).fetchone()
+        WHERE ref=? AND kind='business_sell' AND cost_source NOT IN ('unvalued','legacy_unvalued','mixed_unvalued')""",("order:"+str(r["id"]),)).fetchone()
     actual_cost=actual_cost_row["actual_cogs"] if r["direction"]=="sell" and r["status"]=="completed" and actual_cost_row["movement_count"] else None
     out["catalog_cost_estimate"]=catalog_cost
     out["actual_cogs"]=actual_cost
@@ -731,7 +731,7 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
         _ensure_cost_layers(c)
         stock_value=dict(c.execute("""SELECT
             coalesce(sum(value_remaining),0) stock_value_estimate,
-            coalesce(sum(CASE WHEN source IN ('legacy_unvalued','unvalued') THEN qty_remaining ELSE 0 END),0) unpriced_stock_qty
+            coalesce(sum(CASE WHEN source IN ('legacy_unvalued','unvalued','mixed_unvalued') THEN qty_remaining ELSE 0 END),0) unpriced_stock_qty
             FROM hq_cost_layer WHERE qty_remaining>0""").fetchone())
         summary.update(stock_value)
         groups=rows(c,"""SELECT o.group_name,count(DISTINCT o.id) completed_orders,

@@ -119,7 +119,7 @@ def redirect(): return RedirectResponse("/highest/",307)
 @router.get("/internal/")
 @router.get("/admin/")
 def page():
-    return FileResponse(assets/"index.html",headers={"Cache-Control":"no-store","Content-Security-Policy":"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'","X-Content-Type-Options":"nosniff"})
+    return FileResponse(assets/"index.html",headers={"Cache-Control":"no-store","Content-Security-Policy":"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'","X-Content-Type-Options":"nosniff"})
 @router.get("/ui.js")
 def js(): return FileResponse(assets/"ui.js",media_type="application/javascript")
 @router.get("/ui.css")

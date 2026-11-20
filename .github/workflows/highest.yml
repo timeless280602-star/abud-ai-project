@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python -m unittest discover -s tests -p test_highest.py -v
+      - run: python -m unittest discover -s tests -p 'test_highest*.py' -v
       - run: python -m compileall -q app
       - uses: actions/setup-node@v4
         with:

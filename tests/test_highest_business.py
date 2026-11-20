@@ -98,3 +98,53 @@ class BusinessTest(unittest.TestCase):
         result=self.get(self.u,"/business/analytics").json()
         self.assertIn("flow",result)
         self.assertIn("products",result)
+
+
+    def test_all_items_percentage_discount_flows_into_revenue_and_treasury(self):
+        payload={"nonce":"all-percent-discount-12345","group_name":"Discount Group","direction":"sell","lines":[{"item":self.item,"qty":3}],"treasury":True,"discount_scope":"all","discount_type":"percent","discount_value":10}
+        oid=self.post(self.u,"/business/orders",payload).json()["id"]
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual((order["subtotal"],order["discount_amount"],order["total"]),(105,11,94))
+        self.assertEqual(order["lines"][0]["discount_amount"],11)
+        self.assertEqual(order["estimated_margin"],34)
+        self.advance(oid)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        ledger=self.get(self.u,"/ops/treasury").json()
+        self.assertEqual(ledger["entries"][0]["amount"],94)
+        analytics=self.get(self.u,"/business/analytics").json()["summary"]
+        self.assertEqual((analytics["sales_revenue"],analytics["sales_discounts"],analytics["estimated_gross_profit"]),(94,11,34))
+
+    def test_selected_item_fixed_discount_is_per_unit_and_snapshotted(self):
+        self.post(self.u,"/ops/item",{"name":"Second RP Item","category":"IC"})
+        items=self.get(self.u,"/ops/inventory").json()["items"]
+        second=next(x["id"] for x in items if x["name"]=="Second RP Item")
+        self.assertEqual(self.post(self.u,"/business/prices",{"item":second,"buy":10,"sell":20}).status_code,200)
+        payload={"nonce":"selected-fixed-discount-12345","group_name":"Mixed Basket","direction":"sell","lines":[{"item":self.item,"qty":2,"discount_type":"fixed","discount_value":3},{"item":second,"qty":2}],"discount_scope":"items"}
+        oid=self.post(self.u,"/business/orders",payload).json()["id"]
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual((order["subtotal"],order["discount_amount"],order["total"]),(110,6,104))
+        discounted=next(x for x in order["lines"] if x["item"]==self.item)
+        untouched=next(x for x in order["lines"] if x["item"]==second)
+        self.assertEqual((discounted["discount_type"],discounted["discount_value"],discounted["discount_amount"],discounted["total"]),("fixed",3,6,64))
+        self.assertEqual((untouched["discount_amount"],untouched["total"]),(0,40))
+
+    def test_all_items_nominal_discount_applies_to_purchase_total(self):
+        payload={"nonce":"all-fixed-discount-12345","group_name":"Supplier Group","direction":"buy","lines":[{"item":self.item,"qty":3}],"treasury":True,"discount_scope":"all","discount_type":"fixed","discount_value":5}
+        oid=self.post(self.u,"/business/orders",payload).json()["id"]
+        order=self.get(self.u,f"/business/orders/{oid}").json()["order"]
+        self.assertEqual((order["subtotal"],order["discount_amount"],order["total"]),(60,5,55))
+        self.advance(oid)
+        self.assertEqual(self.post(self.u,f"/business/orders/{oid}/status",{"version":2,"status":"completed"}).status_code,200)
+        self.assertEqual(self.get(self.u,"/ops/treasury").json()["entries"][0]["amount"],-55)
+        analytics=self.get(self.u,"/business/analytics").json()["summary"]
+        self.assertEqual((analytics["purchase_spend"],analytics["purchase_discounts"]),(55,5))
+
+    def test_discount_cannot_be_stacked_between_cart_and_item(self):
+        payload={"nonce":"invalid-stack-discount-12345","group_name":"Bad Discount","direction":"sell","lines":[{"item":self.item,"qty":1,"discount_type":"fixed","discount_value":2}],"discount_scope":"all","discount_type":"percent","discount_value":10}
+        self.assertEqual(self.post(self.u,"/business/orders",payload).status_code,400)
+        payload["discount_scope"]="items"
+        payload["discount_type"]="none"
+        payload["discount_value"]=0
+        payload["lines"][0]["discount_value"]=101
+        payload["lines"][0]["discount_type"]="percent"
+        self.assertEqual(self.post(self.u,"/business/orders",payload).status_code,400)

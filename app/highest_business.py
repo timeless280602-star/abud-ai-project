@@ -217,8 +217,11 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
         if start<0 or end<=start or end-start>5*366*86400: fail(400,"Invalid analytics date range (maximum five years)")
         args=(start,end)
         summary=dict(c.execute("""SELECT
-            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell ELSE 0 END),0) sales_revenue,
-            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy ELSE 0 END),0) purchase_spend,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy-l.discount_amount ELSE 0 END),0) purchase_spend,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.discount_amount ELSE 0 END),0) sales_discounts,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.discount_amount ELSE 0 END),0) purchase_discounts,
+            coalesce(sum(l.discount_amount),0) total_discounts,
             coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.buy ELSE 0 END),0) estimated_cogs,
             count(DISTINCT CASE WHEN o.direction='sell' THEN o.id END) sales_orders,
             count(DISTINCT CASE WHEN o.direction='buy' THEN o.id END) purchase_orders,
@@ -248,26 +251,26 @@ def analytics(r:Request,start:int|None=None,end:int|None=None):
             FROM hq_stock s LEFT JOIN hq_price p ON p.item=s.item""").fetchone())
         summary.update(stock_value)
         groups=rows(c,"""SELECT o.group_name,count(DISTINCT o.id) completed_orders,
-            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell ELSE 0 END),0) sales_revenue,
-            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy ELSE 0 END),0) purchase_spend,
-            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*(l.sell-l.buy) ELSE 0 END),0) estimated_gross_profit
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy-l.discount_amount ELSE 0 END),0) purchase_spend,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount-l.qty*l.buy ELSE 0 END),0) estimated_gross_profit
             FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
             WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?
             GROUP BY o.group_name ORDER BY sales_revenue DESC,purchase_spend DESC LIMIT 50""",args)
         products=rows(c,"""SELECT i.id item_id,i.name item_name,
             coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty ELSE 0 END),0) units_sold,
-            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
             coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.buy ELSE 0 END),0) estimated_cogs,
-            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*(l.sell-l.buy) ELSE 0 END),0) estimated_gross_profit,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount-l.qty*l.buy ELSE 0 END),0) estimated_gross_profit,
             coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty ELSE 0 END),0) units_purchased,
             coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy ELSE 0 END),0) purchase_spend
             FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id JOIN hq_item i ON i.id=l.item
             WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?
             GROUP BY i.id ORDER BY sales_revenue DESC,units_sold DESC LIMIT 100""",args)
         trend=rows(c,"""SELECT strftime('%Y-%m-%d',o.completed_at,'unixepoch') day,
-            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell ELSE 0 END),0) sales_revenue,
-            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy ELSE 0 END),0) purchase_spend,
-            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*(l.sell-l.buy) ELSE 0 END),0) estimated_gross_profit
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount ELSE 0 END),0) sales_revenue,
+            coalesce(sum(CASE WHEN o.direction='buy' THEN l.qty*l.buy-l.discount_amount ELSE 0 END),0) purchase_spend,
+            coalesce(sum(CASE WHEN o.direction='sell' THEN l.qty*l.sell-l.discount_amount-l.qty*l.buy ELSE 0 END),0) estimated_gross_profit
             FROM hq_order o JOIN hq_order_line l ON l.order_id=o.id
             WHERE o.status='completed' AND o.legacy_hidden=0 AND o.completed_at>=? AND o.completed_at<?
             GROUP BY day ORDER BY day""",args)
